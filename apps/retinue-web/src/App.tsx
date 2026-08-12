@@ -1,0 +1,445 @@
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  AgentMeta,
+  api,
+  AuthRequiredError,
+  getApiKey,
+  RoomMeta,
+  RoomMsg,
+  setApiKey,
+} from "./api";
+
+const CHIP_COLORS = ["#7aa2f7", "#9ece6a", "#e0af68", "#bb9af7", "#7dcfff", "#f7768e", "#73daca"];
+
+function chipColor(name: string): string {
+  let h = 0;
+  for (const c of name) h = (h * 31 + c.charCodeAt(0)) >>> 0;
+  return CHIP_COLORS[h % CHIP_COLORS.length];
+}
+
+// ── message row ──────────────────────────────────────────────────────────
+
+function MessageRow({ msg }: { msg: RoomMsg }) {
+  if (msg.kind === "system") {
+    return <div className="msg-system">— {msg.text} —</div>;
+  }
+  const mine = msg.kind === "user";
+  return (
+    <div className={mine ? "msg-row mine" : "msg-row"}>
+      <div className={mine ? "bubble mine" : "bubble"}>
+        {!mine && (
+          <span className="chip" style={{ color: chipColor(msg.speaker) }}>
+            {msg.speaker}
+          </span>
+        )}
+        <div className="msg-text">{msg.text}</div>
+      </div>
+    </div>
+  );
+}
+
+// ── room chat view ───────────────────────────────────────────────────────
+
+function RoomView({ room, userName }: { room: RoomMeta; userName: string }) {
+  const [messages, setMessages] = useState<RoomMsg[]>([]);
+  const [draft, setDraft] = useState("");
+  const [sending, setSending] = useState(false);
+  const [thinking, setThinking] = useState<string[]>([]);
+  const sinceRef = useRef(0);
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  // Long-poll loop; the adapter holds the request up to `wait` seconds.
+  useEffect(() => {
+    sinceRef.current = 0;
+    setMessages([]);
+    const ctl = new AbortController();
+    let alive = true;
+    (async () => {
+      while (alive) {
+        try {
+          const { messages: fresh } = await api.transcript(
+            room.id,
+            sinceRef.current,
+            25,
+            ctl.signal,
+          );
+          if (!alive) return;
+          if (fresh.length) {
+            sinceRef.current = Math.max(...fresh.map((m) => m.seq));
+            setMessages((prev) => [...prev, ...fresh]);
+            setThinking((waiting) =>
+              waiting.filter((w) => !fresh.some((m) => m.kind === "agent" && m.speaker === w)),
+            );
+          }
+        } catch (e) {
+          if (!alive || (e instanceof DOMException && e.name === "AbortError")) return;
+          await new Promise((r) => setTimeout(r, 3000));
+        }
+      }
+    })();
+    return () => {
+      alive = false;
+      ctl.abort();
+    };
+  }, [room.id]);
+
+  useEffect(() => {
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+  }, [messages, thinking]);
+
+  const send = useCallback(async () => {
+    const text = draft.trim();
+    if (!text || sending) return;
+    setSending(true);
+    try {
+      const { planned } = await api.send(room.id, text, userName);
+      setThinking(planned);
+      setDraft("");
+    } catch (e) {
+      alert(String(e));
+    } finally {
+      setSending(false);
+    }
+  }, [draft, sending, room.id, userName]);
+
+  return (
+    <div className="room-view">
+      <header className="room-header">
+        <h2>{room.name}</h2>
+        <div className="room-members">
+          {room.members.map((m) => (
+            <span key={m} className="chip" style={{ color: chipColor(m) }}>
+              @{m}
+              {room.lead === m ? " ★" : ""}
+            </span>
+          ))}
+        </div>
+      </header>
+      <div className="messages" ref={scrollRef}>
+        {messages.length === 0 && (
+          <div className="empty-hint">
+            Say something — no @mention goes to the lead{room.lead ? ` (@${room.lead})` : ""}.
+          </div>
+        )}
+        {messages.map((m) => (
+          <MessageRow key={m.seq} msg={m} />
+        ))}
+        {thinking.map((w) => (
+          <div key={w} className="msg-row">
+            <div className="bubble thinking">
+              <span className="chip" style={{ color: chipColor(w) }}>
+                {w}
+              </span>
+              <div className="msg-text dots">thinking</div>
+            </div>
+          </div>
+        ))}
+      </div>
+      <div className="composer">
+        <div className="mention-bar">
+          {room.members.map((m) => (
+            <button key={m} className="mention-btn" onClick={() => setDraft((d) => `${d}@${m} `)}>
+              @{m}
+            </button>
+          ))}
+        </div>
+        <div className="composer-row">
+          <textarea
+            value={draft}
+            placeholder={`Message ${room.name}…`}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                void send();
+              }
+            }}
+            rows={2}
+          />
+          <button className="send-btn" disabled={sending || !draft.trim()} onClick={() => void send()}>
+            Send
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── forms ────────────────────────────────────────────────────────────────
+
+function HirePanel({ onDone }: { onDone: (created?: AgentMeta) => void }) {
+  const [name, setName] = useState("");
+  const [job, setJob] = useState("");
+  const [how, setHow] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState("");
+  return (
+    <div className="panel">
+      <h3>Hire an agent</h3>
+      <label>
+        Name
+        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Scout" />
+      </label>
+      <label>
+        Primary job
+        <input
+          value={job}
+          onChange={(e) => setJob(e.target.value)}
+          placeholder="Find and verify facts fast"
+        />
+      </label>
+      <label>
+        How it should work
+        <textarea
+          value={how}
+          onChange={(e) => setHow(e.target.value)}
+          rows={4}
+          placeholder="Check sources before answering. Keep replies short. Hand writing questions to the editor."
+        />
+      </label>
+      {note && <p className="note">{note}</p>}
+      <div className="panel-actions">
+        <button onClick={() => onDone()}>Cancel</button>
+        <button
+          className="primary"
+          disabled={busy || !name.trim() || !job.trim()}
+          onClick={async () => {
+            setBusy(true);
+            try {
+              const created = await api.hire(name, job, how);
+              setNote(created.activation ?? "");
+              onDone(created);
+            } catch (e) {
+              setNote(String(e));
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
+          Hire
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function NewRoomPanel({
+  agents,
+  onDone,
+}: {
+  agents: AgentMeta[];
+  onDone: (created?: RoomMeta) => void;
+}) {
+  const [name, setName] = useState("");
+  const [picked, setPicked] = useState<string[]>([]);
+  const [lead, setLead] = useState<string>("");
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState("");
+  const toggle = (slug: string) =>
+    setPicked((p) => (p.includes(slug) ? p.filter((x) => x !== slug) : [...p, slug]));
+  return (
+    <div className="panel">
+      <h3>New room</h3>
+      <label>
+        Room name
+        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Ops room" />
+      </label>
+      <div className="member-pick">
+        {agents.map((a) => (
+          <button
+            key={a.slug}
+            className={picked.includes(a.slug) ? "pick picked" : "pick"}
+            onClick={() => toggle(a.slug)}
+          >
+            @{a.slug}
+          </button>
+        ))}
+        {agents.length === 0 && <p className="note">No agents yet — hire one first.</p>}
+      </div>
+      {picked.length > 0 && (
+        <label>
+          Lead (answers when nobody is mentioned)
+          <select value={lead} onChange={(e) => setLead(e.target.value)}>
+            <option value="">first member</option>
+            {picked.map((m) => (
+              <option key={m} value={m}>
+                @{m}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+      {note && <p className="note">{note}</p>}
+      <div className="panel-actions">
+        <button onClick={() => onDone()}>Cancel</button>
+        <button
+          className="primary"
+          disabled={busy || !name.trim() || picked.length === 0}
+          onClick={async () => {
+            setBusy(true);
+            try {
+              onDone(await api.createRoom(name, picked, lead || null));
+            } catch (e) {
+              setNote(String(e));
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
+          Create
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function KeyPanel({ onDone }: { onDone: () => void }) {
+  const [key, setKey] = useState(getApiKey());
+  return (
+    <div className="panel">
+      <h3>API key required</h3>
+      <p className="note">This Retinue server requires a bearer key (RETINUE_ROOMS_API_KEY).</p>
+      <label>
+        API key
+        <input type="password" value={key} onChange={(e) => setKey(e.target.value)} />
+      </label>
+      <div className="panel-actions">
+        <button
+          className="primary"
+          onClick={() => {
+            setApiKey(key);
+            onDone();
+          }}
+        >
+          Save
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── shell ────────────────────────────────────────────────────────────────
+
+type Modal = "hire" | "room" | "key" | null;
+
+export default function App() {
+  const [rooms, setRooms] = useState<RoomMeta[]>([]);
+  const [agents, setAgents] = useState<AgentMeta[]>([]);
+  const [current, setCurrent] = useState<RoomMeta | null>(null);
+  const [modal, setModal] = useState<Modal>(null);
+  const [userName] = useState(() => localStorage.getItem("retinue.userName") ?? "You");
+
+  const refresh = useCallback(async () => {
+    try {
+      const [r, a] = await Promise.all([api.listRooms(), api.listAgents()]);
+      setRooms(r.rooms);
+      setAgents(a.agents);
+    } catch (e) {
+      if (e instanceof AuthRequiredError) setModal("key");
+      else console.error(e);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  return (
+    <div className="shell">
+      <aside className="sidebar">
+        <div className="brand">
+          <span className="brand-mark">🏛️</span> Retinue
+        </div>
+        <div className="section">
+          <div className="section-head">
+            <span>Rooms</span>
+            <button className="mini" onClick={() => setModal("room")}>
+              +
+            </button>
+          </div>
+          {rooms.map((r) => (
+            <button
+              key={r.id}
+              className={current?.id === r.id ? "nav-item active" : "nav-item"}
+              onClick={() => setCurrent(r)}
+            >
+              {r.name}
+              <span className="nav-sub">{r.members.map((m) => `@${m}`).join(" ")}</span>
+            </button>
+          ))}
+          {rooms.length === 0 && <p className="note pad">No rooms yet.</p>}
+        </div>
+        <div className="section">
+          <div className="section-head">
+            <span>Agents</span>
+            <button className="mini" onClick={() => setModal("hire")}>
+              +
+            </button>
+          </div>
+          {agents.map((a) => (
+            <div key={a.slug} className="agent-item">
+              <span className="chip" style={{ color: chipColor(a.slug) }}>
+                @{a.slug}
+              </span>
+              <span className="nav-sub">{a.job || "hand-made profile"}</span>
+            </div>
+          ))}
+        </div>
+        <footer className="foot">
+          self-hosted AI teammates ·{" "}
+          <a href="https://github.com/novique-ai/retinue" target="_blank" rel="noreferrer">
+            github
+          </a>
+        </footer>
+      </aside>
+      <main className="main">
+        {current ? (
+          <RoomView room={current} userName={userName} />
+        ) : (
+          <div className="welcome">
+            <h1>🏛️ Retinue</h1>
+            <p>Self-hosted AI teammates that work together.</p>
+            <p className="note">
+              Hire agents, put them in a room, and talk — they answer you and each other.
+            </p>
+          </div>
+        )}
+      </main>
+      {modal && (
+        <div className="overlay" onClick={() => setModal(null)}>
+          <div onClick={(e) => e.stopPropagation()}>
+            {modal === "hire" && (
+              <HirePanel
+                onDone={(created) => {
+                  if (created) void refresh();
+                  setModal(null);
+                  if (created?.activation) alert(created.activation);
+                }}
+              />
+            )}
+            {modal === "room" && (
+              <NewRoomPanel
+                agents={agents}
+                onDone={(created) => {
+                  setModal(null);
+                  if (created) {
+                    void refresh();
+                    setCurrent(created);
+                  }
+                }}
+              />
+            )}
+            {modal === "key" && (
+              <KeyPanel
+                onDone={() => {
+                  setModal(null);
+                  void refresh();
+                }}
+              />
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

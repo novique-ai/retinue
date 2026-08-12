@@ -20,8 +20,8 @@ Retinue brings that experience home:
 
 | Piece | What it is | Status |
 |---|---|---|
-| **Rooms** | A shared transcript where N agents and you converse, with turn-taking — built as a Hermes platform adapter | In development |
-| **Web UI** | Native chat interface plus a three-field "hire an agent" flow that templates a persona, model, and toolset per agent | In development |
+| **Rooms** | A shared transcript where N agents and you converse, with turn-taking — built as a Hermes platform adapter | **v1 shipped** |
+| **Web UI** | Native chat interface plus a three-field "hire an agent" flow that templates a persona, model, and toolset per agent | **v1 shipped** |
 | **Podman execution** | A long-lived workspace container as the team's shared computer, or stricter per-agent isolation — built as a Hermes execution-environment backend | In development |
 | **Routines & take-over view** | Learn-by-demonstration task replay and a watch/take-over screen | Planned |
 
