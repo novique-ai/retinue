@@ -13,7 +13,7 @@ origin, no CORS), with:
 - a three-field **hire flow** — name, primary job, how it should work — that templates a profile: persona file, model choice, toolset,
 - agent management (roster, memory inspection, model switching).
 
-## Phase 3 — Podman execution
+## Phase 3 — Podman execution ✅ (v1)
 - A `podman` execution-environment backend alongside the existing local/docker/ssh/... backends.
 - **Workspace computer** mode: one long-lived container per workspace that every agent's terminal targets — the team shares files and state the way it would on one machine.
 - Optional stricter mode: per-agent containers.
