@@ -38,7 +38,7 @@ from gateway.platforms.base import (
     SendResult,
 )
 
-from . import engine
+from . import engine, hire
 from .engine import KIND_AGENT, KIND_SYSTEM, KIND_USER, Room, RoomMessage
 from .store import RoomStore
 
@@ -227,11 +227,38 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         return payload
 
     @staticmethod
-    def _profile_exists(member: str) -> bool:
+    def _home_dir() -> str:
+        return os.getenv("HERMES_HOME") or os.path.expanduser("~/.hermes")
+
+    @classmethod
+    def _profile_exists(cls, member: str) -> bool:
         if member == "default":
             return True
-        home = os.getenv("HERMES_HOME") or os.path.expanduser("~/.hermes")
-        return os.path.isdir(os.path.join(home, "profiles", member))
+        return os.path.isdir(os.path.join(cls._home_dir(), "profiles", member))
+
+    # ── agents (the hire flow) ───────────────────────────────────────────
+
+    def list_agents(self) -> List[Dict[str, Any]]:
+        return hire.list_agents(self._home_dir())
+
+    def hire_agent(self, name: str, job: str, how: str) -> Dict[str, Any]:
+        meta = hire.scaffold_profile(self._home_dir(), name, job, how)
+        # The multiplexer snapshots its served-profile set at startup; a new
+        # profile joins rooms only after a gateway restart. Say so honestly.
+        meta["activation"] = "restart the gateway to bring this agent online"
+        return meta
+
+    # ── static web UI ────────────────────────────────────────────────────
+
+    @staticmethod
+    def web_dist_dir() -> Optional[str]:
+        """apps/retinue-web/dist, when built. Resolved from this file:
+        plugins/platforms/retinue_rooms/adapter.py -> repo root is 3 up."""
+        repo_root = os.path.dirname(
+            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        )
+        dist = os.path.join(repo_root, "apps", "retinue-web", "dist")
+        return dist if os.path.isdir(dist) else None
 
     def post_user_message(self, room_id: str, text: str, from_name: str) -> Dict[str, Any]:
         room = self.store.get(room_id)
@@ -423,14 +450,61 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
 
     # ── routes ───────────────────────────────────────────────────────────
 
+    _STATIC_TYPES = {
+        ".html": "text/html; charset=utf-8",
+        ".js": "text/javascript",
+        ".css": "text/css",
+        ".svg": "image/svg+xml",
+        ".ico": "image/x-icon",
+        ".png": "image/png",
+        ".woff2": "font/woff2",
+        ".map": "application/json",
+    }
+
+    def _serve_static(self, path: str) -> bool:
+        """Serve the built SPA (unauthenticated, like any web page — the API
+        it calls stays bearer-gated). Returns False when no dist exists."""
+        dist = self.server.adapter.web_dist_dir()
+        if dist is None:
+            return False
+        rel = path.lstrip("/") or "index.html"
+        full = os.path.realpath(os.path.join(dist, rel))
+        if not full.startswith(os.path.realpath(dist) + os.sep) and full != os.path.realpath(
+            os.path.join(dist, "index.html")
+        ):
+            return False
+        if not os.path.isfile(full):
+            full = os.path.join(dist, "index.html")  # SPA fallback route
+            if not os.path.isfile(full):
+                return False
+        ext = os.path.splitext(full)[1].lower()
+        ctype = self._STATIC_TYPES.get(ext, "application/octet-stream")
+        with open(full, "rb") as f:
+            body = f.read()
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        self.wfile.write(body)
+        return True
+
+    _API_PREFIXES = ("rooms", "agents", "health")
+
     def do_GET(self):
         parsed = urlparse(self.path)
         parts = [p for p in parsed.path.split("/") if p]
         if parts == ["health"]:
             return self._json(200, {"ok": True, "rooms": len(self.server.adapter.store.list_rooms())})
+        if not parts or parts[0] not in self._API_PREFIXES:
+            if self._serve_static(parsed.path):
+                return
+            return self._json(404, {"error": "not found (web UI not built — see apps/retinue-web)"})
         if not self._authorized():
             return self._json(401, {"error": "unauthorized"})
         adapter = self.server.adapter
+        if parts == ["agents"]:
+            return self._json(200, {"agents": adapter.list_agents()})
         if parts == ["rooms"]:
             return self._json(200, {"rooms": [r.to_dict() for r in adapter.store.list_rooms()]})
         if len(parts) == 2 and parts[0] == "rooms":
@@ -464,6 +538,18 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
         body = self._read_body()
         if body is None:
             return self._json(400, {"error": "invalid or oversized JSON body"})
+        if parts == ["agents"]:
+            try:
+                payload = adapter.hire_agent(
+                    name=str(body.get("name") or ""),
+                    job=str(body.get("job") or ""),
+                    how=str(body.get("how") or ""),
+                )
+            except ValueError as e:
+                return self._json(400, {"error": str(e)})
+            except FileExistsError as e:
+                return self._json(409, {"error": f"an agent named '{e}' already exists"})
+            return self._json(201, payload)
         if parts == ["rooms"]:
             try:
                 payload = adapter.create_room(
