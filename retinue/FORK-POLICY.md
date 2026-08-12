@@ -13,6 +13,15 @@ Upstream (`NousResearch/hermes-agent`) is a very large (~685K LOC), very fast-mo
 | Web UI | `apps/retinue-web/` | Standalone client of the sessions/SSE API (`gateway/platforms/api_server.py`); no PTY embedding |
 | Product docs | `README.md`, `retinue/` | See exception below |
 
+## Carried patches
+
+Narrow, cherry-pickable fixes for upstream bugs that break Retinue in practice. Each must
+reference an upstream issue and be dropped when upstream fixes it. Current list:
+
+| File | Patch | Upstream issue |
+|---|---|---|
+| `agent/prompt_builder.py` | Reword `SKILLS_GUIDANCE` sentence 1 — the stock wording trips an Anthropic content filter for subscription-OAuth tokens, surfacing as a billing-shaped 400 ("out of extra usage") | [NousResearch/hermes-agent#82154](https://github.com/NousResearch/hermes-agent/issues/82154) |
+
 ## The one owned upstream path
 
 `README.md` is the single upstream file Retinue replaces (a public repo needs its own face). It is protected with a `merge=ours` gitattribute so upstream syncs never clobber it. Everything else from upstream merges clean because we don't touch it.

@@ -161,6 +161,8 @@ def room_briefing(room: Room, member: str, user_names: List[str]) -> str:
             "transcript. Only mention someone when their input is actually needed."
         ),
         "Never write lines on behalf of other speakers; reply only as yourself.",
+        "Do not prefix your reply with your own name or any [speaker] tag — "
+        "the room adds attribution for you.",
         "Keep replies concise and conversational unless asked for detail.",
     ]
     return "\n".join(parts)

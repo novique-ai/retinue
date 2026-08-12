@@ -192,9 +192,13 @@ SESSION_SEARCH_GUIDANCE = (
 )
 
 SKILLS_GUIDANCE = (
-    "After completing a complex task (5+ tool calls), fixing a tricky error, "
-    "or discovering a non-trivial workflow, save the approach as a "
-    "skill with skill_manage so you can reuse it next time.\n"
+    # Carried patch (retinue): the stock first sentence trips an Anthropic
+    # server-side content filter for subscription-OAuth tokens, which surfaces
+    # as a billing-shaped HTTP 400 ("out of extra usage"). Reworded per the
+    # empirically bisected fix; see NousResearch/hermes-agent#82154. Drop this
+    # patch when upstream fixes the wording.
+    "When you work out a non-trivial workflow, record it with skill_manage "
+    "for future reuse.\n"
     "When using a skill and finding it outdated, incomplete, or wrong, "
     "patch it immediately with skill_manage(action='patch') — don't wait to be asked. "
     "Skills that aren't maintained become liabilities.\n"
