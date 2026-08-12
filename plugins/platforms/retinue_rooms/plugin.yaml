@@ -1,0 +1,37 @@
+name: retinue_rooms-platform
+label: Retinue Rooms
+kind: platform
+version: 0.1.0
+description: >
+  Retinue rooms — shared conversations between the user and N named agents.
+  Each room member is a Hermes profile (own persona, model, memory, toolset);
+  the room gives them one attributed transcript and mention-driven turn-taking
+  with a hard per-user-message turn budget. Runs a small local HTTP API
+  (default 127.0.0.1:8643) for clients; the reference CLI is
+  `python -m plugins.platforms.retinue_rooms.cli`.
+
+  Requires the gateway to run with `gateway.multiplex_profiles: true` so room
+  members' profiles are served in-process. Pure stdlib transport.
+author: Novique
+requires_env: []
+optional_env:
+  - name: RETINUE_ROOMS_ENABLED
+    description: "Set to 1/true to enable the rooms platform without an API key (localhost-only)."
+    prompt: "Enable Retinue rooms? (true/false)"
+    password: false
+  - name: RETINUE_ROOMS_API_KEY
+    description: "Bearer token for the rooms HTTP API. Unset => server binds 127.0.0.1 only."
+    prompt: "Rooms API key (or empty for localhost-only)"
+    password: true
+  - name: RETINUE_ROOMS_HOST
+    description: "Bind host (default 127.0.0.1; widen only with an API key set)."
+    prompt: "Rooms bind host (default 127.0.0.1)"
+    password: false
+  - name: RETINUE_ROOMS_PORT
+    description: "Rooms HTTP API port (default 8643)."
+    prompt: "Rooms port (default 8643)"
+    password: false
+  - name: RETINUE_ROOMS_TURN_TIMEOUT
+    description: "Seconds to wait for a single agent turn before moving on (default 300)."
+    prompt: "Turn timeout seconds (default 300)"
+    password: false
