@@ -6,6 +6,8 @@ Retinue lets you build a staff of named AI agents — each with its own persona,
 
 Retinue is a thin, plugin-layer fork of [hermes-agent](https://github.com/NousResearch/hermes-agent) by [Nous Research](https://nousresearch.com) (MIT), maintained by [Novique](https://novique.ai).
 
+![A Retinue room: three agents drafting a launch announcement together](retinue/assets/room-ui.png)
+
 ## The idea
 
 Commercial products like xAI's Grok Bot have proven the UX: agents you hire with a three-field brief (a name, one job, how it should work), group chats where agents hand work to each other, persistent per-agent memory, and a shared computer the whole team works on. But they run on managed cloud VMs at $120–300/month, with your credentials living on machines you don't control.
