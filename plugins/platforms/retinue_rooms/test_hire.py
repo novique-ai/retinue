@@ -23,6 +23,15 @@ def test_soul_template_contains_all_three_fields():
     assert "check sources; be terse" in soul
 
 
+def test_soul_template_pins_identity_against_engine_bleed():
+    """Agents were introducing themselves with the engine's identity
+    ("Claude Code" phrasing) instead of their persona — the SOUL must pin
+    the persona name explicitly and name the engine as not-who-you-are."""
+    soul = hire.soul_template("Scout", "find facts fast", "")
+    assert "Identity: your name is Scout" in soul
+    assert "never introduce or describe yourself by an engine name" in soul
+
+
 def test_scaffold_creates_profile(tmp_path):
     (tmp_path / "config.yaml").write_text(
         "model:\n  default: claude-haiku-4-5\n  provider: anthropic\nagent:\n  tool_choice: auto\n"
