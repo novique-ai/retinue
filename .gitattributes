@@ -8,3 +8,6 @@ web/package-lock.json linguist-generated=true
 Dockerfile  text eol=lf
 *.dockerfile text eol=lf
 docker/entrypoint.sh text eol=lf
+
+# Retinue: README.md is the one owned upstream path — upstream syncs keep ours (see retinue/FORK-POLICY.md)
+README.md merge=ours
