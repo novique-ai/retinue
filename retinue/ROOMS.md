@@ -78,6 +78,32 @@ profiles (`~/.hermes/profiles/<name>/`, or `default`); creation warns about unkn
 | `RETINUE_ROOMS_HOST` / `_PORT` | `127.0.0.1` / `8643` | bind address |
 | `RETINUE_ROOMS_TURN_TIMEOUT` | `300` | seconds to wait for one agent turn |
 
+## The workspace computer (P3)
+
+Grok Bot's model, reproduced locally: **all of a workspace's agents share one persistent
+container** — shared files and state are what make agent-to-agent handoffs cheap. Hermes'
+Docker backend already runs on podman (upstream `find_docker()` falls back to `podman` on
+PATH; force with `HERMES_DOCKER_BINARY`). What Retinue adds is the *sharing*: container
+identity is normally per-profile, so the carried patch `TERMINAL_DOCKER_SHARED_CONTAINER_KEY`
+(upstream feature request [#84671](https://github.com/NousResearch/hermes-agent/issues/84671))
+keys it by workspace instead — every member attaches to the same long-lived container via
+the existing cross-process reuse.
+
+Gateway environment for workspace-computer mode:
+
+```bash
+TERMINAL_ENV=docker                              # container-backed terminals (podman auto-detected)
+TERMINAL_DOCKER_SHARED_CONTAINER_KEY=<workspace> # ONE container for every member
+TERMINAL_DOCKER_IMAGE=docker.io/library/python:3.12-slim   # or your workspace image
+```
+
+Live-verified 2026-08-12 (rootless podman 4.9.3, no docker binary on the host): scout wrote
+`/root/retinue-proof.txt` inside the container; editor — a different profile — read and
+appended to the same file in the same container; both proven host-side via `podman exec`,
+with the container hostname matching the agents' reports. Only the terminal tool family runs
+in the container; browser/file/MCP tools remain host-side (stricter per-agent isolation =
+just omit the shared key).
+
 ## Deliberate v1 limits
 
 Sequential turns (no parallel speakers); no streaming into the room (finals only — the

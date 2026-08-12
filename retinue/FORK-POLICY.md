@@ -9,7 +9,7 @@ Upstream (`NousResearch/hermes-agent`) is a very large (~685K LOC), very fast-mo
 | Delta | Location | Mechanism |
 |---|---|---|
 | Rooms (shared multi-agent transcript + turn-taking) | `plugins/platforms/retinue_rooms/` | New platform adapter, per `gateway/platforms/ADDING_A_PLATFORM.md`, consuming the typed event stream (`gateway/stream_events.py`) |
-| Podman execution backend | `tools/environments/podman.py` | New `BaseEnvironment` subclass (additive file, registered like the seven existing backends) |
+| Podman execution | upstream `tools/environments/docker.py` as-is | No new backend needed: upstream's `find_docker()` already falls back to podman on PATH (`HERMES_DOCKER_BINARY` forces it). The workspace-computer sharing is the carried patch below. |
 | Web UI | `retinue-web/` | Standalone client of the sessions/SSE API (`gateway/platforms/api_server.py`); no PTY embedding |
 | Product docs | `README.md`, `retinue/` | See exception below |
 
@@ -21,6 +21,7 @@ reference an upstream issue and be dropped when upstream fixes it. Current list:
 | File | Patch | Upstream issue |
 |---|---|---|
 | `agent/prompt_builder.py` | Reword `SKILLS_GUIDANCE` sentence 1 — the stock wording trips an Anthropic content filter for subscription-OAuth tokens, surfacing as a billing-shaped 400 ("out of extra usage") | [NousResearch/hermes-agent#82154](https://github.com/NousResearch/hermes-agent/issues/82154) |
+| `tools/environments/docker.py` | `TERMINAL_DOCKER_SHARED_CONTAINER_KEY` — opt-in workspace key replacing the per-profile container identity, so every room member attaches to one shared "workspace computer" container | [NousResearch/hermes-agent#84671](https://github.com/NousResearch/hermes-agent/issues/84671) |
 
 ## The one owned upstream path
 

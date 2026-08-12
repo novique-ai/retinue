@@ -1368,7 +1368,16 @@ class DockerEnvironment(BaseEnvironment):
         # Values are limited to the safe character set defined by
         # _sanitize_label_value(); the active Hermes profile is captured at
         # container-start time and never changes for the container's lifetime.
-        profile_name = _sanitize_label_value(_get_active_profile_name())
+        # Carried patch (retinue): shared "workspace computer" mode. When
+        # TERMINAL_DOCKER_SHARED_CONTAINER_KEY is set, the container identity
+        # is keyed by that workspace name instead of the per-profile name, so
+        # every profile in the workspace attaches to ONE long-lived container
+        # (cross-process reuse matches on this label). Grok-Bot-style shared
+        # computer for multi-agent rooms; see retinue/ROOMS.md. Upstream
+        # feature request: NousResearch/hermes-agent#84671 — drop this patch
+        # when an equivalent knob lands.
+        _shared_key = os.getenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", "").strip()
+        profile_name = _sanitize_label_value(_shared_key or _get_active_profile_name())
         task_label = _sanitize_label_value(task_id)
         label_args = [
             "--label", "hermes-agent=1",
