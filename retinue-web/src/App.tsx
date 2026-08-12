@@ -4,6 +4,7 @@ import {
   api,
   AuthRequiredError,
   getApiKey,
+  ModelPreset,
   RoomMeta,
   RoomMsg,
   setApiKey,
@@ -171,8 +172,16 @@ function HirePanel({ onDone }: { onDone: (created?: AgentMeta) => void }) {
   const [name, setName] = useState("");
   const [job, setJob] = useState("");
   const [how, setHow] = useState("");
+  const [model, setModel] = useState("");
+  const [models, setModels] = useState<ModelPreset[]>([]);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState("");
+  useEffect(() => {
+    api
+      .listModels()
+      .then((r) => setModels(r.models))
+      .catch(() => setModels([]));
+  }, []);
   return (
     <div className="panel">
       <h3>Hire an agent</h3>
@@ -197,6 +206,19 @@ function HirePanel({ onDone }: { onDone: (created?: AgentMeta) => void }) {
           placeholder="Check sources before answering. Keep replies short. Hand writing questions to the editor."
         />
       </label>
+      {models.length > 0 && (
+        <label>
+          Model
+          <select value={model} onChange={(e) => setModel(e.target.value)}>
+            <option value="">Workspace default</option>
+            {models.map((m) => (
+              <option key={m.name} value={m.name}>
+                {m.name} ({m.summary})
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
       {note && <p className="note">{note}</p>}
       <div className="panel-actions">
         <button onClick={() => onDone()}>Cancel</button>
@@ -206,7 +228,7 @@ function HirePanel({ onDone }: { onDone: (created?: AgentMeta) => void }) {
           onClick={async () => {
             setBusy(true);
             try {
-              const created = await api.hire(name, job, how);
+              const created = await api.hire(name, job, how, model);
               setNote(created.activation ?? "");
               onDone(created);
             } catch (e) {

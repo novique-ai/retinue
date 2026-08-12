@@ -77,3 +77,58 @@ def test_list_agents_mixes_hired_and_handmade(tmp_path):
     assert by_slug["scout"]["job"] == "research"
     assert by_slug["handmade"]["display_name"] == "handmade"
     assert by_slug["handmade"]["has_soul"] is True
+
+
+# ── model presets (per-hire model selection) ─────────────────────────────
+
+
+def _write_presets(tmp_path):
+    d = tmp_path / hire.MODELS_DIRNAME
+    d.mkdir()
+    (d / "local.yaml").write_text(
+        "model:\n  provider: custom\n  model: local/auto\n  base_url: http://llm:8091/v1\n  api_key: \"none\"\n"
+    )
+    (d / "grok.yaml").write_text(
+        "model:\n  default: grok-4.5\n  provider: xai-oauth\n  base_url: https://api.x.ai/v1\n"
+    )
+    (d / "broken.yaml").write_text("not_a_model_block: true\n")
+    (d / "README.txt").write_text("ignored, wrong extension\n")
+
+
+def test_list_model_presets(tmp_path):
+    assert hire.list_model_presets(str(tmp_path)) == []  # no dir yet
+    _write_presets(tmp_path)
+    presets = hire.list_model_presets(str(tmp_path))
+    assert [p["name"] for p in presets] == ["grok", "local"]
+    by_name = {p["name"]: p["summary"] for p in presets}
+    assert by_name["grok"] == "xai-oauth · grok-4.5"
+    assert by_name["local"] == "custom · local/auto"
+
+
+def test_scaffold_with_model_preset(tmp_path):
+    (tmp_path / "config.yaml").write_text("model:\n  default: root-model\n  provider: anthropic\n")
+    _write_presets(tmp_path)
+    meta = hire.scaffold_profile(str(tmp_path), "Boss", "lead", "", model_preset="grok")
+    assert meta["model_preset"] == "grok"
+    config = (tmp_path / "profiles" / "boss" / "config.yaml").read_text()
+    assert "provider: xai-oauth" in config and "grok-4.5" in config
+    assert "root-model" not in config
+
+
+def test_scaffold_unknown_preset_creates_nothing(tmp_path):
+    (tmp_path / "config.yaml").write_text("model:\n  default: root-model\n  provider: anthropic\n")
+    _write_presets(tmp_path)
+    with pytest.raises(ValueError, match="unknown model preset 'nope'"):
+        hire.scaffold_profile(str(tmp_path), "Ghost", "haunt", "", model_preset="nope")
+    assert not (tmp_path / "profiles" / "ghost").exists()
+    with pytest.raises(ValueError, match="no 'model:' block"):
+        hire.scaffold_profile(str(tmp_path), "Ghost", "haunt", "", model_preset="broken")
+
+
+def test_scaffold_seeds_root_auth_store(tmp_path):
+    (tmp_path / "config.yaml").write_text("model:\n  default: m\n  provider: anthropic\n")
+    (tmp_path / "auth.json").write_text('{"providers": {"xai-oauth": {}}}')
+    hire.scaffold_profile(str(tmp_path), "Keys", "hold credentials", "")
+    seeded = tmp_path / "profiles" / "keys" / "auth.json"
+    assert seeded.read_text() == '{"providers": {"xai-oauth": {}}}'
+    assert (seeded.stat().st_mode & 0o777) == 0o600

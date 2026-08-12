@@ -54,6 +54,8 @@ convention: no `RETINUE_ROOMS_API_KEY` → localhost-only):
 | Route | Purpose |
 |---|---|
 | `GET /health` | liveness (unauthenticated) |
+| `GET /models` | workspace model presets a hire can choose from |
+| `GET/POST /agents` | roster / hire (`{name, job, how, model?}` — `model` names a preset) |
 | `GET/POST /rooms` | list / create (`{name, members[], lead?, max_agent_turns?}`) |
 | `GET/DELETE /rooms/{id}` | inspect / remove |
 | `POST /rooms/{id}/messages` | user speaks (`{text, from?}`) → 202, cycle runs async |
@@ -62,6 +64,30 @@ convention: no `RETINUE_ROOMS_API_KEY` → localhost-only):
 `python -m plugins.platforms.retinue_rooms.cli` is the reference client (create / list /
 send / watch / chat). The P2 web UI replaces it as the human surface; this HTTP API is
 what the web room view will consume (SSE upgrade planned then).
+
+## Model presets (per-hire model selection)
+
+By default a hire copies the **root config's `model:` block** — every new agent uses the
+workspace's default provider. To offer a choice, drop preset files in
+`$HERMES_HOME/retinue_models/`:
+
+```yaml
+# $HERMES_HOME/retinue_models/local.yaml
+model:
+  provider: custom
+  model: my-served-model
+  base_url: http://127.0.0.1:8000/v1
+  api_key: "none"
+```
+
+Each `<name>.yaml` holds a literal `model:` block that is copied **verbatim** into the new
+profile's config (comments included). `GET /models` lists them; the web UI's hire form shows
+them as a dropdown next to "Workspace default"; `POST /agents` takes the preset via
+`"model": "<name>"`. An unknown or malformed preset is a 400 and creates nothing.
+
+Credentials: a hire seeds the profile's `.env` **and `auth.json`** from the workspace root,
+so presets can target any provider the workspace owner has configured or OAuth-logged-into
+(e.g. run `hermes auth login` once in the workspace, then hire agents onto that provider).
 
 ## State
 

@@ -21,6 +21,12 @@ export interface AgentMeta {
   how: string;
   has_soul?: boolean;
   activation?: string;
+  model_preset?: string | null;
+}
+
+export interface ModelPreset {
+  name: string;
+  summary: string;
 }
 
 const KEY_STORAGE = "retinue.apiKey";
@@ -70,6 +76,7 @@ export const api = {
   send: (id: string, text: string, from: string) =>
     req<{ seq: number; planned: string[] }>("POST", `/rooms/${id}/messages`, { text, from }),
   listAgents: () => req<{ agents: AgentMeta[] }>("GET", "/agents"),
-  hire: (name: string, job: string, how: string) =>
-    req<AgentMeta>("POST", "/agents", { name, job, how }),
+  listModels: () => req<{ models: ModelPreset[] }>("GET", "/models"),
+  hire: (name: string, job: string, how: string, model?: string) =>
+    req<AgentMeta>("POST", "/agents", { name, job, how, model: model || undefined }),
 };

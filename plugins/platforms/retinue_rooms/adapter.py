@@ -241,8 +241,15 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
     def list_agents(self) -> List[Dict[str, Any]]:
         return hire.list_agents(self._home_dir())
 
-    def hire_agent(self, name: str, job: str, how: str) -> Dict[str, Any]:
-        meta = hire.scaffold_profile(self._home_dir(), name, job, how)
+    def list_model_presets(self) -> List[Dict[str, str]]:
+        return hire.list_model_presets(self._home_dir())
+
+    def hire_agent(
+        self, name: str, job: str, how: str, model: Optional[str] = None
+    ) -> Dict[str, Any]:
+        meta = hire.scaffold_profile(
+            self._home_dir(), name, job, how, model_preset=model
+        )
         # The multiplexer snapshots its served-profile set at startup; a new
         # profile joins rooms only after a gateway restart. Say so honestly.
         meta["activation"] = "restart the gateway to bring this agent online"
@@ -489,7 +496,7 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
         return True
 
-    _API_PREFIXES = ("rooms", "agents", "health")
+    _API_PREFIXES = ("rooms", "agents", "models", "health")
 
     def do_GET(self):
         parsed = urlparse(self.path)
@@ -505,6 +512,8 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
         adapter = self.server.adapter
         if parts == ["agents"]:
             return self._json(200, {"agents": adapter.list_agents()})
+        if parts == ["models"]:
+            return self._json(200, {"models": adapter.list_model_presets()})
         if parts == ["rooms"]:
             return self._json(200, {"rooms": [r.to_dict() for r in adapter.store.list_rooms()]})
         if len(parts) == 2 and parts[0] == "rooms":
@@ -544,6 +553,7 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
                     name=str(body.get("name") or ""),
                     job=str(body.get("job") or ""),
                     how=str(body.get("how") or ""),
+                    model=str(body.get("model") or "") or None,
                 )
             except ValueError as e:
                 return self._json(400, {"error": str(e)})

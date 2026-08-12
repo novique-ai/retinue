@@ -22,6 +22,11 @@ _RESERVED = {"default", "profiles"}
 
 AGENT_META_FILENAME = "retinue-agent.json"
 
+# Workspace-configurable model presets: $HERMES_HOME/retinue_models/<name>.yaml,
+# each holding a literal ``model:`` block that a hire copies verbatim (the same
+# text-level semantics as the root-config fallback below).
+MODELS_DIRNAME = "retinue_models"
+
 
 def slugify_name(display_name: str) -> str:
     """Mention token for a display name: lowercase, alnum + hyphens."""
@@ -48,12 +53,12 @@ def soul_template(display_name: str, job: str, how: str) -> str:
     return "\n".join(parts) + "\n"
 
 
-def _extract_model_block(root_config_path: str) -> str:
-    """Copy the root config's ``model:`` block verbatim so a new agent uses
-    the workspace's default provider. Text-level extraction on purpose: it
-    preserves comments and never needs a YAML dependency at import time."""
+def _read_model_block(path: str) -> str:
+    """Extract the ``model:`` block from a YAML file, verbatim. Text-level
+    extraction on purpose: it preserves comments and never needs a YAML
+    dependency at import time. Returns "" when the file has no block."""
     try:
-        with open(root_config_path, encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             lines = f.readlines()
     except OSError:
         lines = []
@@ -68,16 +73,81 @@ def _extract_model_block(root_config_path: str) -> str:
             if line.strip() and not line.startswith((" ", "\t", "#")):
                 break
             block.append(line)
-    if block:
-        return "".join(block).rstrip() + "\n"
-    return "model:\n  default: claude-haiku-4-5\n  provider: anthropic\n"
+    return "".join(block).rstrip() + "\n" if block else ""
 
 
-def scaffold_profile(home_dir: str, display_name: str, job: str, how: str) -> Dict[str, Any]:
+def _extract_model_block(root_config_path: str) -> str:
+    """The workspace-default model block: the root config's, or a fallback."""
+    return _read_model_block(root_config_path) or (
+        "model:\n  default: claude-haiku-4-5\n  provider: anthropic\n"
+    )
+
+
+def _summarize_model_block(block: str) -> str:
+    """One-line human summary of a model block, e.g. 'custom · local/auto'."""
+    fields = {}
+    for line in block.splitlines()[1:]:
+        stripped = line.strip()
+        if ":" in stripped and not stripped.startswith("#"):
+            key, _, value = stripped.partition(":")
+            fields[key.strip()] = value.strip().strip("\"'")
+    model = fields.get("default") or fields.get("model") or "?"
+    provider = fields.get("provider") or "auto"
+    return f"{provider} · {model}"
+
+
+def _models_dir(home_dir: str) -> str:
+    return os.path.join(home_dir, MODELS_DIRNAME)
+
+
+def list_model_presets(home_dir: str) -> List[Dict[str, str]]:
+    """Workspace model presets a hire can choose from. A preset is a YAML
+    file in ``retinue_models/`` whose ``model:`` block is copied verbatim
+    into the new profile; files without a ``model:`` block are skipped."""
+    presets: List[Dict[str, str]] = []
+    try:
+        names = sorted(os.listdir(_models_dir(home_dir)))
+    except OSError:
+        names = []
+    for fn in names:
+        stem, ext = os.path.splitext(fn)
+        if ext not in (".yaml", ".yml") or not stem:
+            continue
+        block = _read_model_block(os.path.join(_models_dir(home_dir), fn))
+        if block:
+            presets.append({"name": stem, "summary": _summarize_model_block(block)})
+    return presets
+
+
+def _preset_model_block(home_dir: str, preset: str) -> str:
+    """The model block for a named preset. Raises ValueError on an unknown
+    or malformed preset (the caller surfaces this as a 400)."""
+    for ext in (".yaml", ".yml"):
+        path = os.path.join(_models_dir(home_dir), preset + ext)
+        if os.path.isfile(path):
+            block = _read_model_block(path)
+            if not block:
+                raise ValueError(
+                    f"model preset {preset!r} has no 'model:' block ({path})"
+                )
+            return block
+    known = ", ".join(p["name"] for p in list_model_presets(home_dir)) or "none"
+    raise ValueError(f"unknown model preset {preset!r} (available: {known})")
+
+
+def scaffold_profile(
+    home_dir: str,
+    display_name: str,
+    job: str,
+    how: str,
+    model_preset: Optional[str] = None,
+) -> Dict[str, Any]:
     """Create ``profiles/<slug>/`` under *home_dir*. Raises ValueError on bad
-    input, FileExistsError if the profile already exists."""
+    input (including an unknown *model_preset*), FileExistsError if the
+    profile already exists."""
     display_name = (display_name or "").strip()
     job = (job or "").strip()
+    model_preset = (model_preset or "").strip() or None
     if not display_name:
         raise ValueError("agent name is required")
     if not job:
@@ -85,6 +155,13 @@ def scaffold_profile(home_dir: str, display_name: str, job: str, how: str) -> Di
     slug = slugify_name(display_name)
     if not slug or slug in _RESERVED:
         raise ValueError(f"cannot derive a usable profile name from {display_name!r}")
+
+    # Resolve the model BEFORE creating anything, so a bad preset leaves no
+    # half-made profile behind.
+    if model_preset:
+        model_block = _preset_model_block(home_dir, model_preset)
+    else:
+        model_block = _extract_model_block(os.path.join(home_dir, "config.yaml"))
 
     profile_dir = os.path.join(home_dir, "profiles", slug)
     if os.path.isdir(profile_dir):
@@ -94,22 +171,24 @@ def scaffold_profile(home_dir: str, display_name: str, job: str, how: str) -> Di
     with open(os.path.join(profile_dir, "SOUL.md"), "w", encoding="utf-8") as f:
         f.write(soul_template(display_name, job, how))
 
-    model_block = _extract_model_block(os.path.join(home_dir, "config.yaml"))
     with open(os.path.join(profile_dir, "config.yaml"), "w", encoding="utf-8") as f:
         f.write(model_block + "agent:\n  tool_choice: auto\n")
 
-    # Credentials: a profile's secret scope reads its own .env; seed it from
-    # the workspace root so a freshly hired agent can reach the same provider.
-    root_env = os.path.join(home_dir, ".env")
-    if os.path.isfile(root_env):
-        shutil.copy(root_env, os.path.join(profile_dir, ".env"))
-        os.chmod(os.path.join(profile_dir, ".env"), 0o600)
+    # Credentials: a profile's secret scope reads its own .env and auth store;
+    # seed both from the workspace root so a freshly hired agent can reach any
+    # provider the workspace owner has configured or OAuth-logged-into.
+    for cred, mode in ((".env", 0o600), ("auth.json", 0o600)):
+        root_cred = os.path.join(home_dir, cred)
+        if os.path.isfile(root_cred):
+            shutil.copy(root_cred, os.path.join(profile_dir, cred))
+            os.chmod(os.path.join(profile_dir, cred), mode)
 
     meta = {
         "display_name": display_name,
         "slug": slug,
         "job": job,
         "how": (how or "").strip(),
+        "model_preset": model_preset,
         "created_at": time.time(),
     }
     with open(os.path.join(profile_dir, AGENT_META_FILENAME), "w", encoding="utf-8") as f:
