@@ -21,8 +21,27 @@ def is_connected(_config) -> bool:
     return rooms_enabled()
 
 
-def validate_config(_config) -> list:
-    return []
+def validate_config(_config) -> bool:
+    """Return True when this adapter should be created (registry treats the
+    return as a boolean validity flag).
+
+    The rooms adapter binds a port and owns the shared room store, so exactly
+    one instance must exist: the default profile's. Under the in-process
+    multiplexer, secondary-profile adapter creation runs inside a profile
+    runtime scope (hermes-home override set) — decline there instead of
+    letting N instances race for the same bind.
+    """
+    from pathlib import Path
+
+    from hermes_constants import get_hermes_home
+
+    home = Path(get_hermes_home())
+    if home.parent.name == "profiles":
+        logger.debug(
+            "Retinue rooms: declining adapter for secondary profile scope (%s)", home
+        )
+        return False
+    return True
 
 
 def register(ctx) -> None:
