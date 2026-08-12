@@ -252,12 +252,12 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
 
     @staticmethod
     def web_dist_dir() -> Optional[str]:
-        """apps/retinue-web/dist, when built. Resolved from this file:
+        """retinue-web/dist, when built. Resolved from this file:
         plugins/platforms/retinue_rooms/adapter.py -> repo root is 3 up."""
         repo_root = os.path.dirname(
             os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         )
-        dist = os.path.join(repo_root, "apps", "retinue-web", "dist")
+        dist = os.path.join(repo_root, "retinue-web", "dist")
         return dist if os.path.isdir(dist) else None
 
     def post_user_message(self, room_id: str, text: str, from_name: str) -> Dict[str, Any]:
@@ -499,7 +499,7 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
         if not parts or parts[0] not in self._API_PREFIXES:
             if self._serve_static(parsed.path):
                 return
-            return self._json(404, {"error": "not found (web UI not built — see apps/retinue-web)"})
+            return self._json(404, {"error": "not found (web UI not built — see retinue-web)"})
         if not self._authorized():
             return self._json(401, {"error": "unauthorized"})
         adapter = self.server.adapter

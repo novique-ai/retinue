@@ -7,7 +7,7 @@ Public fork under `novique-ai/retinue`, upstream remote + pinned-base tag model,
 The core new product logic: a room is a shared transcript that N agents (Hermes profiles) and the user participate in together. Agents see the same conversation and take turns — mention-based addressing plus an orchestrator default (a "chief of staff" agent routes work when nobody is addressed directly). Built as a platform adapter on the gateway's typed event stream and multi-profile multiplexing; agents keep their own persona (SOUL.md), memory, model, and toolset.
 
 ## Phase 2 — Web UI ✅ (v1)
-A native web chat client (`apps/retinue-web/`, served by the rooms adapter itself — same
+A native web chat client (`retinue-web/`, served by the rooms adapter itself — same
 origin, no CORS), with:
 - room view (agents' turns visually distinct, tool activity summarized),
 - a three-field **hire flow** — name, primary job, how it should work — that templates a profile: persona file, model choice, toolset,

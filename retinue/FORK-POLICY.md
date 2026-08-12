@@ -10,7 +10,7 @@ Upstream (`NousResearch/hermes-agent`) is a very large (~685K LOC), very fast-mo
 |---|---|---|
 | Rooms (shared multi-agent transcript + turn-taking) | `plugins/platforms/retinue_rooms/` | New platform adapter, per `gateway/platforms/ADDING_A_PLATFORM.md`, consuming the typed event stream (`gateway/stream_events.py`) |
 | Podman execution backend | `tools/environments/podman.py` | New `BaseEnvironment` subclass (additive file, registered like the seven existing backends) |
-| Web UI | `apps/retinue-web/` | Standalone client of the sessions/SSE API (`gateway/platforms/api_server.py`); no PTY embedding |
+| Web UI | `retinue-web/` | Standalone client of the sessions/SSE API (`gateway/platforms/api_server.py`); no PTY embedding |
 | Product docs | `README.md`, `retinue/` | See exception below |
 
 ## Carried patches
