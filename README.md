@@ -1,6 +1,8 @@
 # Retinue
 
-> **Self-hosted AI teammates that work together.**
+<p align="center"><img src="retinue/assets/logo.png" width="168" alt="Retinue — a suite of retainers around the person they serve"></p>
+
+> **A suite of retainers in your service.** Self-hosted AI teammates that work together.
 
 Retinue lets you build a staff of named AI agents — each with its own persona, job, memory, and model — that talk with you **and with each other** in shared rooms, and do real work on **your** machine or in podman containers, not on someone else's cloud.
 

@@ -44,10 +44,30 @@ body {
 }
 
 .brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   font-size: 19px;
   font-weight: 700;
-  padding: 18px 16px 12px;
+  padding: 16px 16px 12px;
   letter-spacing: 0.3px;
+}
+
+.brand-logo {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  object-fit: cover;
+  background: #f3efe6;
+}
+
+.avatar {
+  display: inline-block;
+  border-radius: 50%;
+  object-fit: cover;
+  background: #f3efe6;
+  flex: none;
+  vertical-align: middle;
 }
 
 .section {
@@ -108,8 +128,21 @@ body {
 }
 
 .agent-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   padding: 6px 10px;
   font-size: 13.5px;
+}
+
+.agent-copy {
+  min-width: 0;
+}
+
+.nav-faces {
+  display: flex;
+  gap: 3px;
+  margin-top: 4px;
 }
 
 .foot {
@@ -134,11 +167,48 @@ body {
 .welcome {
   margin: auto;
   text-align: center;
+  padding: 24px 20px 40px;
+  max-width: 720px;
+}
+
+.welcome-logo {
+  width: 140px;
+  height: 140px;
+  border-radius: 50%;
+  object-fit: cover;
+  background: #f3efe6;
+  margin-bottom: 12px;
 }
 
 .welcome h1 {
   font-size: 34px;
-  margin-bottom: 10px;
+  margin-bottom: 8px;
+}
+
+.retinue-cast {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 18px 22px;
+  margin-top: 28px;
+}
+
+.cast-member {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+
+.cast-member.principal {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.cast-member .avatar {
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.25);
 }
 
 .room-view {
@@ -162,8 +232,16 @@ body {
 
 .room-members {
   display: flex;
+  flex-wrap: wrap;
+  align-items: center;
   gap: 10px;
   font-size: 13px;
+}
+
+.member-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .messages {
@@ -183,10 +261,16 @@ body {
 
 .msg-row {
   display: flex;
+  align-items: flex-end;
+  gap: 8px;
 }
 
 .msg-row.mine {
   justify-content: flex-end;
+}
+
+.msg-row.mine .avatar {
+  order: 2;
 }
 
 .bubble {
@@ -260,6 +344,9 @@ body {
 
 .mention-btn,
 .pick {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   background: var(--bg-input);
   border: 1px solid var(--border);
   color: var(--text);

@@ -11,6 +11,29 @@ import {
   setApiKey,
   WorkspaceStatus,
 } from "./api";
+import { LOGO_SRC, YOU_SRC, agentIcon, speakerIcon } from "./icons";
+
+function Avatar({
+  src,
+  label,
+  size = 28,
+}: {
+  src: string;
+  label?: string;
+  size?: number;
+}) {
+  return (
+    <img
+      className="avatar"
+      src={src}
+      alt={label ?? ""}
+      title={label}
+      width={size}
+      height={size}
+      draggable={false}
+    />
+  );
+}
 
 const CHIP_COLORS = ["#7aa2f7", "#9ece6a", "#e0af68", "#bb9af7", "#7dcfff", "#f7768e", "#73daca"];
 
@@ -22,13 +45,18 @@ function chipColor(name: string): string {
 
 // ── message row ──────────────────────────────────────────────────────────
 
-function MessageRow({ msg }: { msg: RoomMsg }) {
+function MessageRow({ msg, userName }: { msg: RoomMsg; userName: string }) {
   if (msg.kind === "system") {
     return <div className="msg-system">— {msg.text} —</div>;
   }
   const mine = msg.kind === "user";
   return (
     <div className={mine ? "msg-row mine" : "msg-row"}>
+      <Avatar
+        src={speakerIcon(msg.speaker, userName)}
+        label={mine ? userName : msg.speaker}
+        size={32}
+      />
       <div className={mine ? "bubble mine" : "bubble"}>
         {!mine && (
           <span className="chip" style={{ color: chipColor(msg.speaker) }}>
@@ -96,9 +124,12 @@ function RoomView({ room, userName }: { room: RoomMeta; userName: string }) {
         <h2>{room.name}</h2>
         <div className="room-members">
           {room.members.map((m) => (
-            <span key={m} className="chip" style={{ color: chipColor(m) }}>
-              @{m}
-              {room.lead === m ? " ★" : ""}
+            <span key={m} className="member-chip">
+              <Avatar src={agentIcon(m)} label={m} size={24} />
+              <span className="chip" style={{ color: chipColor(m) }}>
+                @{m}
+                {room.lead === m ? " ★" : ""}
+              </span>
             </span>
           ))}
           <button
@@ -125,10 +156,11 @@ function RoomView({ room, userName }: { room: RoomMeta; userName: string }) {
           </div>
         )}
         {messages.map((m) => (
-          <MessageRow key={m.seq} msg={m} />
+          <MessageRow key={m.seq} msg={m} userName={userName} />
         ))}
         {thinking.map((w) => (
           <div key={w} className="msg-row">
+            <Avatar src={agentIcon(w)} label={w} size={32} />
             <div className="bubble thinking">
               <span className="chip" style={{ color: chipColor(w) }}>
                 {w}
@@ -142,6 +174,7 @@ function RoomView({ room, userName }: { room: RoomMeta; userName: string }) {
         <div className="mention-bar">
           {room.members.map((m) => (
             <button key={m} className="mention-btn" onClick={() => setDraft((d) => `${d}@${m} `)}>
+              <Avatar src={agentIcon(m)} label={m} size={18} />
               @{m}
             </button>
           ))}
@@ -279,6 +312,7 @@ function NewRoomPanel({
             className={picked.includes(a.slug) ? "pick picked" : "pick"}
             onClick={() => toggle(a.slug)}
           >
+            <Avatar src={agentIcon(a.slug)} label={a.slug} size={18} />
             @{a.slug}
           </button>
         ))}
@@ -385,7 +419,8 @@ export default function App() {
     <div className="shell">
       <aside className="sidebar">
         <div className="brand">
-          <span className="brand-mark">🏛️</span> Retinue
+          <img className="brand-logo" src={LOGO_SRC} alt="" />
+          Retinue
         </div>
         <div className="section">
           <div className="section-head">
@@ -401,7 +436,11 @@ export default function App() {
               onClick={() => setCurrent(r)}
             >
               {r.name}
-              <span className="nav-sub">{r.members.map((m) => `@${m}`).join(" ")}</span>
+              <span className="nav-sub nav-faces">
+                {r.members.map((m) => (
+                  <Avatar key={m} src={agentIcon(m)} label={m} size={18} />
+                ))}
+              </span>
             </button>
           ))}
           {rooms.length === 0 && <p className="note pad">No rooms yet.</p>}
@@ -415,10 +454,13 @@ export default function App() {
           </div>
           {agents.map((a) => (
             <div key={a.slug} className="agent-item">
-              <span className="chip" style={{ color: chipColor(a.slug) }}>
-                @{a.slug}
-              </span>
-              <span className="nav-sub">{a.job || "hand-made profile"}</span>
+              <Avatar src={agentIcon(a.slug)} label={a.display_name || a.slug} size={32} />
+              <div className="agent-copy">
+                <span className="chip" style={{ color: chipColor(a.slug) }}>
+                  @{a.slug}
+                </span>
+                <span className="nav-sub">{a.job || "hand-made profile"}</span>
+              </div>
             </div>
           ))}
         </div>
@@ -472,11 +514,27 @@ export default function App() {
           <RoomView room={current} userName={userName} />
         ) : (
           <div className="welcome">
-            <h1>🏛️ Retinue</h1>
-            <p>Self-hosted AI teammates that work together.</p>
+            <img className="welcome-logo" src={LOGO_SRC} alt="Retinue" />
+            <h1>Retinue</h1>
+            <p>A suite of retainers in your service.</p>
             <p className="note">
-              Hire agents, put them in a room, and talk — they answer you and each other.
+              Hire them, put them in a room, and talk — they answer you and each other.
             </p>
+            <div className="retinue-cast">
+              <div className="cast-member principal">
+                <Avatar src={YOU_SRC} label="You" size={72} />
+                <span>You</span>
+              </div>
+              {agents.map((a) => (
+                <div key={a.slug} className="cast-member">
+                  <Avatar src={agentIcon(a.slug)} label={a.display_name || a.slug} size={72} />
+                  <span>@{a.slug}</span>
+                </div>
+              ))}
+            </div>
+            {agents.length === 0 && (
+              <p className="note">No retainers hired yet — use + beside Agents.</p>
+            )}
           </div>
         )}
       </main>
