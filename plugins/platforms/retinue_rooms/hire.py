@@ -11,11 +11,14 @@ Pure filesystem logic — unit-testable without a gateway (see test_hire.py).
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import shutil
 import time
 from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
 _RESERVED = {"default", "profiles"}
@@ -194,6 +197,68 @@ def scaffold_profile(
     with open(os.path.join(profile_dir, AGENT_META_FILENAME), "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
     return meta
+
+
+def activate_hired_profile(slug: str, runner: Any = None) -> Dict[str, Any]:
+    """Hot-register a just-scaffolded profile into a live multiplexer.
+
+    The gateway snapshots pairing stores / busy modes / runtime status at
+    startup. Room turns themselves resolve the profile home from disk, but
+    without this registration ``hermes status`` omits the hire and any
+    non-internal path that consults ``pairing_stores`` treats it as unserved.
+
+    Plugin-shaped: uses the runner's existing seams, no upstream edits.
+    Returns ``{"online": bool, "activation": str}``.
+    """
+    slug = (slug or "").strip()
+    if not slug:
+        return {
+            "online": False,
+            "activation": "will come online the next time the gateway starts",
+        }
+    if runner is None:
+        return {
+            "online": False,
+            "activation": "will come online the next time the gateway starts",
+        }
+
+    stores = getattr(runner, "pairing_stores", None)
+    if isinstance(stores, dict) and slug not in stores:
+        try:
+            from gateway.pairing import PairingStore
+
+            stores[slug] = PairingStore(profile=slug)
+        except Exception:
+            logger.debug("Retinue hire: pairing store for %s failed", slug, exc_info=True)
+
+    adapters = getattr(runner, "_profile_adapters", None)
+    if isinstance(adapters, dict):
+        adapters.setdefault(slug, {})
+
+    snapshot = getattr(runner, "_snapshot_profile_busy_modes", None)
+    if callable(snapshot):
+        try:
+            snapshot(slug, {})
+        except Exception:
+            logger.debug(
+                "Retinue hire: busy-mode snapshot for %s failed", slug, exc_info=True
+            )
+
+    try:
+        from gateway.status import write_runtime_status
+
+        served = {"default", slug}
+        if isinstance(stores, dict):
+            served.update(str(name) for name in stores if name)
+        if isinstance(adapters, dict):
+            served.update(str(name) for name in adapters if name)
+        write_runtime_status(served_profiles=sorted(served))
+    except Exception:
+        logger.debug(
+            "Retinue hire: runtime status update for %s failed", slug, exc_info=True
+        )
+
+    return {"online": True, "activation": "online"}
 
 
 def list_agents(home_dir: str) -> List[Dict[str, Any]]:

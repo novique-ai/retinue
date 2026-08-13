@@ -132,3 +132,99 @@ def test_scaffold_seeds_root_auth_store(tmp_path):
     seeded = tmp_path / "profiles" / "keys" / "auth.json"
     assert seeded.read_text() == '{"providers": {"xai-oauth": {}}}'
     assert (seeded.stat().st_mode & 0o777) == 0o600
+
+
+# ── hot-register a hire into a live multiplexer (no gateway restart) ─────
+
+
+class _FakeRunner:
+    def __init__(self):
+        self.pairing_stores = {}
+        self._profile_adapters = {"scout": {}}
+        self.busy = []
+
+    def _snapshot_profile_busy_modes(self, name, config):
+        self.busy.append((name, config))
+
+
+def test_activate_hired_profile_without_runner_is_deferred():
+    result = hire.activate_hired_profile("herald", runner=None)
+    assert result["online"] is False
+    assert "restart" not in result["activation"].lower()
+    assert "gateway" in result["activation"].lower()
+
+
+def test_activate_hired_profile_registers_on_live_runner(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    recorded = []
+    monkeypatch.setattr(
+        "gateway.status.write_runtime_status",
+        lambda **kw: recorded.append(kw),
+    )
+    runner = _FakeRunner()
+    result = hire.activate_hired_profile("herald", runner=runner)
+    assert result["online"] is True
+    assert result["activation"] == "online"
+    assert "herald" in runner.pairing_stores
+    assert runner._profile_adapters["herald"] == {}
+    assert runner.busy == [("herald", {})]
+    assert recorded and "herald" in recorded[-1]["served_profiles"]
+
+
+def test_activate_hired_profile_is_idempotent(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("gateway.status.write_runtime_status", lambda **kw: None)
+    runner = _FakeRunner()
+    first = runner.pairing_stores["herald"] = object()
+    assert hire.activate_hired_profile("herald", runner=runner)["online"] is True
+    assert runner.pairing_stores["herald"] is first
+
+
+def test_hire_agent_hot_registers_without_restart(tmp_path, monkeypatch):
+    """The P2 known limit: POST /agents used to tell the user to restart.
+    A live runner must take the new profile immediately."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("gateway.status.write_runtime_status", lambda **kw: None)
+    (tmp_path / "config.yaml").write_text("model:\n  default: m\n  provider: custom\n")
+    from gateway.config import PlatformConfig
+
+    from .adapter import RetinueRoomsAdapter
+
+    adapter = RetinueRoomsAdapter(PlatformConfig())
+    adapter.gateway_runner = _FakeRunner()
+    meta = adapter.hire_agent("Herald", "announce things", "be brief")
+    assert meta["slug"] == "herald"
+    assert meta["online"] is True
+    assert meta["activation"] == "online"
+    assert "restart" not in meta["activation"].lower()
+    assert "herald" in adapter.gateway_runner.pairing_stores
+    assert (tmp_path / "profiles" / "herald" / "SOUL.md").is_file()
+
+
+def test_hire_agent_without_runner_does_not_demand_restart(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text("model:\n  default: m\n  provider: custom\n")
+    from gateway.config import PlatformConfig
+
+    from .adapter import RetinueRoomsAdapter
+
+    adapter = RetinueRoomsAdapter(PlatformConfig())
+    meta = adapter.hire_agent("Solo", "do things", "")
+    assert meta["online"] is False
+    assert "restart" not in meta["activation"].lower()
+
+
+def test_connect_rescan_picks_up_disk_profiles(tmp_path, monkeypatch):
+    """Profiles hired before hot-register (or while the gateway was down)
+    must be registered on connect — class-level, not just the next hire."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("gateway.status.write_runtime_status", lambda **kw: None)
+    hire.scaffold_profile(str(tmp_path), "Janitor", "tidy up", "")
+    from gateway.config import PlatformConfig
+
+    from .adapter import RetinueRoomsAdapter
+
+    adapter = RetinueRoomsAdapter(PlatformConfig())
+    adapter.gateway_runner = _FakeRunner()
+    adapter._rescan_disk_profiles()
+    assert "janitor" in adapter.gateway_runner.pairing_stores

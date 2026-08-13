@@ -89,6 +89,13 @@ Credentials: a hire seeds the profile's `.env` **and `auth.json`** from the work
 so presets can target any provider the workspace owner has configured or OAuth-logged-into
 (e.g. run `hermes auth login` once in the workspace, then hire agents onto that provider).
 
+A hire is hot-registered into the live multiplexer (pairing store, busy-mode
+snapshot, `served_profiles`) so the new agent can join a room **without a
+gateway restart**. `POST /agents` returns `{online: true, activation: "online"}`
+when that succeeded; if no gateway is running, `online` is false and the
+profile comes up on the next `hermes gateway` start. Connect also rescans
+disk profiles so a hire that landed while the gateway was down is picked up.
+
 ## State
 
 `$HERMES_HOME/retinue_rooms/` (default profile's home): `<room>.json` meta (atomic

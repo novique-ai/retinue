@@ -229,7 +229,11 @@ function HirePanel({ onDone }: { onDone: (created?: AgentMeta) => void }) {
             setBusy(true);
             try {
               const created = await api.hire(name, job, how, model);
-              setNote(created.activation ?? "");
+              setNote(
+                created.online
+                  ? `${created.display_name} is hired and ready.`
+                  : created.activation ?? "",
+              );
               onDone(created);
             } catch (e) {
               setNote(String(e));
@@ -435,7 +439,9 @@ export default function App() {
                 onDone={(created) => {
                   if (created) void refresh();
                   setModal(null);
-                  if (created?.activation) alert(created.activation);
+                  if (created && created.online === false && created.activation) {
+                    alert(created.activation);
+                  }
                 }}
               />
             )}

@@ -21,6 +21,7 @@ export interface AgentMeta {
   how: string;
   has_soul?: boolean;
   activation?: string;
+  online?: boolean;
   model_preset?: string | null;
 }
 

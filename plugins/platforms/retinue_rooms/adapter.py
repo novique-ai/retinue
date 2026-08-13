@@ -98,6 +98,33 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         self._pending: Dict[str, _PendingTurn] = {}  # room_id -> pending turn
         self._pending_lock = threading.Lock()
 
+    def _live_runner(self):
+        """The in-process GatewayRunner, if this adapter is serving."""
+        runner = getattr(self, "gateway_runner", None)
+        if runner is not None:
+            return runner
+        try:
+            from gateway.run import _gateway_runner_ref
+
+            return _gateway_runner_ref()
+        except Exception:
+            return None
+
+    def _activate_slug(self, slug: str) -> Dict[str, Any]:
+        return hire.activate_hired_profile(slug, runner=self._live_runner())
+
+    def _rescan_disk_profiles(self) -> None:
+        """Pick up profiles created while we were down (or hired before
+        hot-register existed). Idempotent with the multiplexer's own
+        startup scan."""
+        runner = self._live_runner()
+        if runner is None:
+            return
+        for agent in hire.list_agents(self._home_dir()):
+            slug = str(agent.get("slug") or "").strip()
+            if slug and slug != "default":
+                hire.activate_hired_profile(slug, runner=runner)
+
     # ── identity ─────────────────────────────────────────────────────────
 
     @property
@@ -127,6 +154,10 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             target=self._httpd.serve_forever, name="retinue-rooms-http", daemon=True
         )
         self._server_thread.start()
+        try:
+            self._rescan_disk_profiles()
+        except Exception:
+            logger.debug("Retinue rooms: profile rescan at connect failed", exc_info=True)
         logger.info("Retinue rooms: serving on %s:%s", self.host, self.port)
         return True
 
@@ -250,10 +281,50 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         meta = hire.scaffold_profile(
             self._home_dir(), name, job, how, model_preset=model
         )
-        # The multiplexer snapshots its served-profile set at startup; a new
-        # profile joins rooms only after a gateway restart. Say so honestly.
-        meta["activation"] = "restart the gateway to bring this agent online"
+        activation = self._activate_slug(meta["slug"])
+        meta["online"] = bool(activation.get("online"))
+        meta["activation"] = activation.get("activation") or (
+            "online" if meta["online"] else
+            "will come online the next time the gateway starts"
+        )
+        if meta["online"]:
+            self._schedule_adapter_start(meta["slug"])
         return meta
+
+    def _schedule_adapter_start(self, slug: str) -> None:
+        """Best-effort: start any non-port-binding platforms on the new
+        profile. Room turns do not need this (they route via source.profile
+        on the already-running rooms adapter)."""
+        runner = self._live_runner()
+        loop = self._loop
+        start = getattr(runner, "_start_one_profile_adapters", None) if runner else None
+        if runner is None or loop is None or not callable(start):
+            return
+        try:
+            from hermes_cli.profiles import get_profile_dir
+
+            profile_home = get_profile_dir(slug)
+        except Exception:
+            return
+
+        async def _go():
+            try:
+                await start(slug, profile_home, {})
+            except Exception:
+                logger.debug(
+                    "Retinue rooms: secondary adapter start for %s failed",
+                    slug,
+                    exc_info=True,
+                )
+
+        try:
+            asyncio.run_coroutine_threadsafe(_go(), loop)
+        except Exception:
+            logger.debug(
+                "Retinue rooms: could not schedule adapter start for %s",
+                slug,
+                exc_info=True,
+            )
 
     # ── static web UI ────────────────────────────────────────────────────
 
