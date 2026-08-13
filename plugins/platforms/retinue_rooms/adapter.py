@@ -184,6 +184,12 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         )
         self._server_thread.start()
         try:
+            seeded = hire.ensure_bundled_cloud_presets(self._home_dir())
+            if seeded:
+                logger.info("Retinue rooms: seeded model presets %s", ", ".join(seeded))
+        except Exception:
+            logger.debug("Retinue rooms: preset seed at connect failed", exc_info=True)
+        try:
             self._rescan_disk_profiles()
         except Exception:
             logger.debug("Retinue rooms: profile rescan at connect failed", exc_info=True)
@@ -328,12 +334,36 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
     def list_agents(self) -> List[Dict[str, Any]]:
         return hire.list_agents(self._home_dir())
 
-    def list_model_presets(self) -> List[Dict[str, str]]:
+    def list_model_presets(self) -> List[Dict[str, Any]]:
+        try:
+            hire.ensure_bundled_cloud_presets(self._home_dir())
+        except Exception:
+            logger.debug("Retinue rooms: preset seed on list failed", exc_info=True)
         return hire.list_model_presets(self._home_dir())
+
+    def switch_agent_model(self, slug: str, model: str) -> Dict[str, Any]:
+        """Point an already-hired profile at another workspace preset.
+
+        Rewrites only the ``model:`` block on disk and evicts cached
+        AIAgents so the next room turn loads the new model. No gateway
+        restart, no hand-edit of ``profiles/<slug>/config.yaml``.
+        """
+        try:
+            hire.ensure_bundled_cloud_presets(self._home_dir())
+        except Exception:
+            logger.debug("Retinue rooms: preset seed on switch failed", exc_info=True)
+        meta = hire.apply_model_preset(self._home_dir(), slug, model)
+        evicted = hire.evict_profile_agent_cache(self._live_runner(), slug)
+        meta["cache_evicted"] = evicted
+        return meta
 
     def hire_agent(
         self, name: str, job: str, how: str, model: Optional[str] = None
     ) -> Dict[str, Any]:
+        try:
+            hire.ensure_bundled_cloud_presets(self._home_dir())
+        except Exception:
+            logger.debug("Retinue rooms: preset seed on hire failed", exc_info=True)
         meta = hire.scaffold_profile(
             self._home_dir(), name, job, how, model_preset=model
         )
@@ -713,6 +743,11 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
         adapter = self.server.adapter
         if parts == ["agents"]:
             return self._json(200, {"agents": adapter.list_agents()})
+        if len(parts) == 2 and parts[0] == "agents":
+            for agent in adapter.list_agents():
+                if agent.get("slug") == parts[1]:
+                    return self._json(200, agent)
+            return self._json(404, {"error": "no such agent"})
         if parts == ["models"]:
             return self._json(200, {"models": adapter.list_model_presets()})
         if parts == ["routines"]:
@@ -860,6 +895,27 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
             except RuntimeError as e:
                 return self._json(503, {"error": str(e)})
             return self._json(202, payload)
+        return self._json(404, {"error": "not found"})
+
+    def do_PATCH(self):
+        if not self._authorized():
+            return self._json(401, {"error": "unauthorized"})
+        parsed = urlparse(self.path)
+        parts = [p for p in parsed.path.split("/") if p]
+        adapter = self.server.adapter
+        body = self._read_body()
+        if body is None:
+            return self._json(400, {"error": "invalid or oversized JSON body"})
+        if len(parts) == 2 and parts[0] == "agents":
+            try:
+                payload = adapter.switch_agent_model(
+                    parts[1], str(body.get("model") or "")
+                )
+            except KeyError:
+                return self._json(404, {"error": "no such agent"})
+            except ValueError as e:
+                return self._json(400, {"error": str(e)})
+            return self._json(200, payload)
         return self._json(404, {"error": "not found"})
 
     def do_DELETE(self):

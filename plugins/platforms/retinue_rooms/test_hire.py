@@ -93,6 +93,12 @@ def _write_presets(tmp_path):
     (d / "grok.yaml").write_text(
         "model:\n  default: grok-4.5\n  provider: xai-oauth\n  base_url: https://api.x.ai/v1\n"
     )
+    (d / "grok-4.5.yaml").write_text(
+        "model:\n  default: grok-4.5\n  provider: xai-oauth\n  base_url: https://api.x.ai/v1\n"
+    )
+    (d / "grok-4.6.yaml").write_text(
+        "model:\n  default: grok-4.6\n  provider: xai-oauth\n  base_url: https://api.x.ai/v1\n"
+    )
     (d / "broken.yaml").write_text("not_a_model_block: true\n")
     (d / "README.txt").write_text("ignored, wrong extension\n")
 
@@ -101,20 +107,28 @@ def test_list_model_presets(tmp_path):
     assert hire.list_model_presets(str(tmp_path)) == []  # no dir yet
     _write_presets(tmp_path)
     presets = hire.list_model_presets(str(tmp_path))
-    assert [p["name"] for p in presets] == ["grok", "local"]
-    by_name = {p["name"]: p["summary"] for p in presets}
-    assert by_name["grok"] == "xai-oauth · grok-4.5"
-    assert by_name["local"] == "custom · local/auto"
+    assert [p["name"] for p in presets] == ["grok-4.5", "grok-4.6", "local"]
+    by_name = {p["name"]: p for p in presets}
+    assert by_name["grok-4.5"]["summary"] == "xai-oauth · grok-4.5"
+    assert by_name["grok-4.6"]["summary"] == "xai-oauth · grok-4.6"
+    assert by_name["grok-4.6"]["local"] is False
+    assert by_name["local"]["summary"] == "custom · local/auto"
+    assert by_name["local"]["local"] is True
+    aliases = hire.list_model_presets(str(tmp_path), include_aliases=True)
+    assert [p["name"] for p in aliases] == ["grok", "grok-4.5", "grok-4.6", "local"]
 
 
 def test_scaffold_with_model_preset(tmp_path):
     (tmp_path / "config.yaml").write_text("model:\n  default: root-model\n  provider: anthropic\n")
     _write_presets(tmp_path)
-    meta = hire.scaffold_profile(str(tmp_path), "Boss", "lead", "", model_preset="grok")
-    assert meta["model_preset"] == "grok"
+    meta = hire.scaffold_profile(str(tmp_path), "Boss", "lead", "", model_preset="grok-4.6")
+    assert meta["model_preset"] == "grok-4.6"
     config = (tmp_path / "profiles" / "boss" / "config.yaml").read_text()
-    assert "provider: xai-oauth" in config and "grok-4.5" in config
+    assert "provider: xai-oauth" in config and "grok-4.6" in config
     assert "root-model" not in config
+    # Legacy bucket name still resolves so old clients keep working.
+    hire.scaffold_profile(str(tmp_path), "Herald", "announce", "", model_preset="grok")
+    assert "grok-4.5" in (tmp_path / "profiles" / "herald" / "config.yaml").read_text()
 
 
 def test_scaffold_unknown_preset_creates_nothing(tmp_path):
@@ -175,6 +189,124 @@ def test_turn_timeout_for_is_longer_for_local(tmp_path, monkeypatch):
     assert cloud_t == 300
     assert local_t >= 1800
     assert local_t > cloud_t
+
+
+def test_ensure_bundled_cloud_presets_promotes_legacy_grok(tmp_path):
+    d = tmp_path / hire.MODELS_DIRNAME
+    d.mkdir()
+    (d / "grok.yaml").write_text(
+        "model:\n  default: grok-4.5\n  provider: xai-oauth\n  # operator pin\n"
+    )
+    written = hire.ensure_bundled_cloud_presets(str(tmp_path))
+    assert "grok-4.5" in written
+    assert "grok-4.6" in written
+    assert "operator pin" in (d / "grok-4.5.yaml").read_text()
+    assert "grok-4.6" in (d / "grok-4.6.yaml").read_text()
+    # never overwrite a live pin
+    (d / "grok-4.6.yaml").write_text("model:\n  default: grok-4.6\n  provider: xai-oauth\n  # leave me\n")
+    again = hire.ensure_bundled_cloud_presets(str(tmp_path))
+    assert again == []
+    assert "leave me" in (d / "grok-4.6.yaml").read_text()
+
+
+def test_apply_model_preset_rewrites_only_the_model_block(tmp_path, monkeypatch):
+    monkeypatch.delenv("RETINUE_ROOMS_TURN_TIMEOUT", raising=False)
+    monkeypatch.delenv("RETINUE_ROOMS_LOCAL_TURN_TIMEOUT", raising=False)
+    _write_presets(tmp_path)
+    hire.scaffold_profile(str(tmp_path), "Admin", "lead", "delegate", model_preset="grok-4.5")
+    pdir = tmp_path / "profiles" / "admin"
+    (pdir / "config.yaml").write_text(
+        "model:\n  default: grok-4.5\n  provider: xai-oauth\nagent:\n  tool_choice: auto\n"
+    )
+    updated = hire.apply_model_preset(str(tmp_path), "admin", "grok-4.6")
+    assert updated["slug"] == "admin"
+    assert updated["model_preset"] == "grok-4.6"
+    assert updated["local_llm"] is False
+    assert updated["turn_timeout"] == 300
+    config = (pdir / "config.yaml").read_text()
+    assert "default: grok-4.6" in config
+    assert "tool_choice: auto" in config
+    assert "grok-4.5" not in config
+    saved = json.loads((pdir / hire.AGENT_META_FILENAME).read_text())
+    assert saved["model_preset"] == "grok-4.6"
+    assert saved["job"] == "lead"
+
+
+def test_apply_model_preset_rejects_unknown_and_missing(tmp_path):
+    _write_presets(tmp_path)
+    hire.scaffold_profile(str(tmp_path), "Admin", "lead", "")
+    with pytest.raises(ValueError, match="unknown model preset"):
+        hire.apply_model_preset(str(tmp_path), "admin", "grok-9.9")
+    with pytest.raises(KeyError):
+        hire.apply_model_preset(str(tmp_path), "ghost", "grok-4.6")
+    with pytest.raises(ValueError, match="required"):
+        hire.apply_model_preset(str(tmp_path), "admin", "")
+
+
+def test_list_agents_infers_versioned_preset(tmp_path):
+    _write_presets(tmp_path)
+    (tmp_path / "profiles" / "admin").mkdir(parents=True)
+    (tmp_path / "profiles" / "admin" / "config.yaml").write_text(
+        "model:\n  default: grok-4.5\n  provider: xai-oauth\n"
+    )
+    agents = hire.list_agents(str(tmp_path))
+    admin = {a["slug"]: a for a in agents}["admin"]
+    assert admin["model_preset"] == "grok-4.5"
+    assert admin["model_summary"] == "xai-oauth · grok-4.5"
+    assert admin["local_llm"] is False
+
+
+def test_list_agents_promotes_legacy_grok_preset_label(tmp_path):
+    _write_presets(tmp_path)
+    hire.scaffold_profile(str(tmp_path), "Envoy", "draft", "", model_preset="grok")
+    envoy = {a["slug"]: a for a in hire.list_agents(str(tmp_path))}["envoy"]
+    assert envoy["model_preset"] == "grok-4.5"
+
+
+def test_evict_profile_agent_cache_matches_thread_id_keys():
+    class _Runner:
+        def __init__(self):
+            self._agent_cache = {
+                "agent:main:retinue_rooms:group:room:admin": object(),
+                "agent:main:retinue_rooms:group:room:envoy": object(),
+                "agent:admin:retinue_rooms:group:room:x": object(),
+            }
+            self.evicted = []
+
+        def _evict_cached_agent(self, key):
+            self.evicted.append(key)
+            self._agent_cache.pop(key, None)
+
+    runner = _Runner()
+    n = hire.evict_profile_agent_cache(runner, "admin")
+    assert n == 2
+    assert "envoy" not in "".join(runner.evicted)
+    assert all("admin" in k for k in runner.evicted)
+    assert hire.evict_profile_agent_cache(None, "admin") == 0
+
+
+def test_switch_agent_model_evicts_live_cache(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("gateway.status.write_runtime_status", lambda **kw: None)
+    _write_presets(tmp_path)
+    (tmp_path / "config.yaml").write_text("model:\n  default: m\n  provider: custom\n")
+    from gateway.config import PlatformConfig
+
+    from .adapter import RetinueRoomsAdapter
+
+    adapter = RetinueRoomsAdapter(PlatformConfig())
+    runner = _FakeRunner()
+    runner._agent_cache = {
+        "agent:main:retinue_rooms:group:ops:admin": object(),
+        "agent:main:retinue_rooms:group:ops:scout": object(),
+    }
+    adapter.gateway_runner = runner
+    hire.scaffold_profile(str(tmp_path), "Admin", "lead", "", model_preset="grok-4.5")
+    meta = adapter.switch_agent_model("admin", "grok-4.6")
+    assert meta["model_preset"] == "grok-4.6"
+    assert meta["cache_evicted"] == 1
+    assert "admin" not in "".join(runner._agent_cache)
+    assert any("scout" in k for k in runner._agent_cache)
 
 
 def test_scaffold_seeds_root_auth_store(tmp_path):

@@ -23,6 +23,7 @@ export interface AgentMeta {
   activation?: string;
   online?: boolean;
   model_preset?: string | null;
+  model_summary?: string;
   local_llm?: boolean;
   turn_timeout?: number;
 }
@@ -30,6 +31,9 @@ export interface AgentMeta {
 export interface ModelPreset {
   name: string;
   summary: string;
+  provider?: string;
+  model?: string;
+  local?: boolean;
 }
 
 export interface RoutineMeta {
@@ -176,6 +180,8 @@ export const api = {
   listModels: () => req<{ models: ModelPreset[] }>("GET", "/models"),
   hire: (name: string, job: string, how: string, model?: string) =>
     req<AgentMeta>("POST", "/agents", { name, job, how, model: model || undefined }),
+  switchModel: (slug: string, model: string) =>
+    req<AgentMeta>("PATCH", `/agents/${slug}`, { model }),
   listRoutines: () => req<{ routines: RoutineMeta[] }>("GET", "/routines"),
   saveRoutine: (name: string, room: string) =>
     req<RoutineMeta>("POST", "/routines", { name, room }),

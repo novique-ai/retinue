@@ -129,7 +129,7 @@ body {
 
 .agent-item {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
   padding: 6px 10px;
   font-size: 13.5px;
@@ -137,6 +137,14 @@ body {
 
 .agent-copy {
   min-width: 0;
+  flex: 1;
+}
+
+.agent-model {
+  margin-top: 4px;
+  padding: 3px 6px;
+  font-size: 11px;
+  border-radius: 6px;
 }
 
 .nav-faces {

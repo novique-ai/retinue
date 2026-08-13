@@ -246,11 +246,28 @@ function HirePanel({ onDone }: { onDone: (created?: AgentMeta) => void }) {
           Model
           <select value={model} onChange={(e) => setModel(e.target.value)}>
             <option value="">Workspace default</option>
-            {models.map((m) => (
-              <option key={m.name} value={m.name}>
-                {m.name} ({m.summary})
-              </option>
-            ))}
+            {models.some((m) => !m.local) && (
+              <optgroup label="Cloud">
+                {models
+                  .filter((m) => !m.local)
+                  .map((m) => (
+                    <option key={m.name} value={m.name}>
+                      {m.name} ({m.summary})
+                    </option>
+                  ))}
+              </optgroup>
+            )}
+            {models.some((m) => m.local) && (
+              <optgroup label="Local">
+                {models
+                  .filter((m) => m.local)
+                  .map((m) => (
+                    <option key={m.name} value={m.name}>
+                      {m.name} ({m.summary})
+                    </option>
+                  ))}
+              </optgroup>
+            )}
           </select>
         </label>
       )}
@@ -387,6 +404,7 @@ type Modal = "hire" | "room" | "key" | null;
 export default function App() {
   const [rooms, setRooms] = useState<RoomMeta[]>([]);
   const [agents, setAgents] = useState<AgentMeta[]>([]);
+  const [models, setModels] = useState<ModelPreset[]>([]);
   const [routineList, setRoutineList] = useState<RoutineMeta[]>([]);
   const [workspaceInfo, setWorkspaceInfo] = useState<WorkspaceStatus | null>(null);
   const [current, setCurrent] = useState<RoomMeta | null>(null);
@@ -395,14 +413,16 @@ export default function App() {
 
   const refresh = useCallback(async () => {
     try {
-      const [r, a, rt, ws] = await Promise.all([
+      const [r, a, m, rt, ws] = await Promise.all([
         api.listRooms(),
         api.listAgents(),
+        api.listModels(),
         api.listRoutines(),
         api.workspace(),
       ]);
       setRooms(r.rooms);
       setAgents(a.agents);
+      setModels(m.models);
       setRoutineList(rt.routines);
       setWorkspaceInfo(ws);
     } catch (e) {
@@ -461,12 +481,41 @@ export default function App() {
                 </span>
                 <span className="nav-sub">
                   {a.job || "hand-made profile"}
+                  {a.model_preset
+                    ? ` · ${a.model_preset}`
+                    : a.model_summary
+                      ? ` · ${a.model_summary}`
+                      : ""}
                   {a.local_llm
                     ? ` · local · ${Math.round((a.turn_timeout ?? 1800) / 60)}m`
                     : a.turn_timeout
                       ? ` · cloud · ${Math.round(a.turn_timeout / 60)}m`
                       : ""}
                 </span>
+                {models.length > 0 && (
+                  <select
+                    className="agent-model"
+                    value={a.model_preset || ""}
+                    title={a.model_summary || "switch model"}
+                    onChange={async (e) => {
+                      const next = e.target.value;
+                      if (!next || next === a.model_preset) return;
+                      try {
+                        await api.switchModel(a.slug, next);
+                        await refresh();
+                      } catch (err) {
+                        alert(String(err));
+                      }
+                    }}
+                  >
+                    {!a.model_preset && <option value="">current model</option>}
+                    {models.map((m) => (
+                      <option key={m.name} value={m.name}>
+                        {m.name}
+                      </option>
+                    ))}
+                  </select>
+                )}
               </div>
             </div>
           ))}

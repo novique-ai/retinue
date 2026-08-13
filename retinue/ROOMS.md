@@ -60,8 +60,9 @@ convention: no `RETINUE_ROOMS_API_KEY` → localhost-only):
 | Route | Purpose |
 |---|---|
 | `GET /health` | liveness (unauthenticated) |
-| `GET /models` | workspace model presets a hire can choose from |
+| `GET /models` | workspace model presets a hire can choose from (versioned; `grok` hidden when `grok-4.5` / `grok-4.6` exist) |
 | `GET/POST /agents` | roster / hire (`{name, job, how, model?}` — `model` names a preset) |
+| `GET/PATCH /agents/{slug}` | inspect / switch model (`{model: "grok-4.6"}`) — no config hand-edit |
 | `GET/POST /rooms` | list / create (`{name, members[], lead?, max_agent_turns?}`) |
 | `GET/DELETE /rooms/{id}` | inspect / remove |
 | `POST /rooms/{id}/messages` | user speaks (`{text, from?}`) → 202, cycle runs async |
@@ -95,10 +96,15 @@ profile's config (comments included). `GET /models` lists them; the web UI's hir
 them as a dropdown next to "Workspace default"; `POST /agents` takes the preset via
 `"model": "<name>"`. An unknown or malformed preset is a 400 and creates nothing.
 
-Today's live workspace has `grok` (pinned to grok-4.5) and `local`. **Next:** cloud
-bots need *specific* Grok versions as separate presets (`grok-4.6`, `grok-4.5`, …)
-so a hire can pick the exact cloud brain, not a single "grok" bucket. Tracked as
-the next epic child under `infra-ivl9`.
+Shipped cloud presets live next to the plugin (`model_presets/grok-4.5.yaml`,
+`grok-4.6.yaml`) and are seeded into `$HERMES_HOME/retinue_models/` on connect
+if missing. A legacy `grok.yaml` is promoted to `grok-4.5.yaml` (never
+overwritten) and hidden from `GET /models` once the versioned files exist;
+`POST /agents` still accepts `model: "grok"`. `PATCH /agents/{slug}` rewrites
+only the profile's `model:` block and evicts that member's cached AIAgent so
+admin / envoy / janitor can move between 4.5 and 4.6 without a hand-edit or
+gateway restart. Local / LAN presets stay operator-owned (they carry a host
+`base_url`).
 
 Credentials: a hire seeds the profile's `.env` **and `auth.json`** from the workspace root,
 so presets can target any provider the workspace owner has configured or OAuth-logged-into

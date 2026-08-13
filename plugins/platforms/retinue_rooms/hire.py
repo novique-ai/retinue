@@ -29,6 +29,7 @@ AGENT_META_FILENAME = "retinue-agent.json"
 # each holding a literal ``model:`` block that a hire copies verbatim (the same
 # text-level semantics as the root-config fallback below).
 MODELS_DIRNAME = "retinue_models"
+BUNDLED_PRESETS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "model_presets")
 
 
 def slugify_name(display_name: str) -> str:
@@ -212,11 +213,40 @@ def _models_dir(home_dir: str) -> str:
     return os.path.join(home_dir, MODELS_DIRNAME)
 
 
-def list_model_presets(home_dir: str) -> List[Dict[str, str]]:
+def _preset_entry(stem: str, block: str) -> Dict[str, Any]:
+    fields = _fields_from_model_block(block)
+    model = fields.get("default") or fields.get("model") or ""
+    provider = fields.get("provider") or ""
+    return {
+        "name": stem,
+        "summary": _summarize_model_block(block),
+        "provider": provider,
+        "model": model,
+        "local": model_block_is_local(block),
+    }
+
+
+def _is_generic_alias(name: str, names: set[str]) -> bool:
+    """``grok`` is an alias once ``grok-4.5`` / ``grok-4.6`` exist."""
+    if "-" in name:
+        return False
+    prefix = name + "-"
+    return any(other.startswith(prefix) for other in names)
+
+
+def list_model_presets(
+    home_dir: str, include_aliases: bool = False
+) -> List[Dict[str, Any]]:
     """Workspace model presets a hire can choose from. A preset is a YAML
     file in ``retinue_models/`` whose ``model:`` block is copied verbatim
-    into the new profile; files without a ``model:`` block are skipped."""
-    presets: List[Dict[str, str]] = []
+    into the new profile; files without a ``model:`` block are skipped.
+
+    Generic stems (``grok``) are hidden when versioned siblings
+    (``grok-4.5``, ``grok-4.6``) exist, so the hire dropdown lists specific
+    cloud models instead of a single bucket. Pass ``include_aliases=True``
+    to resolve a legacy ``model: grok`` hire.
+    """
+    presets: List[Dict[str, Any]] = []
     try:
         names = sorted(os.listdir(_models_dir(home_dir)))
     except OSError:
@@ -227,8 +257,48 @@ def list_model_presets(home_dir: str) -> List[Dict[str, str]]:
             continue
         block = _read_model_block(os.path.join(_models_dir(home_dir), fn))
         if block:
-            presets.append({"name": stem, "summary": _summarize_model_block(block)})
+            presets.append(_preset_entry(stem, block))
+    presets.sort(key=lambda p: p["name"])
+    if not include_aliases:
+        listed = {p["name"] for p in presets}
+        presets = [p for p in presets if not _is_generic_alias(p["name"], listed)]
     return presets
+
+
+def ensure_bundled_cloud_presets(home_dir: str) -> List[str]:
+    """Write shipped versioned cloud presets that the workspace lacks.
+
+    Never overwrites. If a legacy ``grok.yaml`` is present and ``grok-4.5``
+    is not, copy it so existing pin/comments survive. Local / LAN presets
+    stay operator-owned (they carry a host-specific ``base_url``).
+    """
+    dest = _models_dir(home_dir)
+    os.makedirs(dest, exist_ok=True)
+    written: List[str] = []
+
+    alias = os.path.join(dest, "grok.yaml")
+    promoted = os.path.join(dest, "grok-4.5.yaml")
+    if os.path.isfile(alias) and not os.path.isfile(promoted):
+        shutil.copy(alias, promoted)
+        written.append("grok-4.5")
+
+    try:
+        bundled = sorted(os.listdir(BUNDLED_PRESETS_DIR))
+    except OSError:
+        bundled = []
+    for fn in bundled:
+        stem, ext = os.path.splitext(fn)
+        if ext not in (".yaml", ".yml") or not stem:
+            continue
+        target = os.path.join(dest, fn)
+        if os.path.isfile(target):
+            continue
+        src = os.path.join(BUNDLED_PRESETS_DIR, fn)
+        if not os.path.isfile(src):
+            continue
+        shutil.copy(src, target)
+        written.append(stem)
+    return written
 
 
 def _preset_model_block(home_dir: str, preset: str) -> str:
@@ -243,8 +313,132 @@ def _preset_model_block(home_dir: str, preset: str) -> str:
                     f"model preset {preset!r} has no 'model:' block ({path})"
                 )
             return block
-    known = ", ".join(p["name"] for p in list_model_presets(home_dir)) or "none"
+    known = ", ".join(p["name"] for p in list_model_presets(home_dir, include_aliases=True)) or "none"
     raise ValueError(f"unknown model preset {preset!r} (available: {known})")
+
+
+def _replace_model_block(config_text: str, new_block: str) -> str:
+    """Swap the top-level ``model:`` block; leave every other key in place."""
+    new_block = (new_block or "").rstrip() + "\n"
+    lines = (config_text or "").splitlines(keepends=True)
+    start: Optional[int] = None
+    end = len(lines)
+    for i, line in enumerate(lines):
+        if start is None:
+            if line.startswith("model:"):
+                start = i
+            continue
+        if line.strip() and not line.startswith((" ", "\t", "#")):
+            end = i
+            break
+    if start is None:
+        rest = config_text or ""
+        if rest and not rest.endswith("\n"):
+            rest += "\n"
+        return new_block + rest
+    return "".join(lines[:start]) + new_block + "".join(lines[end:])
+
+
+def _infer_preset_name(home_dir: str, block: str) -> Optional[str]:
+    """Match a live ``model:`` block to a named preset (prefer versioned)."""
+    if not block:
+        return None
+    fields = _fields_from_model_block(block)
+    model = fields.get("default") or fields.get("model") or ""
+    provider = fields.get("provider") or ""
+    if not model:
+        return None
+    for include_aliases in (False, True):
+        for preset in list_model_presets(home_dir, include_aliases=include_aliases):
+            if preset.get("model") != model:
+                continue
+            if provider and preset.get("provider") and preset["provider"] != provider:
+                continue
+            return str(preset["name"])
+    return None
+
+
+def apply_model_preset(home_dir: str, slug: str, preset: str) -> Dict[str, Any]:
+    """Rewrite ``profiles/<slug>/config.yaml``'s ``model:`` block in place.
+
+    Used to switch an already-hired agent without a hand-edit. Raises
+    ``ValueError`` on a bad slug/preset and ``KeyError`` if the profile
+    directory does not exist. Does not touch SOUL.md or credentials.
+    """
+    slug = (slug or "").strip()
+    preset = (preset or "").strip()
+    if not slug or slug in _RESERVED:
+        raise ValueError(f"cannot change model for profile {slug!r}")
+    if not preset:
+        raise ValueError("model preset is required")
+    profile_dir = os.path.join(home_dir, "profiles", slug)
+    if not os.path.isdir(profile_dir):
+        raise KeyError(slug)
+    block = _preset_model_block(home_dir, preset)
+    cfg_path = os.path.join(profile_dir, "config.yaml")
+    try:
+        existing = open(cfg_path, encoding="utf-8").read()
+        mode = os.stat(cfg_path).st_mode
+    except OSError:
+        existing = "agent:\n  tool_choice: auto\n"
+        mode = None
+    new_text = _replace_model_block(existing, block)
+    tmp = cfg_path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(new_text)
+    os.replace(tmp, cfg_path)
+    if mode is not None:
+        os.chmod(cfg_path, mode)
+
+    meta_path = os.path.join(profile_dir, AGENT_META_FILENAME)
+    meta: Dict[str, Any]
+    try:
+        with open(meta_path, encoding="utf-8") as f:
+            loaded = json.load(f)
+        meta = loaded if isinstance(loaded, dict) else {}
+    except (OSError, ValueError):
+        meta = {"display_name": slug, "slug": slug, "job": "", "how": ""}
+    meta["slug"] = slug
+    meta["model_preset"] = preset
+    meta["model_switched_at"] = time.time()
+    with open(meta_path, "w", encoding="utf-8") as f:
+        json.dump(meta, f, indent=2)
+
+    for agent in list_agents(home_dir):
+        if agent.get("slug") == slug:
+            return agent
+    raise KeyError(slug)
+
+
+def _cache_key_for_slug(key: Any, slug: str) -> bool:
+    return slug in str(key).split(":")
+
+
+def evict_profile_agent_cache(runner: Any, slug: str) -> int:
+    """Drop cached AIAgents whose session key names this profile.
+
+    Room session keys carry the member as ``thread_id`` (and sometimes as
+    the multiplex namespace). Plugin-shaped: uses the runner's existing
+    ``_evict_cached_agent`` seam when present.
+    """
+    if runner is None or not slug:
+        return 0
+    cache = getattr(runner, "_agent_cache", None)
+    if cache is None:
+        return 0
+    keys = [k for k in list(cache) if _cache_key_for_slug(k, slug)]
+    evict = getattr(runner, "_evict_cached_agent", None)
+    n = 0
+    for key in keys:
+        try:
+            if callable(evict):
+                evict(key)
+            else:
+                cache.pop(key, None)
+            n += 1
+        except Exception:
+            logger.debug("Retinue: evict cache key %s failed", key, exc_info=True)
+    return n
 
 
 def scaffold_profile(
@@ -375,6 +569,7 @@ def list_agents(home_dir: str) -> List[Dict[str, Any]]:
     metadata when present (hand-made profiles get a slug-only entry)."""
     profiles_dir = os.path.join(home_dir, "profiles")
     agents: List[Dict[str, Any]] = []
+    listed = {p["name"] for p in list_model_presets(home_dir)}
     try:
         names = sorted(os.listdir(profiles_dir))
     except OSError:
@@ -394,5 +589,17 @@ def list_agents(home_dir: str) -> List[Dict[str, Any]]:
         meta["has_soul"] = os.path.isfile(os.path.join(pdir, "SOUL.md"))
         meta["local_llm"] = profile_uses_local_llm(home_dir, name)
         meta["turn_timeout"] = int(turn_timeout_for(home_dir, name))
+        block = _read_model_block(os.path.join(pdir, "config.yaml"))
+        if not block:
+            block = _read_model_block(os.path.join(home_dir, "config.yaml"))
+        meta["model_summary"] = _summarize_model_block(block) if block else ""
+        stored = (meta.get("model_preset") or "").strip()
+        inferred = _infer_preset_name(home_dir, block)
+        if stored and stored in listed:
+            meta["model_preset"] = stored
+        elif inferred:
+            meta["model_preset"] = inferred
+        elif stored:
+            meta["model_preset"] = stored
         agents.append(meta)
     return agents
