@@ -21,10 +21,12 @@ def _write_presets(tmp_path):
     d = tmp_path / hire.MODELS_DIRNAME
     d.mkdir()
     (d / "grok-4.5.yaml").write_text(
-        "model:\n  default: grok-4.5\n  provider: xai-oauth\n"
+        "model:\n  default: grok-4.5\n  provider: xai-oauth\n",
+    encoding="utf-8",
     )
     (d / "grok-4.6.yaml").write_text(
-        "model:\n  default: grok-4.6\n  provider: xai-oauth\n"
+        "model:\n  default: grok-4.6\n  provider: xai-oauth\n",
+    encoding="utf-8",
     )
 
 
@@ -114,7 +116,7 @@ def test_update_agent_rewrites_soul_and_keeps_slug(tmp_path):
     assert updated["display_name"] == "Scout Prime"
     assert updated["job"] == "verify facts"
     assert updated["how"] == "cite sources"
-    soul = (tmp_path / "profiles" / "scout" / "SOUL.md").read_text()
+    soul = (tmp_path / "profiles" / "scout" / "SOUL.md").read_text(encoding="utf-8")
     assert "You are Scout Prime." in soul
     assert "Your job: verify facts" in soul
     assert "cite sources" in soul
@@ -123,10 +125,10 @@ def test_update_agent_rewrites_soul_and_keeps_slug(tmp_path):
 
 def test_update_agent_archive_does_not_rewrite_soul(tmp_path):
     hire.scaffold_profile(str(tmp_path), "Scout", "find facts", "be terse")
-    before = (tmp_path / "profiles" / "scout" / "SOUL.md").read_text()
+    before = (tmp_path / "profiles" / "scout" / "SOUL.md").read_text(encoding="utf-8")
     updated = hire.update_agent(str(tmp_path), "scout", archived=True)
     assert updated["archived"] is True
-    assert (tmp_path / "profiles" / "scout" / "SOUL.md").read_text() == before
+    assert (tmp_path / "profiles" / "scout" / "SOUL.md").read_text(encoding="utf-8") == before
     listed = {a["slug"]: a for a in hire.list_agents(str(tmp_path))}
     assert listed["scout"]["archived"] is True
 
@@ -151,9 +153,9 @@ def test_delete_agent_removes_profile_and_refuses_default(tmp_path):
         hire.delete_agent(str(tmp_path), "temp")
     with pytest.raises(ValueError, match="cannot change"):
         hire.delete_agent(str(tmp_path), "default")
-    (tmp_path / "SOUL.md").write_text("workspace soul — do not touch")
+    (tmp_path / "SOUL.md").write_text("workspace soul — do not touch", encoding="utf-8")
     hire.delete_agent  # noqa: B018 — just documenting the guard
-    assert (tmp_path / "SOUL.md").read_text().startswith("workspace soul")
+    assert (tmp_path / "SOUL.md").read_text(encoding="utf-8").startswith("workspace soul")
 
 
 def test_delete_agent_rejects_path_traversal(tmp_path):
@@ -208,7 +210,7 @@ def test_patch_agent_edits_persona_and_model(tmp_path, monkeypatch):
     assert meta["job"] == "run the room"
     assert meta["model_preset"] == "grok-4.6"
     assert meta["slug"] == "admin"
-    assert "You are The Admin." in (tmp_path / "profiles" / "admin" / "SOUL.md").read_text()
+    assert "You are The Admin." in (tmp_path / "profiles" / "admin" / "SOUL.md").read_text(encoding="utf-8")
     archived = adapter.patch_agent("admin", {"archived": True})
     assert archived["archived"] is True
     # Existing client: PATCH {model} only.
@@ -391,7 +393,7 @@ def test_http_patch_delete_and_sidebar(tmp_path, monkeypatch):
         assert status == 200
         assert payload["job"] == "verify"
         assert payload["slug"] == "scout"
-        assert "Your job: verify" in (tmp_path / "profiles" / "scout" / "SOUL.md").read_text()
+        assert "Your job: verify" in (tmp_path / "profiles" / "scout" / "SOUL.md").read_text(encoding="utf-8")
 
         status, payload = call("DELETE", "/agents/default")
         assert status == 400

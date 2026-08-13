@@ -51,7 +51,7 @@ Retinue is **Linux-first**. The product UI is a local web app (any modern browse
 | **Node.js** | 20+ to *build* the web UI (`retinue-web/`). Runtime serving is Python. |
 | **Containers** | Optional. `podman` or `docker` for the shared workspace computer. Live-verified with rootless podman. |
 | **Display** | Wayland and X11 are both fine for the browser UI. They only become relevant for future screen take-over / desktop packaging. |
-| **macOS / Windows / WSL** | Hermes itself runs there. Retinue's rooms + podman path is not claimed as supported yet — reports welcome. |
+| **macOS / Windows / WSL** | Hermes itself runs there (`scripts/install.ps1` on Windows). Retinue's rooms + podman path is not claimed as supported yet — reports welcome. |
 
 ## Quick start (development)
 

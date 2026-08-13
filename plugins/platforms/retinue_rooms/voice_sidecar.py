@@ -85,7 +85,14 @@ def transcribe(path: str) -> str:
             "-np",
             "-nt",
         ]
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=180,
+        )
         txt = Path(outdir) / "out.txt"
         if txt.is_file():
             return txt.read_text(encoding="utf-8", errors="replace").strip()
