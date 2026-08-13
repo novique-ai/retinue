@@ -24,6 +24,7 @@ import logging
 import os
 import threading
 import time
+from pathlib import Path
 from concurrent.futures import Future
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -39,7 +40,7 @@ from gateway.platforms.base import (
     SendResult,
 )
 
-from . import engine, hire, routines, workspace
+from . import engine, hire, routines, voice, workspace
 from .engine import KIND_AGENT, KIND_SYSTEM, KIND_USER, Room, RoomMessage
 from .store import RoomStore
 
@@ -47,6 +48,7 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_PORT = 8643
 _MAX_BODY = 262_144  # 256 KB is plenty for a chat message
+_MAX_AUDIO = 8 * 1024 * 1024  # 8 MiB ≈ 4 min of 16 kHz mono WAV
 _DEFAULT_USER_NAME = "User"
 
 # Parallel turns share one adapter.send(chat_id=room). The gateway's notify
@@ -450,6 +452,20 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             fut.result(timeout=per * max(1, room.max_agent_turns) + 30)
         return {"seq": message.seq, "planned": planned}
 
+    def post_user_audio(
+        self,
+        room_id: str,
+        data: bytes,
+        *,
+        filename: str = "speech.wav",
+        from_name: str = _DEFAULT_USER_NAME,
+    ) -> Dict[str, Any]:
+        """STT then the normal user-message cycle. Transcript is the room line."""
+        text = voice.transcribe_dispatch(data, filename)
+        result = self.post_user_message(room_id, text, from_name)
+        result["text"] = text
+        return result
+
     def save_routine_from_room(
         self, name: str, room_id: str, since: int = 0, until: Optional[int] = None
     ) -> Dict[str, Any]:
@@ -686,6 +702,28 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
         except (ValueError, UnicodeDecodeError):
             return None
 
+    def _read_raw(self, max_bytes: int) -> Optional[bytes]:
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            return None
+        if length <= 0 or length > max_bytes:
+            return None
+        try:
+            return self.rfile.read(length)
+        except OSError:
+            return None
+
+    def _bytes(self, status: int, payload: bytes, content_type: str) -> None:
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            return
+
     # ── routes ───────────────────────────────────────────────────────────
 
     _STATIC_TYPES = {
@@ -727,7 +765,7 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
         return True
 
-    _API_PREFIXES = ("rooms", "agents", "models", "health", "routines", "workspace")
+    _API_PREFIXES = ("rooms", "agents", "models", "health", "routines", "workspace", "voice", "tts")
 
     def do_GET(self):
         parsed = urlparse(self.path)
@@ -759,6 +797,8 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
             return self._json(200, meta)
         if parts == ["workspace"]:
             return self._json(200, workspace.workspace_status())
+        if parts == ["voice"]:
+            return self._json(200, voice.status())
         if parts == ["rooms"]:
             return self._json(200, {"rooms": [r.to_dict() for r in adapter.store.list_rooms()]})
         if len(parts) == 2 and parts[0] == "rooms":
@@ -823,12 +863,71 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
         except OSError:
             return
 
+    def _filename_for_audio(self, parsed) -> str:
+        query = parse_qs(parsed.query)
+        name = (query.get("filename") or [""])[0].strip()
+        if name:
+            return Path(name).name
+        ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        ext = {
+            "audio/wav": ".wav",
+            "audio/x-wav": ".wav",
+            "audio/wave": ".wav",
+            "audio/mpeg": ".mp3",
+            "audio/mp3": ".mp3",
+            "audio/webm": ".webm",
+            "audio/ogg": ".ogg",
+            "audio/mp4": ".m4a",
+            "audio/aac": ".aac",
+        }.get(ctype, ".wav")
+        return f"speech{ext}"
+
+    def _post_audio(self, adapter: RetinueRoomsAdapter, room_id: str, parsed) -> None:
+        raw = self._read_raw(_MAX_AUDIO)
+        if raw is None:
+            return self._json(400, {"error": "invalid or oversized audio body"})
+        query = parse_qs(parsed.query)
+        from_name = (query.get("from") or [_DEFAULT_USER_NAME])[0] or _DEFAULT_USER_NAME
+        try:
+            result = adapter.post_user_audio(
+                room_id,
+                raw,
+                filename=self._filename_for_audio(parsed),
+                from_name=from_name,
+            )
+        except KeyError:
+            return self._json(404, {"error": "no such room"})
+        except voice.VoiceError as e:
+            return self._json(502, {"error": str(e)})
+        except ValueError as e:
+            return self._json(400, {"error": str(e)})
+        except RuntimeError as e:
+            return self._json(503, {"error": str(e)})
+        return self._json(202, result)
+
+    def _post_tts(self) -> None:
+        body = self._read_body()
+        if body is None:
+            return self._json(400, {"error": "invalid or oversized JSON body"})
+        text = str(body.get("text") or "")
+        speaker = str(body.get("speaker") or body.get("voice") or "")
+        try:
+            audio = voice.synthesize_dispatch(text, speaker)
+        except voice.VoiceError as e:
+            return self._json(502, {"error": str(e)})
+        ctype = "audio/wav" if audio[:4] == b"RIFF" else "audio/mpeg"
+        return self._bytes(200, audio, ctype)
+
     def do_POST(self):
         if not self._authorized():
             return self._json(401, {"error": "unauthorized"})
         parsed = urlparse(self.path)
         parts = [p for p in parsed.path.split("/") if p]
         adapter = self.server.adapter
+        if len(parts) == 3 and parts[0] == "rooms" and parts[2] == "audio":
+            return self._post_audio(adapter, parts[1], parsed)
+        if parts == ["tts"]:
+            return self._post_tts()
         body = self._read_body()
         if body is None:
             return self._json(400, {"error": "invalid or oversized JSON body"})

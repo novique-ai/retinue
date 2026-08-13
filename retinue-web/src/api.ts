@@ -54,6 +54,13 @@ export interface WorkspaceStatus {
   container?: { id: string; name: string; status: string; image: string } | null;
 }
 
+export interface VoiceStatus {
+  backend: string;
+  ready: boolean;
+  detail: string;
+  voices: Record<string, string>;
+}
+
 const KEY_STORAGE = "retinue.apiKey";
 
 export class AuthRequiredError extends Error {}
@@ -193,4 +200,44 @@ export const api = {
     ),
   deleteRoutine: (slug: string) => req<{ deleted: string }>("DELETE", `/routines/${slug}`),
   workspace: () => req<WorkspaceStatus>("GET", "/workspace"),
+  voiceStatus: () => req<VoiceStatus>("GET", "/voice"),
+  sendAudio: async (id: string, blob: Blob, from: string, filename = "speech.wav") => {
+    const headers: Record<string, string> = {
+      "Content-Type": blob.type || "audio/wav",
+    };
+    const key = getApiKey();
+    if (key) headers.Authorization = `Bearer ${key}`;
+    const params = new URLSearchParams({ from, filename });
+    const resp = await fetch(`/rooms/${id}/audio?${params.toString()}`, {
+      method: "POST",
+      headers,
+      body: blob,
+    });
+    if (resp.status === 401) throw new AuthRequiredError("API key required");
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data?.error ?? `HTTP ${resp.status}`);
+    return data as { seq: number; planned: string[]; text: string };
+  },
+  speak: async (text: string, speaker: string) => {
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    const key = getApiKey();
+    if (key) headers.Authorization = `Bearer ${key}`;
+    const resp = await fetch("/tts", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ text, speaker }),
+    });
+    if (resp.status === 401) throw new AuthRequiredError("API key required");
+    if (!resp.ok) {
+      let detail = `HTTP ${resp.status}`;
+      try {
+        const data = await resp.json();
+        detail = data?.error ?? detail;
+      } catch {
+        /* not json */
+      }
+      throw new Error(detail);
+    }
+    return resp.blob();
+  },
 };

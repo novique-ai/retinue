@@ -412,6 +412,60 @@ select:focus {
   cursor: default;
 }
 
+.talk-btn {
+  background: var(--bg-input);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 9px 14px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  user-select: none;
+  touch-action: none;
+}
+
+.talk-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.talk-btn.holding {
+  background: #f7768e;
+  color: #10121a;
+  border-color: #f7768e;
+}
+
+.voice-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  align-items: center;
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.voice-toggle {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  cursor: pointer;
+}
+
+.voice-toggle input {
+  width: auto;
+}
+
+.voice-backend {
+  font-variant: small-caps;
+  letter-spacing: 0.04em;
+}
+
+.voice-note {
+  color: var(--text);
+}
+
 /* ── panels / overlay ────────────────────────────────────── */
 
 .overlay {

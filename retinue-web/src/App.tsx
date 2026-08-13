@@ -9,6 +9,7 @@ import {
   RoomMsg,
   RoutineMeta,
   setApiKey,
+  VoiceStatus,
   WorkspaceStatus,
 } from "./api";
 import { LOGO_SRC, YOU_SRC, agentIcon, speakerIcon } from "./icons";
@@ -43,6 +44,71 @@ function chipColor(name: string): string {
   return CHIP_COLORS[h % CHIP_COLORS.length];
 }
 
+function encodeWav(samples: Float32Array, sampleRate: number): Blob {
+  const n = samples.length;
+  const buffer = new ArrayBuffer(44 + n * 2);
+  const view = new DataView(buffer);
+  const writeStr = (off: number, s: string) => {
+    for (let i = 0; i < s.length; i++) view.setUint8(off + i, s.charCodeAt(i));
+  };
+  writeStr(0, "RIFF");
+  view.setUint32(4, 36 + n * 2, true);
+  writeStr(8, "WAVE");
+  writeStr(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  writeStr(36, "data");
+  view.setUint32(40, n * 2, true);
+  let off = 44;
+  for (let i = 0; i < n; i++) {
+    const s = Math.max(-1, Math.min(1, samples[i]));
+    view.setInt16(off, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+    off += 2;
+  }
+  return new Blob([buffer], { type: "audio/wav" });
+}
+
+async function startMic(): Promise<{ stop: () => Promise<Blob> }> {
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  const ctx = new AudioContext();
+  const source = ctx.createMediaStreamSource(stream);
+  const proc = ctx.createScriptProcessor(4096, 1, 1);
+  const mute = ctx.createGain();
+  mute.gain.value = 0;
+  const parts: Float32Array[] = [];
+  proc.onaudioprocess = (ev) => {
+    parts.push(new Float32Array(ev.inputBuffer.getChannelData(0)));
+  };
+  source.connect(proc);
+  proc.connect(mute);
+  mute.connect(ctx.destination);
+  const sampleRate = ctx.sampleRate;
+  return {
+    stop: async () => {
+      proc.disconnect();
+      source.disconnect();
+      mute.disconnect();
+      stream.getTracks().forEach((t) => t.stop());
+      await ctx.close();
+      const total = parts.reduce((n, p) => n + p.length, 0);
+      const merged = new Float32Array(total);
+      let o = 0;
+      for (const p of parts) {
+        merged.set(p, o);
+        o += p.length;
+      }
+      return encodeWav(merged, sampleRate);
+    },
+  };
+}
+
+const SPEAK_KEY = "retinue.speakReplies";
+
 // ── message row ──────────────────────────────────────────────────────────
 
 function MessageRow({ msg, userName }: { msg: RoomMsg; userName: string }) {
@@ -76,13 +142,32 @@ function RoomView({ room, userName }: { room: RoomMeta; userName: string }) {
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [thinking, setThinking] = useState<string[]>([]);
+  const [holding, setHolding] = useState(false);
+  const [voiceNote, setVoiceNote] = useState("");
+  const [voice, setVoice] = useState<VoiceStatus | null>(null);
+  const [speakReplies, setSpeakReplies] = useState(
+    () => localStorage.getItem(SPEAK_KEY) !== "0",
+  );
   const sinceRef = useRef(0);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const micRef = useRef<{ stop: () => Promise<Blob> } | null>(null);
+  const playQ = useRef(Promise.resolve());
+  const spokenRef = useRef<Set<number>>(new Set());
+  const openedAtRef = useRef(Date.now() / 1000);
+
+  useEffect(() => {
+    api
+      .voiceStatus()
+      .then(setVoice)
+      .catch(() => setVoice(null));
+  }, []);
 
   // SSE transcript stream; long-poll is the fallback (see api.watchTranscript).
   useEffect(() => {
     sinceRef.current = 0;
     setMessages([]);
+    spokenRef.current = new Set();
+    openedAtRef.current = Date.now() / 1000;
     const ctl = new AbortController();
     api.watchTranscript(
       room.id,
@@ -103,6 +188,33 @@ function RoomView({ room, userName }: { room: RoomMeta; userName: string }) {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [messages, thinking]);
 
+  useEffect(() => {
+    if (!speakReplies) return;
+    for (const msg of messages) {
+      if (msg.kind !== "agent" || spokenRef.current.has(msg.seq)) continue;
+      if (msg.ts && msg.ts < openedAtRef.current - 1) continue;
+      spokenRef.current.add(msg.seq);
+      playQ.current = playQ.current
+        .then(async () => {
+          const blob = await api.speak(msg.text, msg.speaker);
+          const url = URL.createObjectURL(blob);
+          try {
+            await new Promise<void>((resolve, reject) => {
+              const audio = new Audio(url);
+              audio.onended = () => resolve();
+              audio.onerror = () => reject(new Error("playback failed"));
+              void audio.play().catch(reject);
+            });
+          } finally {
+            URL.revokeObjectURL(url);
+          }
+        })
+        .catch((e) => {
+          setVoiceNote(String(e));
+        });
+    }
+  }, [messages, speakReplies]);
+
   const send = useCallback(async () => {
     const text = draft.trim();
     if (!text || sending) return;
@@ -117,6 +229,36 @@ function RoomView({ room, userName }: { room: RoomMeta; userName: string }) {
       setSending(false);
     }
   }, [draft, sending, room.id, userName]);
+
+  const beginTalk = useCallback(async () => {
+    if (sending || holding) return;
+    setVoiceNote("");
+    try {
+      micRef.current = await startMic();
+      setHolding(true);
+    } catch (e) {
+      setVoiceNote(String(e));
+    }
+  }, [sending, holding]);
+
+  const endTalk = useCallback(async () => {
+    const rec = micRef.current;
+    micRef.current = null;
+    setHolding(false);
+    if (!rec) return;
+    setSending(true);
+    setVoiceNote("transcribing…");
+    try {
+      const blob = await rec.stop();
+      const { planned, text } = await api.sendAudio(room.id, blob, userName);
+      setThinking(planned);
+      setVoiceNote(text ? `Heard: ${text}` : "");
+    } catch (e) {
+      setVoiceNote(String(e));
+    } finally {
+      setSending(false);
+    }
+  }, [room.id, userName]);
 
   return (
     <div className="room-view">
@@ -192,9 +334,47 @@ function RoomView({ room, userName }: { room: RoomMeta; userName: string }) {
             }}
             rows={2}
           />
+          <button
+            className={holding ? "talk-btn holding" : "talk-btn"}
+            disabled={sending}
+            title={
+              voice && !voice.ready
+                ? `Voice not ready (${voice.backend}): ${voice.detail}`
+                : "Hold to talk"
+            }
+            onPointerDown={(e) => {
+              e.preventDefault();
+              (e.currentTarget as HTMLButtonElement).setPointerCapture(e.pointerId);
+              void beginTalk();
+            }}
+            onPointerUp={() => void endTalk()}
+            onPointerCancel={() => void endTalk()}
+          >
+            {holding ? "Listening…" : "Hold to talk"}
+          </button>
           <button className="send-btn" disabled={sending || !draft.trim()} onClick={() => void send()}>
             Send
           </button>
+        </div>
+        <div className="voice-bar">
+          <label className="voice-toggle">
+            <input
+              type="checkbox"
+              checked={speakReplies}
+              onChange={(e) => {
+                const on = e.target.checked;
+                setSpeakReplies(on);
+                localStorage.setItem(SPEAK_KEY, on ? "1" : "0");
+              }}
+            />
+            Speak replies
+          </label>
+          <span className="voice-backend">
+            {voice
+              ? `${voice.backend}${voice.ready ? "" : " (not ready)"}`
+              : "voice…"}
+          </span>
+          {voiceNote && <span className="voice-note">{voiceNote}</span>}
         </div>
       </div>
     </div>

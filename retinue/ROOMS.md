@@ -72,6 +72,9 @@ convention: no `RETINUE_ROOMS_API_KEY` → localhost-only):
 | `GET/DELETE /routines/{slug}` | inspect / remove |
 | `POST /routines/{slug}/run` | replay the prompts into `{room}` (waits each cycle) |
 | `GET /workspace` | shared workspace-computer status + attach command |
+| `GET /voice` | STT/TTS backend status (`xai` or OpenAI-compat sidecar) |
+| `POST /rooms/{id}/audio` | hold-to-talk: raw audio → STT → same cycle as `/messages` |
+| `POST /tts` | `{text, speaker?}` → audio/mpeg (or wav); per-slug voice map |
 
 `python -m plugins.platforms.retinue_rooms.cli` is the reference client (create / list /
 send / watch / chat). The web UI consumes the SSE stream; the CLI keeps long-poll.

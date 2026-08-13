@@ -8,7 +8,11 @@ This look is **not** a current-hardware audit. Capture can be a browser mic, a
 conference puck, a phone, or a room array — that is a later input-device choice.
 The decision is the pipeline.
 
-Do not start implementation until the operator picks a track.
+Operator picked **A for testing, then B for testing** (2026-08-13).
+Implementation is plugin-shaped: `GET /voice`, `POST /rooms/{id}/audio`,
+`POST /tts`, hold-to-talk in `retinue-web`. Flip backends with
+`RETINUE_VOICE_BACKEND=xai|openai` and (for B)
+`RETINUE_VOICE_BASE_URL=http://10.44.0.13:8104/v1`.
 
 ## What already exists (reference only)
 
