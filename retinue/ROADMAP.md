@@ -26,9 +26,21 @@ origin, no CORS), with:
   podman/docker computer (label `hermes-profile=<TERMINAL_DOCKER_SHARED_CONTAINER_KEY>`)
   and the attach command. Full noVNC screen take-over is the next increment.
 
-## Voice (looked 2026-08-13, not started)
+## Voice (v1 testable 2026-08-13)
 
-Transcript-preserving hold-to-talk in the room UI. Alternatives and the
-recommended first slice (xAI STT/TTS; optional second model on claymore-1)
-are in [VOICE.md](VOICE.md). Do not start until the operator picks a track.
-NoVNC (`infra-dfc1`) is a separate gated increment.
+Transcript-preserving hold-to-talk in the room UI. Live default is Track A
+(xAI STT/TTS). Track B is a claymore-1 sidecar (whisper.cpp + piper). Detail
+and flip instructions: [VOICE.md](VOICE.md). Bead `infra-ivl9.2` CLOSED.
+
+## Sidebar (next — `infra-ivl9.3`, not started)
+
+Operator-named 2026-08-13 close. Plugin-shaped only:
+
+1. **Edit / archive / delete** rooms and bots. `DELETE /rooms/{id}` exists
+   with no UI; rooms have no PATCH for name/members/lead; hire has no edit
+   of job/how and no delete/archive.
+2. **Separator bars** in the left panel so bots can be organized into teams.
+3. **Click-and-drag** rooms and bots in the left panel to reorder. Persist
+   order and team groupings server-side.
+
+NoVNC (`infra-dfc1`) stays a separate gated increment.
