@@ -107,7 +107,10 @@ Do not run the full Hermes suite unless you know you need it — it is large and
 
 ## Pull requests
 
-1. Push your branch to **your fork**.
+Maintainers use this same path. `main` is protected: every change lands through
+a pull request and the **Retinue delta** check. There is no admin bypass.
+
+1. Push your branch to **your fork** (or to a branch on this repo).
 2. Open a PR against `novique-ai/retinue` `main`.
 3. Fill in the PR template.
 4. Reference the issue with `Closes #123` (or `Fixes #123`) when the PR fully resolves it. Use `Refs #123` if it is only related.
