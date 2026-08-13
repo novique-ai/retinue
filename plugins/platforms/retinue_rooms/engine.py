@@ -55,6 +55,8 @@ class Room:
     created_at: float = field(default_factory=time.time)
     # member -> highest transcript seq already delivered to that member
     last_seen: Dict[str, int] = field(default_factory=dict)
+    # Hidden from the sidebar without wiping the transcript.
+    archived: bool = False
 
     def default_responder(self) -> Optional[str]:
         if self.lead and self.lead in self.members:
@@ -74,6 +76,7 @@ class Room:
             max_agent_turns=int(data.get("max_agent_turns") or DEFAULT_MAX_AGENT_TURNS),
             created_at=float(data.get("created_at") or 0.0),
             last_seen={str(k): int(v) for k, v in (data.get("last_seen") or {}).items()},
+            archived=bool(data.get("archived")),
         )
 
 

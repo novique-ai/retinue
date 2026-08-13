@@ -32,15 +32,12 @@ Transcript-preserving hold-to-talk in the room UI. Live default is Track A
 (xAI STT/TTS). Track B is a claymore-1 sidecar (whisper.cpp + piper). Detail
 and flip instructions: [VOICE.md](VOICE.md). Bead `infra-ivl9.2` CLOSED.
 
-## Sidebar (next — `infra-ivl9.3`, not started)
+## Sidebar (`infra-ivl9.3`)
 
-Operator-named 2026-08-13 close. Plugin-shaped only:
-
-1. **Edit / archive / delete** rooms and bots. `DELETE /rooms/{id}` exists
-   with no UI; rooms have no PATCH for name/members/lead; hire has no edit
-   of job/how and no delete/archive.
-2. **Separator bars** in the left panel so bots can be organized into teams.
-3. **Click-and-drag** rooms and bots in the left panel to reorder. Persist
-   order and team groupings server-side.
+Edit / archive / delete rooms and bots, operator-named team separators,
+and click-and-drag reorder. Layout lives in `$HERMES_HOME/retinue_sidebar.json`
+(not only localStorage). Archive hides without wiping a transcript or
+profile; delete confirms and never touches the default profile. Persona
+edits rewrite SOUL + meta in place (same slug, no restart).
 
 NoVNC (`infra-dfc1`) stays a separate gated increment.

@@ -4,6 +4,7 @@ export interface RoomMeta {
   members: string[];
   lead: string | null;
   max_agent_turns: number;
+  archived?: boolean;
 }
 
 export interface RoomMsg {
@@ -26,6 +27,42 @@ export interface AgentMeta {
   model_summary?: string;
   local_llm?: boolean;
   turn_timeout?: number;
+  archived?: boolean;
+  team?: string | null;
+}
+
+export interface SidebarTeam {
+  kind: "team";
+  id: string;
+  label: string;
+}
+
+export interface SidebarAgentItem {
+  kind: "agent";
+  slug: string;
+}
+
+export type SidebarItem = SidebarTeam | SidebarAgentItem;
+
+export interface SidebarLayout {
+  rooms: string[];
+  items: SidebarItem[];
+}
+
+export interface RoomPatch {
+  name?: string;
+  members?: string[];
+  lead?: string | null;
+  archived?: boolean;
+  max_agent_turns?: number;
+}
+
+export interface AgentPatch {
+  name?: string;
+  job?: string;
+  how?: string;
+  model?: string;
+  archived?: boolean;
 }
 
 export interface ModelPreset {
@@ -163,6 +200,8 @@ export const api = {
   listRooms: () => req<{ rooms: RoomMeta[] }>("GET", "/rooms"),
   createRoom: (name: string, members: string[], lead: string | null) =>
     req<RoomMeta>("POST", "/rooms", { name, members, lead }),
+  patchRoom: (id: string, body: RoomPatch) => req<RoomMeta>("PATCH", `/rooms/${id}`, body),
+  deleteRoom: (id: string) => req<{ deleted: string }>("DELETE", `/rooms/${id}`),
   transcript: (id: string, since: number, wait: number, signal?: AbortSignal) =>
     req<{ messages: RoomMsg[] }>(
       "GET",
@@ -189,6 +228,12 @@ export const api = {
     req<AgentMeta>("POST", "/agents", { name, job, how, model: model || undefined }),
   switchModel: (slug: string, model: string) =>
     req<AgentMeta>("PATCH", `/agents/${slug}`, { model }),
+  patchAgent: (slug: string, body: AgentPatch) =>
+    req<AgentMeta>("PATCH", `/agents/${slug}`, body),
+  deleteAgent: (slug: string) =>
+    req<{ deleted: string }>("DELETE", `/agents/${slug}`),
+  getSidebar: () => req<SidebarLayout>("GET", "/sidebar"),
+  putSidebar: (layout: SidebarLayout) => req<SidebarLayout>("PUT", "/sidebar", layout),
   listRoutines: () => req<{ routines: RoutineMeta[] }>("GET", "/routines"),
   saveRoutine: (name: string, room: string) =>
     req<RoutineMeta>("POST", "/routines", { name, room }),

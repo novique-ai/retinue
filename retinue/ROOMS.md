@@ -62,9 +62,11 @@ convention: no `RETINUE_ROOMS_API_KEY` → localhost-only):
 | `GET /health` | liveness (unauthenticated) |
 | `GET /models` | workspace model presets a hire can choose from (versioned; `grok` hidden when `grok-4.5` / `grok-4.6` exist) |
 | `GET/POST /agents` | roster / hire (`{name, job, how, model?}` — `model` names a preset) |
-| `GET/PATCH /agents/{slug}` | inspect / switch model (`{model: "grok-4.6"}`) — no config hand-edit |
-| `GET/POST /rooms` | list / create (`{name, members[], lead?, max_agent_turns?}`) |
-| `GET/DELETE /rooms/{id}` | inspect / remove |
+| `GET/PATCH /agents/{slug}` | inspect / edit (`{name?, job?, how?, model?, archived?}`) — SOUL rewrite in place; `model` still switches the preset. No restart. |
+| `DELETE /agents/{slug}` | remove `profiles/<slug>/` (never `default`); evicts the live registration |
+| `GET/POST /rooms` | list / create (`{name, members[], lead?, max_agent_turns?}`) — list is sidebar-ordered and includes `archived` |
+| `GET/PATCH/DELETE /rooms/{id}` | inspect / edit (`{name?, members?, lead?, archived?, max_agent_turns?}`) / remove. Archive hides without wiping the transcript. |
+| `GET/PUT /sidebar` | room order + team separators + agent order (`{rooms[], items:[{kind:team,id,label}|{kind:agent,slug}]}`) |
 | `POST /rooms/{id}/messages` | user speaks (`{text, from?}`) → 202, cycle runs async |
 | `GET /rooms/{id}/transcript?since=N&wait=S` | poll (optionally long-poll) the transcript — CLI / fallback |
 | `GET /rooms/{id}/stream?since=N` | SSE transcript (`event: messages`); `access_token` query accepted |
@@ -125,6 +127,9 @@ disk profiles so a hire that landed while the gateway was down is picked up.
 `$HERMES_HOME/retinue_rooms/` (default profile's home): `<room>.json` meta (atomic
 tmp+rename) and `<room>.transcript.jsonl` (append-only). Room members must exist as
 profiles (`~/.hermes/profiles/<name>/`, or `default`); creation warns about unknown names.
+`$HERMES_HOME/retinue_sidebar.json` holds room order and the agent/team list
+(team membership is the nearest preceding separator). Archive flags live on
+the room meta / `retinue-agent.json`; they hide an entry without deleting it.
 
 ## Env
 

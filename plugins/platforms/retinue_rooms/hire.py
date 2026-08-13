@@ -586,6 +586,7 @@ def list_agents(home_dir: str) -> List[Dict[str, Any]]:
             meta = None
         if meta is None:
             meta = {"display_name": name, "slug": name, "job": "", "how": ""}
+        meta["archived"] = bool(meta.get("archived"))
         meta["has_soul"] = os.path.isfile(os.path.join(pdir, "SOUL.md"))
         meta["local_llm"] = profile_uses_local_llm(home_dir, name)
         meta["turn_timeout"] = int(turn_timeout_for(home_dir, name))
@@ -603,3 +604,155 @@ def list_agents(home_dir: str) -> List[Dict[str, Any]]:
             meta["model_preset"] = stored
         agents.append(meta)
     return agents
+
+
+_SLUG_OK = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+
+
+def _profile_dir(home_dir: str, slug: str) -> str:
+    """Resolved profiles/<slug>/ — refuses reserved names and traversal."""
+    slug = (slug or "").strip()
+    if not slug or slug in _RESERVED:
+        raise ValueError(f"cannot change profile {slug!r}")
+    if not _SLUG_OK.fullmatch(slug):
+        raise ValueError(f"invalid profile name {slug!r}")
+    root = os.path.realpath(os.path.join(home_dir, "profiles"))
+    path = os.path.realpath(os.path.join(root, slug))
+    if path != root and not path.startswith(root + os.sep):
+        raise ValueError(f"invalid profile name {slug!r}")
+    return path
+
+
+def _load_meta(profile_dir: str, slug: str) -> Dict[str, Any]:
+    path = os.path.join(profile_dir, AGENT_META_FILENAME)
+    try:
+        with open(path, encoding="utf-8") as f:
+            loaded = json.load(f)
+        if isinstance(loaded, dict):
+            loaded.setdefault("display_name", slug)
+            loaded.setdefault("slug", slug)
+            loaded.setdefault("job", "")
+            loaded.setdefault("how", "")
+            return loaded
+    except (OSError, ValueError):
+        pass
+    return {"display_name": slug, "slug": slug, "job": "", "how": ""}
+
+
+def _write_meta(profile_dir: str, meta: Dict[str, Any]) -> None:
+    path = os.path.join(profile_dir, AGENT_META_FILENAME)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(meta, f, indent=2)
+    os.replace(tmp, path)
+
+
+def _agent_or_raise(home_dir: str, slug: str) -> Dict[str, Any]:
+    for agent in list_agents(home_dir):
+        if agent.get("slug") == slug:
+            return agent
+    raise KeyError(slug)
+
+
+def update_agent(
+    home_dir: str,
+    slug: str,
+    *,
+    display_name: Optional[str] = None,
+    job: Optional[str] = None,
+    how: Optional[str] = None,
+    archived: Optional[bool] = None,
+) -> Dict[str, Any]:
+    """Rewrite SOUL + meta for an existing hire. Slug stays put.
+
+    Pass only the fields that should change. ``archived=True`` hides the
+    bot from the hire-into-room list and the sidebar without deleting
+    ``profiles/<slug>/``.
+    """
+    profile_dir = _profile_dir(home_dir, slug)
+    if not os.path.isdir(profile_dir):
+        raise KeyError(slug)
+    if display_name is None and job is None and how is None and archived is None:
+        raise ValueError("nothing to update")
+
+    meta = _load_meta(profile_dir, slug)
+    persona_changed = False
+    if display_name is not None:
+        display_name = display_name.strip()
+        if not display_name:
+            raise ValueError("agent name is required")
+        meta["display_name"] = display_name
+        persona_changed = True
+    if job is not None:
+        job = job.strip()
+        if not job:
+            raise ValueError("primary job is required")
+        meta["job"] = job
+        persona_changed = True
+    if how is not None:
+        meta["how"] = (how or "").strip()
+        persona_changed = True
+    if archived is not None:
+        meta["archived"] = bool(archived)
+    meta["slug"] = slug
+    meta["updated_at"] = time.time()
+
+    if persona_changed:
+        soul_path = os.path.join(profile_dir, "SOUL.md")
+        with open(soul_path, "w", encoding="utf-8") as f:
+            f.write(
+                soul_template(
+                    str(meta.get("display_name") or slug),
+                    str(meta.get("job") or ""),
+                    str(meta.get("how") or ""),
+                )
+            )
+    _write_meta(profile_dir, meta)
+    return _agent_or_raise(home_dir, slug)
+
+
+def delete_agent(home_dir: str, slug: str) -> str:
+    """Remove ``profiles/<slug>/``. Never touches the default profile."""
+    profile_dir = _profile_dir(home_dir, slug)
+    if not os.path.isdir(profile_dir):
+        raise KeyError(slug)
+    shutil.rmtree(profile_dir)
+    return slug
+
+
+def deactivate_hired_profile(slug: str, runner: Any = None) -> Dict[str, Any]:
+    """Reverse of ``activate_hired_profile``: evict cache + pairing.
+
+    Plugin-shaped: uses the runner's existing seams. Safe if the runner
+    is missing — the profile is already gone from disk.
+    """
+    slug = (slug or "").strip()
+    evicted = evict_profile_agent_cache(runner, slug)
+    if runner is None or not slug:
+        return {"evicted": evicted, "deregistered": False}
+
+    stores = getattr(runner, "pairing_stores", None)
+    if isinstance(stores, dict):
+        stores.pop(slug, None)
+
+    adapters = getattr(runner, "_profile_adapters", None)
+    if isinstance(adapters, dict):
+        adapters.pop(slug, None)
+
+    try:
+        from gateway.status import write_runtime_status
+
+        served = {"default"}
+        if isinstance(stores, dict):
+            served.update(str(name) for name in stores if name)
+        if isinstance(adapters, dict):
+            served.update(str(name) for name in adapters if name)
+        served.discard(slug)
+        write_runtime_status(served_profiles=sorted(served))
+    except Exception:
+        logger.debug(
+            "Retinue: runtime status update after evicting %s failed",
+            slug,
+            exc_info=True,
+        )
+    return {"evicted": evicted, "deregistered": True}

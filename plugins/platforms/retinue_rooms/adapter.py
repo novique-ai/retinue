@@ -40,7 +40,7 @@ from gateway.platforms.base import (
     SendResult,
 )
 
-from . import engine, hire, routines, voice, workspace
+from . import engine, hire, routines, sidebar, voice, workspace
 from .engine import KIND_AGENT, KIND_SYSTEM, KIND_USER, Room, RoomMessage
 from .store import RoomStore
 
@@ -321,6 +321,77 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             )
         return payload
 
+    def patch_room(self, room_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
+        """Rename, restaff, archive, or change the lead. Transcript stays."""
+        room = self.store.get(room_id)
+        if room is None:
+            raise KeyError(room_id)
+        touched = False
+        if "name" in body:
+            name = str(body.get("name") or "").strip()
+            if not name:
+                raise ValueError("room name is required")
+            room.name = name
+            touched = True
+        if "members" in body:
+            members = [str(m).strip() for m in (body.get("members") or []) if str(m).strip()]
+            if not members:
+                raise ValueError("a room needs at least one agent member")
+            room.members = members
+            if room.lead and room.lead not in room.members:
+                room.lead = room.members[0]
+            touched = True
+        if "lead" in body:
+            lead_raw = body.get("lead")
+            lead = (str(lead_raw).strip() if lead_raw is not None else "") or None
+            if lead and lead not in room.members:
+                raise ValueError(f"lead {lead!r} is not a member")
+            room.lead = lead
+            touched = True
+        if "archived" in body:
+            room.archived = bool(body.get("archived"))
+            touched = True
+        if "max_agent_turns" in body and body.get("max_agent_turns") is not None:
+            room.max_agent_turns = max(1, int(body.get("max_agent_turns")))
+            touched = True
+        if not touched:
+            raise ValueError("nothing to update")
+        self.store.update(room)
+        unknown = [m for m in room.members if not self._profile_exists(m)]
+        payload = room.to_dict()
+        if unknown:
+            payload["warning"] = (
+                "unknown profiles (create them before they can speak): " + ", ".join(unknown)
+            )
+        return payload
+
+    def list_rooms_public(self) -> List[Dict[str, Any]]:
+        rooms = self.store.list_rooms()
+        layout = self._sidebar_resolved(rooms, hire.list_agents(self._home_dir()))
+        order = {rid: i for i, rid in enumerate(layout["rooms"])}
+        rooms.sort(key=lambda r: (order.get(r.id, 10_000), r.created_at, r.name))
+        return [r.to_dict() for r in rooms]
+
+    def _sidebar_resolved(
+        self, rooms: Optional[List[Room]] = None, agents: Optional[List[Dict[str, Any]]] = None
+    ) -> Dict[str, Any]:
+        if rooms is None:
+            rooms = self.store.list_rooms()
+        if agents is None:
+            agents = hire.list_agents(self._home_dir())
+        return sidebar.load_resolved(
+            self._home_dir(),
+            [r.id for r in rooms],
+            [str(a.get("slug") or "") for a in agents],
+        )
+
+    def get_sidebar(self) -> Dict[str, Any]:
+        return self._sidebar_resolved()
+
+    def put_sidebar(self, body: Dict[str, Any]) -> Dict[str, Any]:
+        sidebar.save(self._home_dir(), body)
+        return self._sidebar_resolved()
+
     @staticmethod
     def _home_dir() -> str:
         return os.getenv("HERMES_HOME") or os.path.expanduser("~/.hermes")
@@ -334,7 +405,19 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
     # ── agents (the hire flow) ───────────────────────────────────────────
 
     def list_agents(self) -> List[Dict[str, Any]]:
-        return hire.list_agents(self._home_dir())
+        agents = hire.list_agents(self._home_dir())
+        layout = self._sidebar_resolved(self.store.list_rooms(), agents)
+        team_of = sidebar.team_for_agents(layout["items"])
+        order = {
+            item["slug"]: i
+            for i, item in enumerate(layout["items"])
+            if item.get("kind") == "agent"
+        }
+        for agent in agents:
+            slug = str(agent.get("slug") or "")
+            agent["team"] = team_of.get(slug)
+        agents.sort(key=lambda a: (order.get(str(a.get("slug") or ""), 10_000), str(a.get("slug") or "")))
+        return agents
 
     def list_model_presets(self) -> List[Dict[str, Any]]:
         try:
@@ -350,14 +433,60 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         AIAgents so the next room turn loads the new model. No gateway
         restart, no hand-edit of ``profiles/<slug>/config.yaml``.
         """
-        try:
-            hire.ensure_bundled_cloud_presets(self._home_dir())
-        except Exception:
-            logger.debug("Retinue rooms: preset seed on switch failed", exc_info=True)
-        meta = hire.apply_model_preset(self._home_dir(), slug, model)
-        evicted = hire.evict_profile_agent_cache(self._live_runner(), slug)
+        return self.patch_agent(slug, {"model": model})
+
+    def patch_agent(self, slug: str, body: Dict[str, Any]) -> Dict[str, Any]:
+        """Edit persona / archive / switch model. Same slug, no restart."""
+        slug = (slug or "").strip()
+        model = str(body.get("model") or "").strip()
+        persona: Dict[str, Any] = {}
+        if "name" in body or "display_name" in body:
+            persona["display_name"] = str(body.get("name") or body.get("display_name") or "")
+        if "job" in body:
+            persona["job"] = str(body.get("job") or "")
+        if "how" in body:
+            persona["how"] = str(body.get("how") or "")
+        if "archived" in body:
+            persona["archived"] = bool(body.get("archived"))
+        if not model and not persona:
+            raise ValueError("nothing to update")
+        if persona:
+            hire.update_agent(self._home_dir(), slug, **persona)
+        evicted = 0
+        if model:
+            try:
+                hire.ensure_bundled_cloud_presets(self._home_dir())
+            except Exception:
+                logger.debug("Retinue rooms: preset seed on switch failed", exc_info=True)
+            meta = hire.apply_model_preset(self._home_dir(), slug, model)
+            evicted = hire.evict_profile_agent_cache(self._live_runner(), slug)
+        else:
+            evicted = hire.evict_profile_agent_cache(self._live_runner(), slug)
+            meta = next(
+                (a for a in hire.list_agents(self._home_dir()) if a.get("slug") == slug),
+                None,
+            )
+            if meta is None:
+                raise KeyError(slug)
         meta["cache_evicted"] = evicted
+        layout = self._sidebar_resolved()
+        meta["team"] = sidebar.team_for_agents(layout["items"]).get(slug)
         return meta
+
+    def delete_agent(self, slug: str) -> Dict[str, Any]:
+        """Remove ``profiles/<slug>/`` and evict the live registration."""
+        removed = hire.delete_agent(self._home_dir(), slug)
+        dropped = hire.deactivate_hired_profile(removed, runner=self._live_runner())
+        # Drop the slug from the persisted order so it does not come back
+        # as a ghost if a later hire reuses the name.
+        layout = sidebar.load(self._home_dir())
+        layout["items"] = [
+            item
+            for item in layout.get("items") or []
+            if not (item.get("kind") == "agent" and item.get("slug") == removed)
+        ]
+        sidebar.save(self._home_dir(), layout)
+        return {"deleted": removed, **dropped}
 
     def hire_agent(
         self, name: str, job: str, how: str, model: Optional[str] = None
@@ -765,7 +894,17 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
         return True
 
-    _API_PREFIXES = ("rooms", "agents", "models", "health", "routines", "workspace", "voice", "tts")
+    _API_PREFIXES = (
+        "rooms",
+        "agents",
+        "models",
+        "health",
+        "routines",
+        "workspace",
+        "voice",
+        "tts",
+        "sidebar",
+    )
 
     def do_GET(self):
         parsed = urlparse(self.path)
@@ -799,8 +938,10 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
             return self._json(200, workspace.workspace_status())
         if parts == ["voice"]:
             return self._json(200, voice.status())
+        if parts == ["sidebar"]:
+            return self._json(200, adapter.get_sidebar())
         if parts == ["rooms"]:
-            return self._json(200, {"rooms": [r.to_dict() for r in adapter.store.list_rooms()]})
+            return self._json(200, {"rooms": adapter.list_rooms_public()})
         if len(parts) == 2 and parts[0] == "rooms":
             room = adapter.store.get(parts[1])
             if room is None:
@@ -1007,14 +1148,35 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
             return self._json(400, {"error": "invalid or oversized JSON body"})
         if len(parts) == 2 and parts[0] == "agents":
             try:
-                payload = adapter.switch_agent_model(
-                    parts[1], str(body.get("model") or "")
-                )
+                payload = adapter.patch_agent(parts[1], body)
             except KeyError:
                 return self._json(404, {"error": "no such agent"})
             except ValueError as e:
                 return self._json(400, {"error": str(e)})
             return self._json(200, payload)
+        if len(parts) == 2 and parts[0] == "rooms":
+            try:
+                payload = adapter.patch_room(parts[1], body)
+            except KeyError:
+                return self._json(404, {"error": "no such room"})
+            except (ValueError, TypeError) as e:
+                return self._json(400, {"error": str(e)})
+            return self._json(200, payload)
+        return self._json(404, {"error": "not found"})
+
+    def do_PUT(self):
+        if not self._authorized():
+            return self._json(401, {"error": "unauthorized"})
+        parsed = urlparse(self.path)
+        parts = [p for p in parsed.path.split("/") if p]
+        body = self._read_body()
+        if body is None:
+            return self._json(400, {"error": "invalid or oversized JSON body"})
+        if parts == ["sidebar"]:
+            try:
+                return self._json(200, self.server.adapter.put_sidebar(body))
+            except ValueError as e:
+                return self._json(400, {"error": str(e)})
         return self._json(404, {"error": "not found"})
 
     def do_DELETE(self):
@@ -1025,6 +1187,14 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
             if self.server.adapter.store.delete(parts[1]):
                 return self._json(200, {"deleted": parts[1]})
             return self._json(404, {"error": "no such room"})
+        if len(parts) == 2 and parts[0] == "agents":
+            try:
+                payload = self.server.adapter.delete_agent(parts[1])
+            except KeyError:
+                return self._json(404, {"error": "no such agent"})
+            except ValueError as e:
+                return self._json(400, {"error": str(e)})
+            return self._json(200, payload)
         if len(parts) == 2 and parts[0] == "routines":
             if routines.delete_routine(self.server.adapter._home_dir(), parts[1]):
                 return self._json(200, {"deleted": parts[1]})

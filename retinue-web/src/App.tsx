@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type DragEvent } from "react";
 import {
   AgentMeta,
+  AgentPatch,
   api,
   AuthRequiredError,
   getApiKey,
@@ -9,6 +10,8 @@ import {
   RoomMsg,
   RoutineMeta,
   setApiKey,
+  SidebarItem,
+  SidebarLayout,
   VoiceStatus,
   WorkspaceStatus,
 } from "./api";
@@ -108,6 +111,78 @@ async function startMic(): Promise<{ stop: () => Promise<Blob> }> {
 }
 
 const SPEAK_KEY = "retinue.speakReplies";
+const ARCHIVED_KEY = "retinue.showArchived";
+const DRAG_MIME = "application/x-retinue";
+
+function itemKey(item: SidebarItem): string {
+  return item.kind === "team" ? `team:${item.id}` : `agent:${item.slug}`;
+}
+
+function relocate<T>(list: T[], from: number, insertAt: number): T[] {
+  if (from < 0 || from >= list.length) return list.slice();
+  const next = list.slice();
+  const [picked] = next.splice(from, 1);
+  let at = insertAt > from ? insertAt - 1 : insertAt;
+  if (at < 0) at = 0;
+  if (at > next.length) at = next.length;
+  next.splice(at, 0, picked);
+  return next;
+}
+
+function fallbackLayout(rooms: RoomMeta[], agents: AgentMeta[]): SidebarLayout {
+  return {
+    rooms: rooms.map((r) => r.id),
+    items: agents.map((a) => ({ kind: "agent" as const, slug: a.slug })),
+  };
+}
+
+function RowMenu({
+  actions,
+}: {
+  actions: { label: string; danger?: boolean; onClick: () => void }[];
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const close = (e: MouseEvent) => {
+      if (!ref.current?.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
+  }, [open]);
+  return (
+    <div className="row-menu-wrap" ref={ref}>
+      <button
+        className="row-menu-btn"
+        title="More"
+        onClick={(e) => {
+          e.stopPropagation();
+          setOpen((v) => !v);
+        }}
+      >
+        ⋯
+      </button>
+      {open && (
+        <div className="row-menu">
+          {actions.map((a) => (
+            <button
+              key={a.label}
+              className={a.danger ? "danger" : undefined}
+              onClick={(e) => {
+                e.stopPropagation();
+                setOpen(false);
+                a.onClick();
+              }}
+            >
+              {a.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 // ── message row ──────────────────────────────────────────────────────────
 
@@ -137,7 +212,19 @@ function MessageRow({ msg, userName }: { msg: RoomMsg; userName: string }) {
 
 // ── room chat view ───────────────────────────────────────────────────────
 
-function RoomView({ room, userName }: { room: RoomMeta; userName: string }) {
+function RoomView({
+  room,
+  userName,
+  onEdit,
+  onArchive,
+  onDelete,
+}: {
+  room: RoomMeta;
+  userName: string;
+  onEdit: () => void;
+  onArchive: () => void;
+  onDelete: () => void;
+}) {
   const [messages, setMessages] = useState<RoomMsg[]>([]);
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
@@ -263,19 +350,35 @@ function RoomView({ room, userName }: { room: RoomMeta; userName: string }) {
   return (
     <div className="room-view">
       <header className="room-header">
-        <h2>{room.name}</h2>
-        <div className="room-members">
-          {room.members.map((m) => (
-            <span key={m} className="member-chip">
-              <Avatar src={agentIcon(m)} label={m} size={24} />
-              <span className="chip" style={{ color: chipColor(m) }}>
-                @{m}
-                {room.lead === m ? " ★" : ""}
+        <div className="room-header-main">
+          <h2>
+            {room.name}
+            {room.archived ? " (archived)" : ""}
+          </h2>
+          <div className="room-members">
+            {room.members.map((m) => (
+              <span key={m} className="member-chip">
+                <Avatar src={agentIcon(m)} label={m} size={24} />
+                <span className="chip" style={{ color: chipColor(m) }}>
+                  @{m}
+                  {room.lead === m ? " ★" : ""}
+                </span>
               </span>
-            </span>
-          ))}
+            ))}
+          </div>
+        </div>
+        <div className="room-header-actions">
+          <button className="mini wide" onClick={onEdit}>
+            Edit
+          </button>
+          <button className="mini wide" onClick={onArchive}>
+            {room.archived ? "Unarchive" : "Archive"}
+          </button>
+          <button className="mini wide danger-btn" onClick={onDelete}>
+            Delete
+          </button>
           <button
-            className="mini"
+            className="mini wide"
             onClick={async () => {
               const name = window.prompt("Save this room's user prompts as a routine named:");
               if (!name) return;
@@ -503,17 +606,21 @@ function NewRoomPanel({
         <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Ops room" />
       </label>
       <div className="member-pick">
-        {agents.map((a) => (
-          <button
-            key={a.slug}
-            className={picked.includes(a.slug) ? "pick picked" : "pick"}
-            onClick={() => toggle(a.slug)}
-          >
-            <Avatar src={agentIcon(a.slug)} label={a.slug} size={18} />
-            @{a.slug}
-          </button>
-        ))}
-        {agents.length === 0 && <p className="note">No agents yet — hire one first.</p>}
+        {agents
+          .filter((a) => !a.archived)
+          .map((a) => (
+            <button
+              key={a.slug}
+              className={picked.includes(a.slug) ? "pick picked" : "pick"}
+              onClick={() => toggle(a.slug)}
+            >
+              <Avatar src={agentIcon(a.slug)} label={a.slug} size={18} />
+              @{a.slug}
+            </button>
+          ))}
+        {agents.filter((a) => !a.archived).length === 0 && (
+          <p className="note">No agents yet — hire one first.</p>
+        )}
       </div>
       {picked.length > 0 && (
         <label>
@@ -552,6 +659,155 @@ function NewRoomPanel({
   );
 }
 
+function EditRoomPanel({
+  room,
+  agents,
+  onDone,
+}: {
+  room: RoomMeta;
+  agents: AgentMeta[];
+  onDone: (updated?: RoomMeta) => void;
+}) {
+  const [name, setName] = useState(room.name);
+  const [picked, setPicked] = useState<string[]>(room.members);
+  const [lead, setLead] = useState<string>(room.lead ?? "");
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState("");
+  const visible = agents.filter((a) => !a.archived || picked.includes(a.slug));
+  const toggle = (slug: string) =>
+    setPicked((p) => (p.includes(slug) ? p.filter((x) => x !== slug) : [...p, slug]));
+  return (
+    <div className="panel">
+      <h3>Edit room</h3>
+      <label>
+        Room name
+        <input value={name} onChange={(e) => setName(e.target.value)} />
+      </label>
+      <div className="member-pick">
+        {visible.map((a) => (
+          <button
+            key={a.slug}
+            className={picked.includes(a.slug) ? "pick picked" : "pick"}
+            onClick={() => toggle(a.slug)}
+          >
+            <Avatar src={agentIcon(a.slug)} label={a.slug} size={18} />
+            @{a.slug}
+          </button>
+        ))}
+      </div>
+      {picked.length > 0 && (
+        <label>
+          Lead (answers when nobody is mentioned)
+          <select value={lead} onChange={(e) => setLead(e.target.value)}>
+            <option value="">first member</option>
+            {picked.map((m) => (
+              <option key={m} value={m}>
+                @{m}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+      {note && <p className="note">{note}</p>}
+      <div className="panel-actions">
+        <button onClick={() => onDone()}>Cancel</button>
+        <button
+          className="primary"
+          disabled={busy || !name.trim() || picked.length === 0}
+          onClick={async () => {
+            setBusy(true);
+            try {
+              onDone(
+                await api.patchRoom(room.id, {
+                  name: name.trim(),
+                  members: picked,
+                  lead: lead || null,
+                }),
+              );
+            } catch (e) {
+              setNote(String(e));
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
+          Save
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function EditAgentPanel({
+  agent,
+  models,
+  onDone,
+}: {
+  agent: AgentMeta;
+  models: ModelPreset[];
+  onDone: (updated?: AgentMeta) => void;
+}) {
+  const [name, setName] = useState(agent.display_name || agent.slug);
+  const [job, setJob] = useState(agent.job || "");
+  const [how, setHow] = useState(agent.how || "");
+  const [model, setModel] = useState(agent.model_preset || "");
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState("");
+  return (
+    <div className="panel">
+      <h3>Edit @{agent.slug}</h3>
+      <p className="note">Rewrites this profile&apos;s SOUL — the slug stays @{agent.slug}.</p>
+      <label>
+        Name
+        <input value={name} onChange={(e) => setName(e.target.value)} />
+      </label>
+      <label>
+        Primary job
+        <input value={job} onChange={(e) => setJob(e.target.value)} />
+      </label>
+      <label>
+        How it should work
+        <textarea value={how} onChange={(e) => setHow(e.target.value)} rows={4} />
+      </label>
+      {models.length > 0 && (
+        <label>
+          Model
+          <select value={model} onChange={(e) => setModel(e.target.value)}>
+            {!model && <option value="">current model</option>}
+            {models.map((m) => (
+              <option key={m.name} value={m.name}>
+                {m.name} ({m.summary})
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+      {note && <p className="note">{note}</p>}
+      <div className="panel-actions">
+        <button onClick={() => onDone()}>Cancel</button>
+        <button
+          className="primary"
+          disabled={busy || !name.trim() || !job.trim()}
+          onClick={async () => {
+            setBusy(true);
+            try {
+              const body: AgentPatch = { name: name.trim(), job: job.trim(), how };
+              if (model && model !== agent.model_preset) body.model = model;
+              onDone(await api.patchAgent(agent.slug, body));
+            } catch (e) {
+              setNote(String(e));
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
+          Save
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function KeyPanel({ onDone }: { onDone: () => void }) {
   const [key, setKey] = useState(getApiKey());
   return (
@@ -579,7 +835,9 @@ function KeyPanel({ onDone }: { onDone: () => void }) {
 
 // ── shell ────────────────────────────────────────────────────────────────
 
-type Modal = "hire" | "room" | "key" | null;
+type Modal = "hire" | "room" | "key" | "edit-room" | "edit-agent" | null;
+type DragPayload = { list: "rooms" | "items"; id: string };
+type DropHint = { list: "rooms" | "items"; id: string; place: "before" | "after" } | null;
 
 export default function App() {
   const [rooms, setRooms] = useState<RoomMeta[]>([]);
@@ -587,8 +845,15 @@ export default function App() {
   const [models, setModels] = useState<ModelPreset[]>([]);
   const [routineList, setRoutineList] = useState<RoutineMeta[]>([]);
   const [workspaceInfo, setWorkspaceInfo] = useState<WorkspaceStatus | null>(null);
+  const [layout, setLayout] = useState<SidebarLayout>({ rooms: [], items: [] });
   const [current, setCurrent] = useState<RoomMeta | null>(null);
   const [modal, setModal] = useState<Modal>(null);
+  const [editingRoom, setEditingRoom] = useState<RoomMeta | null>(null);
+  const [editingAgent, setEditingAgent] = useState<AgentMeta | null>(null);
+  const [showArchived, setShowArchived] = useState(
+    () => localStorage.getItem(ARCHIVED_KEY) === "1",
+  );
+  const [dropHint, setDropHint] = useState<DropHint>(null);
   const [userName] = useState(() => localStorage.getItem("retinue.userName") ?? "You");
 
   const refresh = useCallback(async () => {
@@ -605,6 +870,12 @@ export default function App() {
       setModels(m.models);
       setRoutineList(rt.routines);
       setWorkspaceInfo(ws);
+      try {
+        setLayout(await api.getSidebar());
+      } catch {
+        setLayout(fallbackLayout(r.rooms, a.agents));
+      }
+      setCurrent((cur) => (cur ? (r.rooms.find((x) => x.id === cur.id) ?? null) : null));
     } catch (e) {
       if (e instanceof AuthRequiredError) setModal("key");
       else console.error(e);
@@ -614,6 +885,155 @@ export default function App() {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  const persistLayout = useCallback(
+    async (next: SidebarLayout) => {
+      setLayout(next);
+      try {
+        setLayout(await api.putSidebar(next));
+        await refresh();
+      } catch (e) {
+        alert(String(e));
+        await refresh();
+      }
+    },
+    [refresh],
+  );
+
+  const visibleRooms = rooms.filter((r) => showArchived || !r.archived);
+  const agentsBySlug = Object.fromEntries(agents.map((a) => [a.slug, a]));
+  const visibleCast = agents.filter((a) => !a.archived);
+
+  const archiveRoom = async (room: RoomMeta) => {
+    try {
+      const updated = await api.patchRoom(room.id, { archived: !room.archived });
+      if (current?.id === room.id) setCurrent(updated);
+      await refresh();
+    } catch (e) {
+      alert(String(e));
+    }
+  };
+
+  const deleteRoom = async (room: RoomMeta) => {
+    if (
+      !window.confirm(
+        `Delete room "${room.name}"? This removes the transcript. Archive instead if you want to keep it.`,
+      )
+    ) {
+      return;
+    }
+    try {
+      await api.deleteRoom(room.id);
+      if (current?.id === room.id) setCurrent(null);
+      await refresh();
+    } catch (e) {
+      alert(String(e));
+    }
+  };
+
+  const archiveAgent = async (agent: AgentMeta) => {
+    try {
+      await api.patchAgent(agent.slug, { archived: !agent.archived });
+      await refresh();
+    } catch (e) {
+      alert(String(e));
+    }
+  };
+
+  const deleteAgent = async (agent: AgentMeta) => {
+    if (agent.slug === "default") {
+      alert("The default profile cannot be deleted.");
+      return;
+    }
+    if (
+      !window.confirm(
+        `Delete @${agent.slug}? This removes profiles/${agent.slug}/ and cannot be undone.`,
+      )
+    ) {
+      return;
+    }
+    try {
+      await api.deleteAgent(agent.slug);
+      await refresh();
+    } catch (e) {
+      alert(String(e));
+    }
+  };
+
+  const addTeam = () => {
+    const label = (window.prompt("Team name", "Cloud staff") || "").trim();
+    if (!label) return;
+    void persistLayout({
+      ...layout,
+      items: [...layout.items, { kind: "team", id: `team-${Date.now()}`, label }],
+    });
+  };
+
+  const renameTeam = (id: string, currentLabel: string) => {
+    const label = (window.prompt("Rename team", currentLabel) || "").trim();
+    if (!label) return;
+    void persistLayout({
+      ...layout,
+      items: layout.items.map((item) =>
+        item.kind === "team" && item.id === id ? { ...item, label } : item,
+      ),
+    });
+  };
+
+  const deleteTeam = (id: string, label: string) => {
+    if (!window.confirm(`Remove the "${label}" separator? Bots stay; they just ungroup.`)) return;
+    void persistLayout({
+      ...layout,
+      items: layout.items.filter((item) => !(item.kind === "team" && item.id === id)),
+    });
+  };
+
+  const parseDrag = (e: DragEvent): DragPayload | null => {
+    const raw = e.dataTransfer.getData(DRAG_MIME) || e.dataTransfer.getData("text/plain");
+    if (!raw) return null;
+    try {
+      return JSON.parse(raw) as DragPayload;
+    } catch {
+      return null;
+    }
+  };
+
+  const placeFromEvent = (e: DragEvent): "before" | "after" => {
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    return e.clientY > rect.top + rect.height / 2 ? "after" : "before";
+  };
+
+  const startDrag = (e: DragEvent, payload: DragPayload) => {
+    e.dataTransfer.setData(DRAG_MIME, JSON.stringify(payload));
+    e.dataTransfer.setData("text/plain", JSON.stringify(payload));
+    e.dataTransfer.effectAllowed = "move";
+  };
+
+  const dropOnRoom = (e: DragEvent, targetId: string) => {
+    e.preventDefault();
+    setDropHint(null);
+    const drag = parseDrag(e);
+    if (!drag || drag.list !== "rooms" || drag.id === targetId) return;
+    const from = layout.rooms.indexOf(drag.id);
+    const to = layout.rooms.indexOf(targetId);
+    if (from < 0 || to < 0) return;
+    const insertAt = placeFromEvent(e) === "after" ? to + 1 : to;
+    void persistLayout({ ...layout, rooms: relocate(layout.rooms, from, insertAt) });
+  };
+
+  const dropOnItem = (e: DragEvent, target: SidebarItem) => {
+    e.preventDefault();
+    setDropHint(null);
+    const drag = parseDrag(e);
+    if (!drag || drag.list !== "items") return;
+    const from = layout.items.findIndex((item) => itemKey(item) === drag.id);
+    const to = layout.items.findIndex((item) => itemKey(item) === itemKey(target));
+    if (from < 0 || to < 0 || from === to) return;
+    // Dropping a bot onto a team separator assigns it to that team.
+    const ontoTeam = target.kind === "team" && drag.id.startsWith("agent:");
+    const insertAt = ontoTeam || placeFromEvent(e) === "after" ? to + 1 : to;
+    void persistLayout({ ...layout, items: relocate(layout.items, from, insertAt) });
+  };
 
   return (
     <div className="shell">
@@ -625,81 +1045,220 @@ export default function App() {
         <div className="section">
           <div className="section-head">
             <span>Rooms</span>
-            <button className="mini" onClick={() => setModal("room")}>
+            <button className="mini" onClick={() => setModal("room")} title="New room">
               +
             </button>
           </div>
-          {rooms.map((r) => (
-            <button
-              key={r.id}
-              className={current?.id === r.id ? "nav-item active" : "nav-item"}
-              onClick={() => setCurrent(r)}
-            >
-              {r.name}
-              <span className="nav-sub nav-faces">
-                {r.members.map((m) => (
-                  <Avatar key={m} src={agentIcon(m)} label={m} size={18} />
-                ))}
-              </span>
-            </button>
-          ))}
-          {rooms.length === 0 && <p className="note pad">No rooms yet.</p>}
+          {visibleRooms.map((r) => {
+            const hint = dropHint?.list === "rooms" && dropHint.id === r.id ? dropHint.place : "";
+            return (
+              <div
+                key={r.id}
+                className={`nav-row${r.archived ? " archived" : ""}${hint ? ` drop-${hint}` : ""}`}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  setDropHint({ list: "rooms", id: r.id, place: placeFromEvent(e) });
+                }}
+                onDragLeave={() => setDropHint((h) => (h?.id === r.id ? null : h))}
+                onDrop={(e) => dropOnRoom(e, r.id)}
+              >
+                <span
+                  className="drag-handle"
+                  title="Drag to reorder"
+                  draggable
+                  onDragStart={(e) => startDrag(e, { list: "rooms", id: r.id })}
+                >
+                  ⋮⋮
+                </span>
+                <button
+                  className={current?.id === r.id ? "nav-item active" : "nav-item"}
+                  onClick={() => setCurrent(r)}
+                >
+                  {r.name}
+                  {r.archived ? " (archived)" : ""}
+                  <span className="nav-sub nav-faces">
+                    {r.members.map((m) => (
+                      <Avatar key={m} src={agentIcon(m)} label={m} size={18} />
+                    ))}
+                  </span>
+                </button>
+                <RowMenu
+                  actions={[
+                    {
+                      label: "Edit",
+                      onClick: () => {
+                        setEditingRoom(r);
+                        setModal("edit-room");
+                      },
+                    },
+                    {
+                      label: r.archived ? "Unarchive" : "Archive",
+                      onClick: () => void archiveRoom(r),
+                    },
+                    { label: "Delete", danger: true, onClick: () => void deleteRoom(r) },
+                  ]}
+                />
+              </div>
+            );
+          })}
+          {visibleRooms.length === 0 && <p className="note pad">No rooms yet.</p>}
         </div>
         <div className="section">
           <div className="section-head">
             <span>Agents</span>
-            <button className="mini" onClick={() => setModal("hire")}>
-              +
-            </button>
-          </div>
-          {agents.map((a) => (
-            <div key={a.slug} className="agent-item">
-              <Avatar src={agentIcon(a.slug)} label={a.display_name || a.slug} size={32} />
-              <div className="agent-copy">
-                <span className="chip" style={{ color: chipColor(a.slug) }}>
-                  @{a.slug}
-                </span>
-                <span className="nav-sub">
-                  {a.job || "hand-made profile"}
-                  {a.model_preset
-                    ? ` · ${a.model_preset}`
-                    : a.model_summary
-                      ? ` · ${a.model_summary}`
-                      : ""}
-                  {a.local_llm
-                    ? ` · local · ${Math.round((a.turn_timeout ?? 1800) / 60)}m`
-                    : a.turn_timeout
-                      ? ` · cloud · ${Math.round(a.turn_timeout / 60)}m`
-                      : ""}
-                </span>
-                {models.length > 0 && (
-                  <select
-                    className="agent-model"
-                    value={a.model_preset || ""}
-                    title={a.model_summary || "switch model"}
-                    onChange={async (e) => {
-                      const next = e.target.value;
-                      if (!next || next === a.model_preset) return;
-                      try {
-                        await api.switchModel(a.slug, next);
-                        await refresh();
-                      } catch (err) {
-                        alert(String(err));
-                      }
-                    }}
-                  >
-                    {!a.model_preset && <option value="">current model</option>}
-                    {models.map((m) => (
-                      <option key={m.name} value={m.name}>
-                        {m.name}
-                      </option>
-                    ))}
-                  </select>
-                )}
-              </div>
+            <div className="head-actions">
+              <button className="mini wide" onClick={addTeam} title="Add team separator">
+                team
+              </button>
+              <button className="mini" onClick={() => setModal("hire")} title="Hire">
+                +
+              </button>
             </div>
-          ))}
+          </div>
+          {layout.items.map((item) => {
+            if (item.kind === "team") {
+              const hint =
+                dropHint?.list === "items" && dropHint.id === itemKey(item) ? dropHint.place : "";
+              return (
+                <div
+                  key={itemKey(item)}
+                  className={`team-bar${hint ? ` drop-${hint}` : ""}`}
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    setDropHint({
+                      list: "items",
+                      id: itemKey(item),
+                      place: placeFromEvent(e),
+                    });
+                  }}
+                  onDrop={(e) => dropOnItem(e, item)}
+                >
+                  <span
+                    className="drag-handle"
+                    title="Drag to reorder"
+                    draggable
+                    onDragStart={(e) => startDrag(e, { list: "items", id: itemKey(item) })}
+                  >
+                    ⋮⋮
+                  </span>
+                  <span className="team-label">{item.label}</span>
+                  <RowMenu
+                    actions={[
+                      { label: "Rename", onClick: () => renameTeam(item.id, item.label) },
+                      {
+                        label: "Remove",
+                        danger: true,
+                        onClick: () => deleteTeam(item.id, item.label),
+                      },
+                    ]}
+                  />
+                </div>
+              );
+            }
+            const a = agentsBySlug[item.slug];
+            if (!a || (!showArchived && a.archived)) return null;
+            const hint =
+              dropHint?.list === "items" && dropHint.id === itemKey(item) ? dropHint.place : "";
+            return (
+              <div
+                key={item.slug}
+                className={`agent-row${a.archived ? " archived" : ""}${hint ? ` drop-${hint}` : ""}`}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  setDropHint({
+                    list: "items",
+                    id: itemKey(item),
+                    place: placeFromEvent(e),
+                  });
+                }}
+                onDrop={(e) => dropOnItem(e, item)}
+              >
+                <span
+                  className="drag-handle"
+                  title="Drag to reorder"
+                  draggable
+                  onDragStart={(e) => startDrag(e, { list: "items", id: itemKey(item) })}
+                >
+                  ⋮⋮
+                </span>
+                <div className="agent-item">
+                  <Avatar src={agentIcon(a.slug)} label={a.display_name || a.slug} size={32} />
+                  <div className="agent-copy">
+                    <span className="chip" style={{ color: chipColor(a.slug) }}>
+                      @{a.slug}
+                    </span>
+                    <span className="nav-sub">
+                      {a.job || "hand-made profile"}
+                      {a.archived ? " · archived" : ""}
+                      {a.model_preset
+                        ? ` · ${a.model_preset}`
+                        : a.model_summary
+                          ? ` · ${a.model_summary}`
+                          : ""}
+                      {a.local_llm
+                        ? ` · local · ${Math.round((a.turn_timeout ?? 1800) / 60)}m`
+                        : a.turn_timeout
+                          ? ` · cloud · ${Math.round(a.turn_timeout / 60)}m`
+                          : ""}
+                    </span>
+                    {models.length > 0 && (
+                      <select
+                        className="agent-model"
+                        value={a.model_preset || ""}
+                        title={a.model_summary || "switch model"}
+                        onChange={async (e) => {
+                          const next = e.target.value;
+                          if (!next || next === a.model_preset) return;
+                          try {
+                            await api.switchModel(a.slug, next);
+                            await refresh();
+                          } catch (err) {
+                            alert(String(err));
+                          }
+                        }}
+                      >
+                        {!a.model_preset && <option value="">current model</option>}
+                        {models.map((m) => (
+                          <option key={m.name} value={m.name}>
+                            {m.name}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                  </div>
+                </div>
+                <RowMenu
+                  actions={[
+                    {
+                      label: "Edit",
+                      onClick: () => {
+                        setEditingAgent(a);
+                        setModal("edit-agent");
+                      },
+                    },
+                    {
+                      label: a.archived ? "Unarchive" : "Archive",
+                      onClick: () => void archiveAgent(a),
+                    },
+                    { label: "Delete", danger: true, onClick: () => void deleteAgent(a) },
+                  ]}
+                />
+              </div>
+            );
+          })}
         </div>
+        <label className="section-toggle">
+          <input
+            type="checkbox"
+            checked={showArchived}
+            onChange={(e) => {
+              const on = e.target.checked;
+              setShowArchived(on);
+              localStorage.setItem(ARCHIVED_KEY, on ? "1" : "0");
+            }}
+          />
+          Show archived
+        </label>
         <div className="section">
           <div className="section-head">
             <span>Routines</span>
@@ -747,7 +1306,16 @@ export default function App() {
       </aside>
       <main className="main">
         {current ? (
-          <RoomView room={current} userName={userName} />
+          <RoomView
+            room={current}
+            userName={userName}
+            onEdit={() => {
+              setEditingRoom(current);
+              setModal("edit-room");
+            }}
+            onArchive={() => void archiveRoom(current)}
+            onDelete={() => void deleteRoom(current)}
+          />
         ) : (
           <div className="welcome">
             <img className="welcome-logo" src={LOGO_SRC} alt="Retinue" />
@@ -761,21 +1329,28 @@ export default function App() {
                 <Avatar src={YOU_SRC} label="You" size={72} />
                 <span>You</span>
               </div>
-              {agents.map((a) => (
+              {visibleCast.map((a) => (
                 <div key={a.slug} className="cast-member">
                   <Avatar src={agentIcon(a.slug)} label={a.display_name || a.slug} size={72} />
                   <span>@{a.slug}</span>
                 </div>
               ))}
             </div>
-            {agents.length === 0 && (
+            {visibleCast.length === 0 && (
               <p className="note">No retainers hired yet — use + beside Agents.</p>
             )}
           </div>
         )}
       </main>
       {modal && (
-        <div className="overlay" onClick={() => setModal(null)}>
+        <div
+          className="overlay"
+          onClick={() => {
+            setModal(null);
+            setEditingRoom(null);
+            setEditingAgent(null);
+          }}
+        >
           <div onClick={(e) => e.stopPropagation()}>
             {modal === "hire" && (
               <HirePanel
@@ -797,6 +1372,31 @@ export default function App() {
                     void refresh();
                     setCurrent(created);
                   }
+                }}
+              />
+            )}
+            {modal === "edit-room" && editingRoom && (
+              <EditRoomPanel
+                room={editingRoom}
+                agents={agents}
+                onDone={(updated) => {
+                  setModal(null);
+                  setEditingRoom(null);
+                  if (updated) {
+                    setCurrent(updated);
+                    void refresh();
+                  }
+                }}
+              />
+            )}
+            {modal === "edit-agent" && editingAgent && (
+              <EditAgentPanel
+                agent={editingAgent}
+                models={models}
+                onDone={(updated) => {
+                  setModal(null);
+                  setEditingAgent(null);
+                  if (updated) void refresh();
                 }}
               />
             )}
