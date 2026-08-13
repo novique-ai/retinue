@@ -95,6 +95,11 @@ profile's config (comments included). `GET /models` lists them; the web UI's hir
 them as a dropdown next to "Workspace default"; `POST /agents` takes the preset via
 `"model": "<name>"`. An unknown or malformed preset is a 400 and creates nothing.
 
+Today's live workspace has `grok` (pinned to grok-4.5) and `local`. **Next:** cloud
+bots need *specific* Grok versions as separate presets (`grok-4.6`, `grok-4.5`, …)
+so a hire can pick the exact cloud brain, not a single "grok" bucket. Tracked as
+the next epic child under `infra-ivl9`.
+
 Credentials: a hire seeds the profile's `.env` **and `auth.json`** from the workspace root,
 so presets can target any provider the workspace owner has configured or OAuth-logged-into
 (e.g. run `hermes auth login` once in the workspace, then hire agents onto that provider).

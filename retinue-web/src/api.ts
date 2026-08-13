@@ -23,6 +23,8 @@ export interface AgentMeta {
   activation?: string;
   online?: boolean;
   model_preset?: string | null;
+  local_llm?: boolean;
+  turn_timeout?: number;
 }
 
 export interface ModelPreset {

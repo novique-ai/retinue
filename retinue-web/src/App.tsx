@@ -459,7 +459,14 @@ export default function App() {
                 <span className="chip" style={{ color: chipColor(a.slug) }}>
                   @{a.slug}
                 </span>
-                <span className="nav-sub">{a.job || "hand-made profile"}</span>
+                <span className="nav-sub">
+                  {a.job || "hand-made profile"}
+                  {a.local_llm
+                    ? ` · local · ${Math.round((a.turn_timeout ?? 1800) / 60)}m`
+                    : a.turn_timeout
+                      ? ` · cloud · ${Math.round(a.turn_timeout / 60)}m`
+                      : ""}
+                </span>
               </div>
             </div>
           ))}

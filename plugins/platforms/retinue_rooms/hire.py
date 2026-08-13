@@ -392,5 +392,7 @@ def list_agents(home_dir: str) -> List[Dict[str, Any]]:
         if meta is None:
             meta = {"display_name": name, "slug": name, "job": "", "how": ""}
         meta["has_soul"] = os.path.isfile(os.path.join(pdir, "SOUL.md"))
+        meta["local_llm"] = profile_uses_local_llm(home_dir, name)
+        meta["turn_timeout"] = int(turn_timeout_for(home_dir, name))
         agents.append(meta)
     return agents

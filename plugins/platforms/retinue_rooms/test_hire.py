@@ -77,6 +77,8 @@ def test_list_agents_mixes_hired_and_handmade(tmp_path):
     assert by_slug["scout"]["job"] == "research"
     assert by_slug["handmade"]["display_name"] == "handmade"
     assert by_slug["handmade"]["has_soul"] is True
+    assert "local_llm" in by_slug["scout"]
+    assert "turn_timeout" in by_slug["scout"]
 
 
 # ── model presets (per-hire model selection) ─────────────────────────────
