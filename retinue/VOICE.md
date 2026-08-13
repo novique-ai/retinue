@@ -9,10 +9,28 @@ conference puck, a phone, or a room array — that is a later input-device choic
 The decision is the pipeline.
 
 Operator picked **A for testing, then B for testing** (2026-08-13).
-Implementation is plugin-shaped: `GET /voice`, `POST /rooms/{id}/audio`,
-`POST /tts`, hold-to-talk in `retinue-web`. Flip backends with
-`RETINUE_VOICE_BACKEND=xai|openai` and (for B)
-`RETINUE_VOICE_BASE_URL=http://10.44.0.13:8104/v1`.
+Shipped plugin-shaped: `GET /voice`, `POST /rooms/{id}/audio`, `POST /tts`,
+hold-to-talk in `retinue-web` (`6f4b79b62`). Live default on c-desktop is
+**Track A** (xAI, `ready: true`).
+
+**Flip to Track B** (claymore-1 sidecar, Glimmer left on `:8080`):
+
+```bash
+# on c-desktop
+mkdir -p ~/.config/systemd/user/retinue-gateway.service.d
+cat > ~/.config/systemd/user/retinue-gateway.service.d/voice.conf <<'EOF'
+[Service]
+Environment=RETINUE_VOICE_BACKEND=openai
+Environment=RETINUE_VOICE_BASE_URL=http://10.44.0.13:8104/v1
+EOF
+systemctl --user daemon-reload
+systemctl --user restart retinue-gateway.service
+```
+
+Remove `voice.conf` and restart to return to A. Sidecar is a test `nohup`
+on claymore-1 (`python3 /srv/evo-data/local-llm/voice/voice_sidecar.py
+--host 10.44.0.13 --port 8104`). whisper-cli loads per request (VRAM stays
+~23 GiB on Glimmer). PID file: `/srv/evo-data/local-llm/voice/sidecar.pid`.
 
 ## What already exists (reference only)
 
