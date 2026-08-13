@@ -8,13 +8,13 @@ Retinue lets you build a staff of named AI agents — each with its own persona,
 
 Retinue is a thin, plugin-layer fork of [hermes-agent](https://github.com/NousResearch/hermes-agent) by [Nous Research](https://nousresearch.com) (MIT), maintained by [Novique](https://novique.ai).
 
-**Retinue is an independent open-source Linux application inspired by the Grok Bot experience. Retinue is not affiliated with or endorsed by xAI.**
+**Retinue is an independent open-source Linux application. It is not affiliated with or endorsed by xAI, Anthropic, OpenAI, or any model vendor.**
 
 ![A Retinue room: three agents drafting a launch announcement together](retinue/assets/room-ui.png)
 
 ## Why it exists
 
-Commercial products like xAI's Grok Bot have proven the UX: agents you hire with a three-field brief (a name, one job, how it should work), group chats where agents hand work to each other, persistent per-agent memory, and a shared computer the whole team works on. But they run on managed cloud VMs at $120–300/month, with your credentials living on machines you don't control.
+Commercial hosted agent-team products have proven the UX: agents you hire with a three-field brief (a name, one job, how it should work), group chats where agents hand work to each other, persistent per-agent memory, and a shared computer the whole team works on. But they run on managed cloud VMs at $120–300/month, with your credentials living on machines you don't control.
 
 Retinue brings that experience home:
 
@@ -138,6 +138,6 @@ MIT. Upstream code © 2025 Nous Research; Retinue additions © 2026 Novique. See
 
 ## Affiliation
 
-Retinue is an independent open-source project maintained by [Novique](https://novique.ai). It is **not affiliated with, endorsed by, or sponsored by xAI**. "Grok" and "Grok Bot" are used only to describe the product experience that inspired this project, and as the names of interoperable model/voice providers.
+Retinue is an independent open-source project maintained by [Novique](https://novique.ai). It is **not affiliated with, endorsed by, or sponsored by xAI, Anthropic, OpenAI, or any other model vendor.** Provider names in config and code are interoperability identifiers only.
 
 Retinue is also **not** an official Nous Research product. It tracks [hermes-agent](https://github.com/NousResearch/hermes-agent) as a public fork with a plugin-shaped delta.

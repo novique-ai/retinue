@@ -126,9 +126,9 @@ This is the incremental ops path, not the product path. Whisper-base is why Desk
 
 ### D — Cloud speech-to-speech as the brain (reject for v1)
 
-xAI `wss://api.x.ai/v1/realtime?model=grok-voice-latest` (~$0.05/min), OpenAI Realtime, Gemini Live. Full-duplex, tool use, sub-second.
+Vendor realtime speech-to-speech APIs (xAI, OpenAI, Gemini). Full-duplex, tool use, sub-second.
 
-These APIs want to **be** the agent. Retinue's agents are hired staff with their own models, SOULs, tools, and 1800s local turns. Putting Grok Voice in front as the thinker collapses the roster into one voice agent.
+These APIs want to **be** the agent. Retinue's agents are hired staff with their own models, SOULs, tools, and 1800s local turns. Putting a vendor speech-to-speech model in front as the thinker collapses the roster into one voice agent.
 
 Allowed later as a **thin I/O shim** (audio in/out only, text still hits the room bus) — at that point Track A already covers it with less magic. Do not start here.
 

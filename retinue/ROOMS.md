@@ -60,7 +60,7 @@ convention: no `RETINUE_ROOMS_API_KEY` → localhost-only):
 | Route | Purpose |
 |---|---|
 | `GET /health` | liveness (unauthenticated) |
-| `GET /models` | workspace model presets a hire can choose from (versioned; `grok` hidden when `grok-4.5` / `grok-4.6` exist) |
+| `GET /models` | workspace model presets a hire can choose from (versioned; an unversioned cloud id is hidden once versioned files exist) |
 | `GET/POST /agents` | roster / hire (`{name, job, how, model?}` — `model` names a preset) |
 | `GET/PATCH /agents/{slug}` | inspect / edit (`{name?, job?, how?, model?, archived?}`) — SOUL rewrite in place; `model` still switches the preset. No restart. |
 | `DELETE /agents/{slug}` | remove `profiles/<slug>/` (never `default`); evicts the live registration |
@@ -101,15 +101,15 @@ profile's config (comments included). `GET /models` lists them; the web UI's hir
 them as a dropdown next to "Workspace default"; `POST /agents` takes the preset via
 `"model": "<name>"`. An unknown or malformed preset is a 400 and creates nothing.
 
-Shipped cloud presets live next to the plugin (`model_presets/grok-4.5.yaml`,
-`grok-4.6.yaml`) and are seeded into `$HERMES_HOME/retinue_models/` on connect
-if missing. A legacy `grok.yaml` is promoted to `grok-4.5.yaml` (never
+Shipped cloud presets live next to the plugin (`model_presets/`) and are
+seeded into `$HERMES_HOME/retinue_models/` on connect if missing. A legacy
+unversioned cloud preset is promoted to a versioned filename (never
 overwritten) and hidden from `GET /models` once the versioned files exist;
-`POST /agents` still accepts `model: "grok"`. `PATCH /agents/{slug}` rewrites
-only the profile's `model:` block and evicts that member's cached AIAgent so
-admin / envoy / janitor can move between 4.5 and 4.6 without a hand-edit or
-gateway restart. Local / LAN presets stay operator-owned (they carry a host
-`base_url`).
+`POST /agents` still accepts the unversioned id. `PATCH /agents/{slug}`
+rewrites only the profile's `model:` block and evicts that member's cached
+AIAgent so cloud staff can move between versioned presets without a
+hand-edit or gateway restart. Local / LAN presets stay operator-owned
+(they carry a host `base_url`).
 
 Credentials: a hire seeds the profile's `.env` **and `auth.json`** from the workspace root,
 so presets can target any provider the workspace owner has configured or OAuth-logged-into
@@ -143,8 +143,7 @@ the room meta / `retinue-agent.json`; they hide an entry without deleting it.
 
 ## The workspace computer (P3)
 
-The shared-computer model (inspired by Grok Bot; Retinue is not affiliated
-with xAI), reproduced locally: **all of a workspace's agents share one persistent
+The shared-computer model, reproduced locally: **all of a workspace's agents share one persistent
 container** — shared files and state are what make agent-to-agent handoffs cheap. Hermes'
 Docker backend already runs on podman (upstream `find_docker()` falls back to `podman` on
 PATH; force with `HERMES_DOCKER_BINARY`). What Retinue adds is the *sharing*: container

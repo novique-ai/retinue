@@ -1,4 +1,4 @@
-# Cloud: xAI Grok 4.5 via workspace OAuth.
+# Cloud: xAI 4.5 via workspace OAuth.
 # Copied verbatim into a hire's profiles/<slug>/config.yaml.
 model:
   default: grok-4.5

@@ -83,7 +83,7 @@ body:
       label: AI provider (if relevant)
       options:
         - Not provider-specific
-        - xAI / Grok (API or OAuth)
+        - xAI (API or OAuth)
         - Anthropic
         - OpenAI
         - Local (llama.cpp / vLLM / Ollama / LM Studio)

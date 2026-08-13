@@ -29,8 +29,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Hold-to-talk voice in the room UI (`GET /voice`, `POST /rooms/{id}/audio`,
   `POST /tts`). Default backend is xAI STT/TTS; an OpenAI-compatible
   sidecar is supported.
-- Versioned hire-time model presets (`grok-4.5`, `grok-4.6`). Legacy
-  `grok` remains accepted.
+- Versioned hire-time cloud model presets. The legacy unversioned id
+  remains accepted.
 - Separate turn budgets for cloud (default 300s) and local-LLM
   (default 1800s) members.
 

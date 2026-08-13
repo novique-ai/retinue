@@ -110,8 +110,8 @@ preset** (a `model:` YAML block) into the new profile. Bundled cloud
 presets live in `plugins/platforms/retinue_rooms/model_presets/`. Local
 or LAN presets are operator-owned because they carry a `base_url`.
 
-Naming a preset `grok-4.5` / `grok-4.6` is interoperability with the
-xAI API, not an affiliation claim. See the README affiliation section.
+Bundled cloud presets are interoperability with a provider API, not an
+affiliation claim. See the README affiliation section.
 
 ## What this page is not
 

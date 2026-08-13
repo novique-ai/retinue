@@ -25,7 +25,7 @@ Status words mean:
 | Hot-hire | New profile joins without a gateway restart |
 | SSE transcript | `GET /rooms/{id}/stream` |
 | Sidebar | Edit / archive / delete, team separators, drag-reorder |
-| Model presets | Per-hire `model:` block; bundled `grok-4.5` / `grok-4.6` |
+| Model presets | Per-hire `model:` block; bundled versioned cloud presets |
 
 ## Testable
 
