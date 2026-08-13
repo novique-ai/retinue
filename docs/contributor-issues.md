@@ -173,18 +173,16 @@ Open a Discussion before writing one of these.
   other's in-flight id.
 - **Not:** replacing the room bus with a speech-to-speech model.
 
-### 12. IDE-attached rooms (`workspace=sandbox|ide`)
+### 12. IDE-attached rooms (`workspace=sandbox|ide`) — shipped
 
-- **Discussion:** [#11](https://github.com/novique-ai/retinue/discussions/11)
-- **Labels:** `enhancement`, `linux`
-- **Why:** Design is locked in [retinue/ROADMAP.md](../retinue/ROADMAP.md)
-  and [retinue/ROOMS.md](../retinue/ROOMS.md). Not shipped.
-- **Shape:** default remains an isolated sandbox container. `ide`
-  bind-mounts a host path on the **gateway machine** (`ide_path` /
-  `RETINUE_IDE_ROOT`). Loud UI confirm. Only IDE-marked rooms get the
-  mount. Not SSHFS, not a remote-IDE protocol.
-- **Discuss first:** path-allow list, confirm copy, and what "full
-  operator envelope" means for a public install.
+- **Issue:** [#13](https://github.com/novique-ai/retinue/issues/13)
+  (promoted from [Discussion #11](https://github.com/novique-ai/retinue/discussions/11))
+- **What landed:** option A — same container runtime; `ide` bind-mounts
+  `ide_path` / `RETINUE_IDE_ROOT` at `/workspace`. Loud UI confirm.
+  Per-room container keys. Not SSHFS.
+- **Still open (discuss on #11 or #13):** path allow-list for a public
+  install, confirm-copy wording, what a stranger install should allow
+  inside the mounted tree.
 
 ### 13. Workspace screen take-over (noVNC)
 

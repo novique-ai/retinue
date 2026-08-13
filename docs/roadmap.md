@@ -37,7 +37,6 @@ Status words mean:
 
 | Item | Notes |
 |---|---|
-| IDE-attached rooms | Room `workspace=sandbox\|ide`. IDE mode bind-mounts a **host path on the gateway machine**. Not SSHFS. Loud confirm in the UI. |
 | noVNC / screen take-over | Next increment after workspace status. |
 
 ## Later / open

@@ -40,7 +40,7 @@ from gateway.platforms.base import (
     SendResult,
 )
 
-from . import engine, hire, routines, sidebar, voice, workspace
+from . import engine, hire, ide, routines, sidebar, voice, workspace
 from .engine import KIND_AGENT, KIND_SYSTEM, KIND_USER, Room, RoomMessage
 from .store import RoomStore
 
@@ -126,6 +126,7 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         self._httpd: Optional[ThreadingHTTPServer] = None
         self._server_thread: Optional[threading.Thread] = None
         self._room_locks: Dict[str, asyncio.Lock] = {}
+        self._workspace_env_lock = asyncio.Lock()
         self._pending: Dict[tuple[str, str], _PendingTurn] = {}  # (room, member)
         self._pending_lock = threading.Lock()
 
@@ -301,6 +302,8 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         members: List[str],
         lead: Optional[str],
         max_agent_turns: Optional[int],
+        workspace: Optional[str] = None,
+        ide_path: Optional[str] = None,
     ) -> Dict[str, Any]:
         members = [m.strip() for m in members if m and m.strip()]
         if not members:
@@ -312,6 +315,7 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             lead=(lead or "").strip() or None,
             max_agent_turns=max(1, int(max_agent_turns or engine.DEFAULT_MAX_AGENT_TURNS)),
         )
+        ide.apply_workspace_fields(room, workspace=workspace, ide_path=ide_path, touching_path=True)
         self.store.create(room)
         unknown = [m for m in members if not self._profile_exists(m)]
         payload = room.to_dict()
@@ -353,6 +357,14 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             touched = True
         if "max_agent_turns" in body and body.get("max_agent_turns") is not None:
             room.max_agent_turns = max(1, int(body.get("max_agent_turns")))
+            touched = True
+        if "workspace" in body or "ide_path" in body:
+            ide.apply_workspace_fields(
+                room,
+                workspace=body["workspace"] if "workspace" in body else room.workspace,
+                ide_path=body.get("ide_path") if "ide_path" in body else room.ide_path,
+                touching_path="ide_path" in body,
+            )
             touched = True
         if not touched:
             raise ValueError("nothing to update")
@@ -639,6 +651,14 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         room = self.store.get(room_id)
         if room is None:
             return
+        # One process-wide env overlay. An asyncio lock (not threading.RLock)
+        # so two rooms on the gateway loop cannot interleave mounts.
+        async with self._workspace_env_lock:
+            with ide.apply_room_workspace(room):
+                await self._run_cycle_workspace(room, user_message)
+
+    async def _run_cycle_workspace(self, room: Room, user_message: RoomMessage) -> None:
+        room_id = room.id
         budget = room.max_agent_turns
         queue = engine.plan_user_turns(room, user_message.text)
         spoken: List[str] = []
@@ -1092,6 +1112,8 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
                     members=list(body.get("members") or []),
                     lead=body.get("lead"),
                     max_agent_turns=body.get("max_agent_turns"),
+                    workspace=body.get("workspace"),
+                    ide_path=body.get("ide_path"),
                 )
             except ValueError as e:
                 return self._json(400, {"error": str(e)})

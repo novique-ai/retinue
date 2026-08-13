@@ -14,6 +14,8 @@ import shutil
 import subprocess
 from typing import Any, Dict, List, Optional
 
+from . import ide
+
 _LABEL_OK = re.compile(r"[^a-zA-Z0-9_.-]+")
 
 
@@ -40,6 +42,7 @@ def workspace_status() -> Dict[str, Any]:
         "running": False,
         "attach": None,
         "detail": None,
+        "ide_root": ide.configured_ide_root(),
     }
     if not key:
         status["detail"] = (

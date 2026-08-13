@@ -57,6 +57,10 @@ class Room:
     last_seen: Dict[str, int] = field(default_factory=dict)
     # Hidden from the sidebar without wiping the transcript.
     archived: bool = False
+    # sandbox (default): isolated container, no host mount.
+    # ide: same container runtime, bind-mount of ide_path at /workspace.
+    workspace: str = "sandbox"
+    ide_path: Optional[str] = None
 
     def default_responder(self) -> Optional[str]:
         if self.lead and self.lead in self.members:
@@ -77,6 +81,8 @@ class Room:
             created_at=float(data.get("created_at") or 0.0),
             last_seen={str(k): int(v) for k, v in (data.get("last_seen") or {}).items()},
             archived=bool(data.get("archived")),
+            workspace=str(data.get("workspace") or "sandbox"),
+            ide_path=(str(data["ide_path"]) if data.get("ide_path") else None),
         )
 
 
@@ -208,4 +214,15 @@ def room_briefing(room: Room, member: str, user_names: List[str]) -> str:
         "the room adds attribution for you.",
         "Keep replies concise and conversational unless asked for detail.",
     ]
+    if (room.workspace or "sandbox") == "ide":
+        parts.append(
+            "This room is attached to this machine's IDE. Your terminal "
+            "/workspace is a bind-mount of that host tree — treat it as the "
+            "real project, not a throwaway sandbox."
+        )
+    else:
+        parts.append(
+            "This room is sandboxed. Your terminal /workspace is an isolated "
+            "container with no host IDE mount."
+        )
     return "\n".join(parts)

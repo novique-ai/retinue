@@ -1,3 +1,5 @@
+export type RoomWorkspace = "sandbox" | "ide";
+
 export interface RoomMeta {
   id: string;
   name: string;
@@ -5,6 +7,8 @@ export interface RoomMeta {
   lead: string | null;
   max_agent_turns: number;
   archived?: boolean;
+  workspace?: RoomWorkspace;
+  ide_path?: string | null;
 }
 
 export interface RoomMsg {
@@ -55,6 +59,8 @@ export interface RoomPatch {
   lead?: string | null;
   archived?: boolean;
   max_agent_turns?: number;
+  workspace?: RoomWorkspace;
+  ide_path?: string | null;
 }
 
 export interface AgentPatch {
@@ -88,6 +94,7 @@ export interface WorkspaceStatus {
   running: boolean;
   attach: string | null;
   detail: string | null;
+  ide_root?: string | null;
   container?: { id: string; name: string; status: string; image: string } | null;
 }
 
@@ -198,8 +205,12 @@ function watchTranscript(
 
 export const api = {
   listRooms: () => req<{ rooms: RoomMeta[] }>("GET", "/rooms"),
-  createRoom: (name: string, members: string[], lead: string | null) =>
-    req<RoomMeta>("POST", "/rooms", { name, members, lead }),
+  createRoom: (
+    name: string,
+    members: string[],
+    lead: string | null,
+    extra?: { workspace?: RoomWorkspace; ide_path?: string | null },
+  ) => req<RoomMeta>("POST", "/rooms", { name, members, lead, ...extra }),
   patchRoom: (id: string, body: RoomPatch) => req<RoomMeta>("PATCH", `/rooms/${id}`, body),
   deleteRoom: (id: string) => req<{ deleted: string }>("DELETE", `/rooms/${id}`),
   transcript: (id: string, since: number, wait: number, signal?: AbortSignal) =>
