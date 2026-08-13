@@ -1,7 +1,9 @@
 # Community surfaces
 
 How Retinue uses GitHub. Issues, Discussions, labels, and a `main`
-ruleset were enabled 2026-08-13. This page is the intended model.
+ruleset were enabled 2026-08-13. **GitHub is the public record of
+product work.** Local IDE beads may still track private host/cutover
+tasks; they are not a substitute for an Issue or PR on this repo.
 
 ## Discussions vs Issues
 
@@ -17,7 +19,7 @@ do not open both for the same un-agreed idea.
 
 ### Suggested Discussion categories
 
-Enable Discussions, then keep the default set small:
+Discussions are on. Keep the default set small:
 
 | Category | For |
 |---|---|
