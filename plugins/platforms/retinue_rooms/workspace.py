@@ -69,6 +69,7 @@ def workspace_status() -> Dict[str, Any]:
             text=True,
             encoding="utf-8",
             errors="replace",
+            stdin=subprocess.DEVNULL,
             timeout=8,
         )
     except (OSError, subprocess.TimeoutExpired) as e:

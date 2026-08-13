@@ -91,6 +91,7 @@ def transcribe(path: str) -> str:
             text=True,
             encoding="utf-8",
             errors="replace",
+            stdin=subprocess.DEVNULL,
             timeout=180,
         )
         txt = Path(outdir) / "out.txt"
@@ -144,7 +145,12 @@ def _espeak(text: str, bin_path: str, voice: str) -> bytes:
         if voice:
             cmd.extend(["-v", "en"])
         cmd.append(text)
-        proc = subprocess.run(cmd, capture_output=True, timeout=30)
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            timeout=30,
+        )
         if proc.returncode != 0 or not os.path.isfile(out):
             raise RuntimeError(f"espeak failed: {proc.stderr[:300]!r}")
         return Path(out).read_bytes()
