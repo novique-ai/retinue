@@ -1,8 +1,7 @@
 # Community surfaces
 
-How Retinue uses GitHub. The maintainer still has to flip a few
-repository settings — this page is the intended model, not proof that
-every tab is on.
+How Retinue uses GitHub. Issues, Discussions, labels, and a `main`
+ruleset were enabled 2026-08-13. This page is the intended model.
 
 ## Discussions vs Issues
 

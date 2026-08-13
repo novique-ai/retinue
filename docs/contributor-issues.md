@@ -1,9 +1,8 @@
 # Starter issues for contributors
 
 These are grounded in the current tree (rooms plugin, web UI, fork
-docs). They are drafts for the maintainer to file on GitHub once
-**Issues are enabled** on `novique-ai/retinue`. Do not treat this file
-as the issue tracker.
+docs). Filed on 2026-08-13. The GitHub issue is the tracker; this file
+is the original brief.
 
 Suggested labels use the taxonomy in the open-source readiness notes
 (`good first issue`, `help wanted`, `bug`, `enhancement`,
@@ -16,6 +15,7 @@ Suggested labels use the taxonomy in the open-source readiness notes
 
 ### 1. Helpful page when `retinue-web/dist` is missing
 
+- **Issue:** [#1](https://github.com/novique-ai/retinue/issues/1)
 - **Labels:** `good first issue`, `ui/ux`, `enhancement`
 - **Why:** `RetinueRoomsAdapter._serve_static` returns a JSON 404 if
   `retinue-web/dist/` was not built. A new contributor who started the
@@ -30,6 +30,7 @@ Suggested labels use the taxonomy in the open-source readiness notes
 
 ### 2. Show Retinue commit in the web UI footer
 
+- **Issue:** [#2](https://github.com/novique-ai/retinue/issues/2)
 - **Labels:** `good first issue`, `ui/ux`, `enhancement`
 - **Why:** Bug reports need a commit. `hermes version` is the Hermes
   package version, not this fork's SHA.
@@ -44,6 +45,7 @@ Suggested labels use the taxonomy in the open-source readiness notes
 
 ### 3. Keyboard reorder for sidebar rooms and agents
 
+- **Issue:** [#3](https://github.com/novique-ai/retinue/issues/3)
 - **Labels:** `good first issue`, `ui/ux`, `enhancement`
 - **Why:** Sidebar order is drag-and-drop only
   (`retinue-web/src/App.tsx` `draggable` / `parseDrag`). Keyboard and
@@ -57,6 +59,7 @@ Suggested labels use the taxonomy in the open-source readiness notes
 
 ### 4. Public-safe pass over `retinue/VOICE.md`
 
+- **Issue:** [#4](https://github.com/novique-ai/retinue/issues/4)
 - **Labels:** `good first issue`, `documentation`
 - **Why:** The voice design note still contains a private-install
   example (host names, unit drop-ins, sidecar paths) and at least one
@@ -70,16 +73,11 @@ Suggested labels use the taxonomy in the open-source readiness notes
   - The document matches the shipped `GET /voice` / hold-to-talk UI.
   - No new undocumented backends are invented.
 
-### 5. Banner on inherited translated READMEs
+### 5. Banner on inherited translated READMEs — shipped
 
-- **Labels:** `good first issue`, `documentation`
-- **Why:** `README.es.md`, `README.zh-CN.md`, and `README.ur-pk.md`
-  still describe Hermes Agent as if this repository *is* upstream.
-- **Files:** those three READMEs
-- **Acceptance:**
-  - Each file opens with a short notice (in that language if you can)
-    that this tree is **Retinue**, with a link to `README.md`.
-  - Upstream Hermes content below the banner is otherwise untouched.
+Not filed. Banners are already on `README.es.md`, `README.zh-CN.md`,
+and `README.ur-pk.md` (`814c86dc2`). Keep this as a closed brief so we
+do not advertise finished work as a first issue.
 
 ---
 
@@ -87,6 +85,7 @@ Suggested labels use the taxonomy in the open-source readiness notes
 
 ### 6. First-run empty state in the web UI
 
+- **Issue:** [#5](https://github.com/novique-ai/retinue/issues/5)
 - **Labels:** `help wanted`, `ui/ux`, `enhancement`
 - **Why:** A fresh `$HERMES_HOME` has no hired agents and no rooms.
   The mention bar and lead copy assume a room already exists.
@@ -99,6 +98,7 @@ Suggested labels use the taxonomy in the open-source readiness notes
 
 ### 7. Collect rooms tests from the default pytest invocation
 
+- **Issue:** [#6](https://github.com/novique-ai/retinue/issues/6)
 - **Labels:** `help wanted`, `enhancement`
 - **Why:** `pyproject.toml` `testpaths = ["tests"]` is upstream and
   must stay that way (fork policy). Rooms tests therefore live next to
@@ -114,6 +114,7 @@ Suggested labels use the taxonomy in the open-source readiness notes
 
 ### 8. Wayland / pipewire notes for hold-to-talk
 
+- **Issue:** [#7](https://github.com/novique-ai/retinue/issues/7)
 - **Labels:** `help wanted`, `linux`, `wayland`, `documentation`
 - **Why:** Voice capture is `getUserMedia` in the browser. On Linux
   that fails in ways that look like a Retinue bug (Flatpak/browser
@@ -127,6 +128,7 @@ Suggested labels use the taxonomy in the open-source readiness notes
 
 ### 9. Display-name mentions without changing slugs
 
+- **Issue:** [#8](https://github.com/novique-ai/retinue/issues/8)
 - **Labels:** `help wanted`, `enhancement`, `ui/ux`
 - **Why:** [retinue/ROOMS.md](../retinue/ROOMS.md) v1 limit: mention
   token = profile name. Editing a display name does not change `@slug`.
@@ -140,6 +142,7 @@ Suggested labels use the taxonomy in the open-source readiness notes
 
 ### 10. Packaging sketch: install the rooms UI without a git checkout
 
+- **Issue:** [#9](https://github.com/novique-ai/retinue/issues/9)
 - **Labels:** `help wanted`, `packaging`, `linux`
 - **Why:** Today the adapter resolves `retinue-web/dist` relative to
   the source tree. A pip-only install has no UI.
@@ -159,6 +162,7 @@ Open a Discussion before writing one of these.
 
 ### 11. Token streaming into the room transcript
 
+- **Discussion:** [#10](https://github.com/novique-ai/retinue/discussions/10)
 - **Labels:** `enhancement`, `ui/ux`
 - **Why:** v1 posts finals only. The adapter declares no message
   editing, so the gateway skips the stream consumer
@@ -171,6 +175,7 @@ Open a Discussion before writing one of these.
 
 ### 12. IDE-attached rooms (`workspace=sandbox|ide`)
 
+- **Discussion:** [#11](https://github.com/novique-ai/retinue/discussions/11)
 - **Labels:** `enhancement`, `linux`
 - **Why:** Design is locked in [retinue/ROADMAP.md](../retinue/ROADMAP.md)
   and [retinue/ROOMS.md](../retinue/ROOMS.md). Not shipped.
@@ -183,6 +188,7 @@ Open a Discussion before writing one of these.
 
 ### 13. Workspace screen take-over (noVNC)
 
+- **Discussion:** [#12](https://github.com/novique-ai/retinue/discussions/12)
 - **Labels:** `enhancement`, `linux`, `ui/ux`
 - **Why:** `GET /workspace` already reports the shared container and
   an attach command. A browser view of that computer is the next
