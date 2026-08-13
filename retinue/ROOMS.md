@@ -167,6 +167,24 @@ with the container hostname matching the agents' reports. Only the terminal tool
 in the container; browser/file/MCP tools remain host-side (stricter per-agent isolation =
 just omit the shared key).
 
+## Workspace modes (`infra-ivl9.4` — accepted, not shipped)
+
+Two room kinds, same container runtime:
+
+| `workspace` | Computer | Who |
+|---|---|---|
+| `sandbox` (default) | Isolated throwaway container | Every room unless marked IDE |
+| `ide` | Shared container + bind-mount of a **host path** | Only rooms created/patched with `workspace=ide` |
+
+IDE attach is **local to the gateway host** (`ide_path` or `RETINUE_IDE_ROOT`).
+It is not SSHFS and not “SSH to another computer.” If the GUI and the IDE live
+on different machines (Clayton: c-desktop vs clay-blade), **install the gateway
+on the IDE host** and browse the UI from the GUI host.
+
+Clayton defaults once cut over: path `~/IDE`, cwd `~/IDE/infra`, full operator
+(git/bd/RM/CRM/push), `HERMES_HOME=~/.retinue`. Live install is still c-desktop
+until that cutover.
+
 ## Deliberate v1 limits
 
 No token-streaming into the room (finals only — the

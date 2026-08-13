@@ -41,3 +41,17 @@ profile; delete confirms and never touches the default profile. Persona
 edits rewrite SOUL + meta in place (same slug, no restart).
 
 NoVNC (`infra-dfc1`) stays a separate gated increment.
+
+## IDE-attached rooms (`infra-ivl9.4`) — design locked 2026-08-13, not shipped
+
+Public product: a room is **sandbox** (default, isolated container) or **IDE**
+(opt-in). IDE mode bind-mounts a **host path on the machine running Retinue**
+(`ide_path` / `RETINUE_IDE_ROOT`) — not SSHFS, not a remote-IDE protocol. UI
+copy: Isolated container vs This machine’s IDE (loud confirm). Only IDE-marked
+rooms get the mount. Full operator envelope inside that tree.
+
+Clayton install (accepted, not cut over): move the gateway to **clay-blade**
+(`HERMES_HOME=~/.retinue`). Browse from c-desktop at `http://clay-blade:8643`.
+Headless blade is fine — the UI is HTTP. IDE path = `~/IDE`, default cwd
+`~/IDE/infra`. Stop c-desktop `retinue-gateway.service` after the blade unit is
+healthy so there is one engine. Do not copy Desktop’s SSHFS into the container.
