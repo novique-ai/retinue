@@ -146,19 +146,21 @@ def synthesize(text: str, speaker: str = "") -> bytes:
     return _synthesize_xai(spoken, voice)
 
 
-def _xai_creds() -> Dict[str, str]:
-    """Prefer an explicit API key — OAuth may 402 billed STT/TTS endpoints."""
-    try:
-        from hermes_cli.config import get_env_value
-    except Exception:
-        get_env_value = lambda _k: os.getenv(_k)  # noqa: E731
+def _plain_env(name: str) -> str:
+    """Read an env var without Hermes secret-scope (HTTP thread is unscoped)."""
+    return (os.environ.get(name) or "").strip()
 
-    direct = str(get_env_value("XAI_API_KEY") or os.getenv("XAI_API_KEY") or "").strip()
+
+def _xai_creds() -> Dict[str, str]:
+    """Prefer an explicit API key — OAuth may 402 billed STT/TTS endpoints.
+
+    Do **not** call ``get_env_value`` here. The rooms HTTP thread is outside
+    a multiplex secret scope, and Hermes fail-closes that read.
+    """
+    direct = _plain_env("XAI_API_KEY")
     if direct:
-        base = str(
-            get_env_value("XAI_BASE_URL") or os.getenv("XAI_BASE_URL") or XAI_DEFAULT_BASE
-        ).strip().rstrip("/")
-        return {"provider": "xai", "api_key": direct, "base_url": base}
+        base = _plain_env("XAI_BASE_URL") or XAI_DEFAULT_BASE
+        return {"provider": "xai", "api_key": direct, "base_url": base.rstrip("/")}
     try:
         from tools.xai_http import resolve_xai_http_credentials
 

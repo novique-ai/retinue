@@ -114,6 +114,19 @@ def test_openai_backend_uses_sidecar_urls(monkeypatch):
     assert seen[1].endswith("/audio/speech")
 
 
+def test_status_xai_survives_unscoped_get_env_value(monkeypatch):
+    monkeypatch.setenv("RETINUE_VOICE_BACKEND", "xai")
+    monkeypatch.delenv("XAI_API_KEY", raising=False)
+    monkeypatch.setattr(
+        voice,
+        "_xai_creds",
+        lambda: {"provider": "xai-oauth", "api_key": "oauth-token", "base_url": "https://api.x.ai/v1"},
+    )
+    st = voice.status()
+    assert st["ready"] is True
+    assert st["detail"] == "xai-oauth"
+
+
 def test_empty_audio_and_text_fail_loud():
     with pytest.raises(voice.VoiceError, match="empty audio"):
         voice.transcribe(b"")
