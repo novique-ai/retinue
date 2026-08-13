@@ -14,6 +14,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- IDE-attached rooms (`workspace=sandbox|ide`). Same podman/docker
+  runtime; IDE rooms bind-mount `ide_path` / `RETINUE_IDE_ROOT` at
+  `/workspace`. Loud UI confirm. Per-room container keys so sandbox
+  rooms never inherit the mount. Closes #13.
 - Contributor-facing README, CONTRIBUTING, Code of Conduct, security
   reporting wrapper, development/architecture/roadmap docs, issue and
   PR templates, and a fast **Retinue delta** GitHub Actions workflow.
@@ -25,7 +29,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- IDE-attached room design (`workspace=sandbox|ide`) locked; not shipped.
+- IDE-attached room design (`workspace=sandbox|ide`) locked; shipped in Unreleased.
 - Sidebar: edit / archive / delete rooms and bots, operator-named team
   separators, click-and-drag reorder. Layout in
   `$HERMES_HOME/retinue_sidebar.json`.

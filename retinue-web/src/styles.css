@@ -247,6 +247,62 @@ body {
 
 .room-header h2 {
   font-size: 17px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.field-label {
+  display: block;
+  font-size: 13px;
+  color: var(--text-dim);
+  margin-bottom: 6px;
+}
+
+.workspace-pick {
+  margin: 10px 0 4px;
+}
+
+.mode-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.ide-warn {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid #e0af68;
+  background: #2a2418;
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.ide-warn code {
+  font-size: 12px;
+}
+
+.ide-confirm {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 8px;
+  font-weight: 600;
+}
+
+.mode-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  vertical-align: middle;
+  background: #3a2e16;
+  color: #e0af68;
+  border: 1px solid #e0af68;
 }
 
 .room-members {

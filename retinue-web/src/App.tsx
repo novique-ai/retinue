@@ -8,6 +8,7 @@ import {
   ModelPreset,
   RoomMeta,
   RoomMsg,
+  RoomWorkspace,
   RoutineMeta,
   setApiKey,
   SidebarItem,
@@ -354,6 +355,9 @@ function RoomView({
           <h2>
             {room.name}
             {room.archived ? " (archived)" : ""}
+            {(room.workspace ?? "sandbox") === "ide" && (
+              <span className="mode-badge">IDE</span>
+            )}
           </h2>
           <div className="room-members">
             {room.members.map((m) => (
@@ -584,20 +588,96 @@ function HirePanel({ onDone }: { onDone: (created?: AgentMeta) => void }) {
   );
 }
 
+function WorkspacePicker({
+  value,
+  onChange,
+  ideRoot,
+  confirm,
+  onConfirm,
+  switching,
+}: {
+  value: RoomWorkspace;
+  onChange: (next: RoomWorkspace) => void;
+  ideRoot?: string | null;
+  confirm: boolean;
+  onConfirm: (ok: boolean) => void;
+  switching?: boolean;
+}) {
+  return (
+    <div className="workspace-pick">
+      <span className="field-label">Where should this room work?</span>
+      <div className="mode-row">
+        <button
+          type="button"
+          className={value === "sandbox" ? "pick picked" : "pick"}
+          onClick={() => {
+            onChange("sandbox");
+            onConfirm(false);
+          }}
+        >
+          Isolated container
+        </button>
+        <button
+          type="button"
+          className={value === "ide" ? "pick picked" : "pick"}
+          onClick={() => onChange("ide")}
+        >
+          This machine&apos;s IDE
+        </button>
+      </div>
+      {value === "ide" && (
+        <div className="ide-warn">
+          <p>
+            Agents in this room work in a container that <strong>bind-mounts this
+            machine&apos;s IDE</strong>
+            {ideRoot ? (
+              <>
+                {" "}
+                (<code>{ideRoot}</code>)
+              </>
+            ) : (
+              <>
+                {" "}
+                (set <code>RETINUE_IDE_ROOT</code> on the gateway)
+              </>
+            )}
+            . They can read and write that tree. Casual rooms should stay isolated.
+          </p>
+          <label className="ide-confirm">
+            <input
+              type="checkbox"
+              checked={confirm}
+              onChange={(e) => onConfirm(e.target.checked)}
+            />
+            {switching
+              ? "Mount this machine’s IDE into this room"
+              : "Create an IDE-attached room"}
+          </label>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function NewRoomPanel({
   agents,
+  ideRoot,
   onDone,
 }: {
   agents: AgentMeta[];
+  ideRoot?: string | null;
   onDone: (created?: RoomMeta) => void;
 }) {
   const [name, setName] = useState("");
   const [picked, setPicked] = useState<string[]>([]);
   const [lead, setLead] = useState<string>("");
+  const [workspace, setWorkspace] = useState<RoomWorkspace>("sandbox");
+  const [ideOk, setIdeOk] = useState(false);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState("");
   const toggle = (slug: string) =>
     setPicked((p) => (p.includes(slug) ? p.filter((x) => x !== slug) : [...p, slug]));
+  const ideBlocked = workspace === "ide" && !ideOk;
   return (
     <div className="panel">
       <h3>New room</h3>
@@ -605,6 +685,13 @@ function NewRoomPanel({
         Room name
         <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Ops room" />
       </label>
+      <WorkspacePicker
+        value={workspace}
+        onChange={setWorkspace}
+        ideRoot={ideRoot}
+        confirm={ideOk}
+        onConfirm={setIdeOk}
+      />
       <div className="member-pick">
         {agents
           .filter((a) => !a.archived)
@@ -640,11 +727,13 @@ function NewRoomPanel({
         <button onClick={() => onDone()}>Cancel</button>
         <button
           className="primary"
-          disabled={busy || !name.trim() || picked.length === 0}
+          disabled={busy || !name.trim() || picked.length === 0 || ideBlocked}
           onClick={async () => {
             setBusy(true);
             try {
-              onDone(await api.createRoom(name, picked, lead || null));
+              onDone(
+                await api.createRoom(name, picked, lead || null, { workspace }),
+              );
             } catch (e) {
               setNote(String(e));
             } finally {
@@ -652,7 +741,7 @@ function NewRoomPanel({
             }
           }}
         >
-          Create
+          {workspace === "ide" ? "Create IDE room" : "Create"}
         </button>
       </div>
     </div>
@@ -662,17 +751,23 @@ function NewRoomPanel({
 function EditRoomPanel({
   room,
   agents,
+  ideRoot,
   onDone,
 }: {
   room: RoomMeta;
   agents: AgentMeta[];
+  ideRoot?: string | null;
   onDone: (updated?: RoomMeta) => void;
 }) {
   const [name, setName] = useState(room.name);
   const [picked, setPicked] = useState<string[]>(room.members);
   const [lead, setLead] = useState<string>(room.lead ?? "");
+  const [workspace, setWorkspace] = useState<RoomWorkspace>(room.workspace ?? "sandbox");
+  const [ideOk, setIdeOk] = useState((room.workspace ?? "sandbox") === "ide");
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState("");
+  const switchingToIde = workspace === "ide" && (room.workspace ?? "sandbox") !== "ide";
+  const ideBlocked = switchingToIde && !ideOk;
   const visible = agents.filter((a) => !a.archived || picked.includes(a.slug));
   const toggle = (slug: string) =>
     setPicked((p) => (p.includes(slug) ? p.filter((x) => x !== slug) : [...p, slug]));
@@ -708,12 +803,20 @@ function EditRoomPanel({
           </select>
         </label>
       )}
+      <WorkspacePicker
+        value={workspace}
+        onChange={setWorkspace}
+        ideRoot={ideRoot ?? room.ide_path}
+        confirm={ideOk}
+        onConfirm={setIdeOk}
+        switching
+      />
       {note && <p className="note">{note}</p>}
       <div className="panel-actions">
         <button onClick={() => onDone()}>Cancel</button>
         <button
           className="primary"
-          disabled={busy || !name.trim() || picked.length === 0}
+          disabled={busy || !name.trim() || picked.length === 0 || ideBlocked}
           onClick={async () => {
             setBusy(true);
             try {
@@ -722,6 +825,7 @@ function EditRoomPanel({
                   name: name.trim(),
                   members: picked,
                   lead: lead || null,
+                  workspace,
                 }),
               );
             } catch (e) {
@@ -1076,6 +1180,9 @@ export default function App() {
                 >
                   {r.name}
                   {r.archived ? " (archived)" : ""}
+                  {(r.workspace ?? "sandbox") === "ide" && (
+                    <span className="mode-badge">IDE</span>
+                  )}
                   <span className="nav-sub nav-faces">
                     {r.members.map((m) => (
                       <Avatar key={m} src={agentIcon(m)} label={m} size={18} />
@@ -1366,6 +1473,7 @@ export default function App() {
             {modal === "room" && (
               <NewRoomPanel
                 agents={agents}
+                ideRoot={workspaceInfo?.ide_root}
                 onDone={(created) => {
                   setModal(null);
                   if (created) {
@@ -1379,6 +1487,7 @@ export default function App() {
               <EditRoomPanel
                 room={editingRoom}
                 agents={agents}
+                ideRoot={workspaceInfo?.ide_root}
                 onDone={(updated) => {
                   setModal(null);
                   setEditingRoom(null);

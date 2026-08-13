@@ -64,8 +64,8 @@ convention: no `RETINUE_ROOMS_API_KEY` → localhost-only):
 | `GET/POST /agents` | roster / hire (`{name, job, how, model?}` — `model` names a preset) |
 | `GET/PATCH /agents/{slug}` | inspect / edit (`{name?, job?, how?, model?, archived?}`) — SOUL rewrite in place; `model` still switches the preset. No restart. |
 | `DELETE /agents/{slug}` | remove `profiles/<slug>/` (never `default`); evicts the live registration |
-| `GET/POST /rooms` | list / create (`{name, members[], lead?, max_agent_turns?}`) — list is sidebar-ordered and includes `archived` |
-| `GET/PATCH/DELETE /rooms/{id}` | inspect / edit (`{name?, members?, lead?, archived?, max_agent_turns?}`) / remove. Archive hides without wiping the transcript. |
+| `GET/POST /rooms` | list / create (`{name, members[], lead?, max_agent_turns?, workspace?, ide_path?}`) — `workspace` is `sandbox` (default) or `ide`. List is sidebar-ordered and includes `archived` |
+| `GET/PATCH/DELETE /rooms/{id}` | inspect / edit (`{name?, members?, lead?, archived?, max_agent_turns?, workspace?, ide_path?}`) / remove. Archive hides without wiping the transcript. |
 | `GET/PUT /sidebar` | room order + team separators + agent order (`{rooms[], items:[{kind:team,id,label}|{kind:agent,slug}]}`) |
 | `POST /rooms/{id}/messages` | user speaks (`{text, from?}`) → 202, cycle runs async |
 | `GET /rooms/{id}/transcript?since=N&wait=S` | poll (optionally long-poll) the transcript — CLI / fallback |
@@ -167,23 +167,28 @@ with the container hostname matching the agents' reports. Only the terminal tool
 in the container; browser/file/MCP tools remain host-side (stricter per-agent isolation =
 just omit the shared key).
 
-## Workspace modes (`infra-ivl9.4` — accepted, not shipped)
+## Workspace modes (`sandbox` | `ide`)
 
-Two room kinds, same container runtime:
+Two room kinds, **same container runtime** (option A). Terminal tools still
+run in podman/docker. File/browser/MCP tools stay host-side (unchanged).
 
 | `workspace` | Computer | Who |
 |---|---|---|
-| `sandbox` (default) | Isolated throwaway container | Every room unless marked IDE |
-| `ide` | Shared container + bind-mount of a **host path** | Only rooms created/patched with `workspace=ide` |
+| `sandbox` (default) | Isolated container, no host mount | Every room unless marked IDE |
+| `ide` | Same runtime + bind-mount of a **host path** at `/workspace` | Only rooms created/patched with `workspace=ide` |
 
-IDE attach is **local to the gateway host** (`ide_path` or `RETINUE_IDE_ROOT`).
-It is not SSHFS and not “SSH to another computer.” If the GUI and the IDE live
-on different machines (Clayton: c-desktop vs clay-blade), **install the gateway
-on the IDE host** and browse the UI from the GUI host.
+IDE attach is **local to the gateway host**. Pass `ide_path` on create/patch,
+or set `RETINUE_IDE_ROOT` for the default. It is not SSHFS and not a remote-IDE
+protocol. If the browser and the IDE tree live on different machines, install
+the gateway on the machine that owns the tree and browse the UI from the other.
 
-Clayton defaults once cut over: path `~/IDE`, cwd `~/IDE/infra`, full operator
-(git/bd/RM/CRM/push), `HERMES_HOME=~/.retinue`. Live install is still c-desktop
-until that cutover.
+Each room gets its own `TERMINAL_DOCKER_SHARED_CONTAINER_KEY`
+(`retinue-<mode>-<room-id>`) so a sandbox room cannot share a container — or a
+mount — with an IDE room. The web UI asks for a loud confirm before creating
+or switching a room to `ide`.
+
+Default cwd inside the container is `/workspace` (the isolated tree, or the
+mounted host path).
 
 ## Deliberate v1 limits
 

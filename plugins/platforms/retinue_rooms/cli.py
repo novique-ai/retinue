@@ -59,6 +59,17 @@ def main(argv: list[str] | None = None) -> int:
     p_create.add_argument("--members", required=True, help="comma-separated profile names")
     p_create.add_argument("--lead", default=None)
     p_create.add_argument("--max-agent-turns", type=int, default=None)
+    p_create.add_argument(
+        "--workspace",
+        choices=("sandbox", "ide"),
+        default="sandbox",
+        help="sandbox = isolated container; ide = bind-mount host IDE at /workspace",
+    )
+    p_create.add_argument(
+        "--ide-path",
+        default=None,
+        help="host directory for workspace=ide (else RETINUE_IDE_ROOT)",
+    )
 
     sub.add_parser("list", help="list rooms")
 
@@ -86,13 +97,19 @@ def main(argv: list[str] | None = None) -> int:
                 "members": [m.strip() for m in args.members.split(",") if m.strip()],
                 "lead": args.lead,
                 "max_agent_turns": args.max_agent_turns,
+                "workspace": args.workspace,
+                "ide_path": args.ide_path,
             },
         )
         print(json.dumps(result, indent=2))
     elif args.cmd == "list":
         for room in _request("GET", "/rooms").get("rooms", []):
             lead = f" lead={room['lead']}" if room.get("lead") else ""
-            print(f"{room['id']}  \"{room['name']}\"  members={','.join(room['members'])}{lead}")
+            mode = room.get("workspace") or "sandbox"
+            print(
+                f"{room['id']}  \"{room['name']}\"  {mode}  "
+                f"members={','.join(room['members'])}{lead}"
+            )
     elif args.cmd == "send":
         result = _request(
             "POST", f"/rooms/{args.room}/messages", {"text": args.text, "from": args.from_name}

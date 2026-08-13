@@ -39,3 +39,7 @@ optional_env:
     description: "Seconds to wait for a local-LLM agent turn (default 1800). Parallel local turns share one llama-server, so this must cover queue + generation."
     prompt: "Local-LLM turn timeout seconds (default 1800)"
     password: false
+  - name: RETINUE_IDE_ROOT
+    description: "Host directory bind-mounted at /workspace for rooms with workspace=ide when the create/patch body omits ide_path."
+    prompt: "Default IDE host path for workspace=ide rooms (absolute directory)"
+    password: false
