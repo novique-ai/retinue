@@ -1,162 +1,130 @@
-name: "🐛 Bug Report"
-description: Report a bug — something that's broken, crashes, or behaves incorrectly.
+name: Bug report
+description: Something in Retinue is broken, crashes, or behaves incorrectly.
 title: "[Bug]: "
 labels: ["bug"]
 body:
   - type: markdown
     attributes:
       value: |
-        Thanks for reporting a bug! Please fill out the sections below so we can reproduce and fix it quickly.
+        Thanks for the report. Please search [existing issues](https://github.com/novique-ai/retinue/issues) first.
 
-        **Before submitting**, please:
-        - [ ] Search [existing issues](https://github.com/NousResearch/hermes-agent/issues) to avoid duplicates
-        - [ ] Update to the latest version (`hermes update`) and confirm the bug still exists
-        - [ ] Run `hermes debug share` and paste the links below (see Debug Report section)
+        If this is inherited Hermes Agent behavior and you can reproduce it in [upstream](https://github.com/NousResearch/hermes-agent) *without* rooms enabled, file it there and link it here.
+
+        Security issues go to [SECURITY.md](https://github.com/novique-ai/retinue/blob/main/.github/SECURITY.md), not this form.
 
   - type: textarea
     id: description
     attributes:
-      label: Bug Description
-      description: A clear description of what's broken. Include error messages, tracebacks, or screenshots if relevant.
-      placeholder: |
-        What happened? What did you expect to happen instead?
+      label: What happened
+      description: A short description. Error text and screenshots help.
     validations:
       required: true
 
   - type: textarea
     id: reproduction
     attributes:
-      label: Steps to Reproduce
-      description: Minimal steps to trigger the bug. The more specific, the faster we can fix it.
+      label: Steps to reproduce
       placeholder: |
-        1. Run `hermes chat`
-        2. Send the message "..."
-        3. Agent calls tool X
-        4. Error appears: ...
+        1. `export HERMES_HOME=$HOME/.retinue RETINUE_ROOMS_ENABLED=1 GATEWAY_MULTIPLEX_PROFILES=true`
+        2. `hermes gateway`
+        3. Open http://127.0.0.1:8643
+        4. …
     validations:
       required: true
 
   - type: textarea
     id: expected
     attributes:
-      label: Expected Behavior
-      description: What should have happened instead?
+      label: Expected behavior
     validations:
       required: true
 
   - type: textarea
     id: actual
     attributes:
-      label: Actual Behavior
-      description: What actually happened? Include full error output if available.
+      label: Actual behavior
     validations:
       required: true
 
   - type: dropdown
     id: component
     attributes:
-      label: Affected Component
-      description: Which part of Hermes is affected?
+      label: Affected surface
       multiple: true
       options:
-        - CLI (interactive chat)
-        - Gateway (Telegram/Discord/Slack/WhatsApp)
-        - Setup / Installation
-        - Tools (terminal, file ops, web, code execution, etc.)
-        - Skills (skill loading, skill hub, skill guard)
-        - Agent Core (conversation loop, context compression, memory)
-        - Configuration (config.yaml, .env, hermes setup)
+        - Rooms / turn-taking
+        - Web UI
+        - Hire / agents / sidebar
+        - Voice
+        - Workspace computer / podman
+        - Routines
+        - Setup / install / gateway start
+        - Inherited Hermes (please link upstream if you can)
+        - Documentation
         - Other
     validations:
       required: true
 
-  - type: dropdown
-    id: platform
+  - type: input
+    id: retinue-version
     attributes:
-      label: Messaging Platform (if gateway-related)
-      description: Which platform adapter is affected?
-      multiple: true
-      options:
-        - N/A (CLI only)
-        - Telegram
-        - Discord
-        - Slack
-        - WhatsApp
-
-  - type: textarea
-    id: debug-report
-    attributes:
-      label: Debug Report
-      description: |
-        Run `hermes debug share` from your terminal and paste the links it prints here.
-        This uploads your system info, config, and recent logs to a paste service automatically.
-
-        If you're in an interactive chat session, you can also use the `/debug` slash command — it does the same thing.
-
-        If the upload fails, run `hermes debug share --local` and paste the output directly.
-      placeholder: |
-        Report   https://paste.rs/abc123
-        agent.log   https://paste.rs/def456
-        gateway.log   https://paste.rs/ghi789
-      render: shell
+      label: Retinue version / commit
+      description: Output of `git -C /path/to/retinue rev-parse --short HEAD` (or the footer SHA if the UI shows one).
+      placeholder: "30a518d20"
     validations:
       required: true
 
   - type: input
-    id: os
+    id: distro
     attributes:
-      label: Operating System
-      description: e.g. Ubuntu 24.04, macOS 15.2, Windows 11
+      label: Linux distribution
+      description: e.g. Ubuntu 24.04, Fedora 41, Arch, Debian 13. Say "not Linux" if that is the case.
       placeholder: Ubuntu 24.04
     validations:
       required: true
 
   - type: input
-    id: python-version
+    id: desktop
     attributes:
-      label: Python Version
-      description: Output of `python --version`
-      placeholder: "3.11.9"
+      label: Desktop environment
+      description: e.g. KDE Plasma 6, GNOME 47, none (headless / SSH).
+      placeholder: KDE Plasma 6
 
-  - type: input
-    id: hermes-version
+  - type: dropdown
+    id: display-server
     attributes:
-      label: Hermes Version
-      description: Output of `hermes version`
-      placeholder: "2.1.0"
+      label: Display server
+      options:
+        - Wayland
+        - X11
+        - Mixed / unsure
+        - None (headless or SSH-only)
+        - Not Linux
+
+  - type: dropdown
+    id: install-method
+    attributes:
+      label: Installation method
+      options:
+        - git clone + scripts/retinue-dev-setup.sh
+        - git clone + manual uv / pip
+        - Existing Hermes install, rooms enabled
+        - Container / other
+    validations:
+      required: true
 
   - type: textarea
     id: logs
     attributes:
-      label: Additional Logs / Traceback (optional)
+      label: Relevant logs
       description: |
-        The debug report above covers most logs. Use this field for any extra error output, 
-        tracebacks, or screenshots not captured by `hermes debug share`.
+        Gateway journal or terminal output, browser console for UI bugs, `hermes doctor` if startup failed.
+        Redact API keys. Prefer pasting text over screenshots of text.
       render: shell
-
-  - type: textarea
-    id: root-cause
-    attributes:
-      label: Root Cause Analysis (optional)
-      description: |
-        If you've dug into the code and identified the root cause, share it here.
-        Include file paths, line numbers, and code snippets if possible. This massively speeds up fixes.
-      placeholder: |
-        The bug is in `gateway/run.py` line 949. `len(history)` counts session_meta entries
-        but `agent_messages` was built from filtered history...
-
-  - type: textarea
-    id: proposed-fix
-    attributes:
-      label: Proposed Fix (optional)
-      description: If you have a fix in mind (or a PR ready), describe it here.
-      placeholder: |
-        Replace `.get()` with `.pop()` on line 289 of `gateway/platforms/base.py`
-        to actually clear the pending message after retrieval.
 
   - type: checkboxes
     id: pr-ready
     attributes:
-      label: Are you willing to submit a PR for this?
+      label: Contribution
       options:
-        - label: I'd like to fix this myself and submit a PR
+        - label: I would like to fix this and open a pull request

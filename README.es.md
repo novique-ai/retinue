@@ -1,3 +1,5 @@
+> **Este repositorio es [Retinue](README.md)** — un fork de capa-plugin de Hermes Agent, no el proyecto upstream. Empieza por [README.md](README.md). El texto de abajo es la traducción heredada de Hermes Agent.
+
 <p align="center">
   <img src="assets/banner.png" alt="Hermes Agent" width="100%">
 </p>

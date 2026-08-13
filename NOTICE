@@ -1,0 +1,17 @@
+Retinue
+=======
+
+Retinue is a plugin-layer fork of Hermes Agent.
+
+  Copyright (c) 2026 Novique and Retinue contributors
+  Copyright (c) 2025 Nous Research
+
+Licensed under the MIT License. See the LICENSE file in this repository.
+
+Upstream project: https://github.com/NousResearch/hermes-agent
+This fork:        https://github.com/novique-ai/retinue
+
+The LICENSE file is the upstream MIT text, retained unmodified per
+retinue/FORK-POLICY.md. This NOTICE records the additional copyright
+on Retinue-authored files (the rooms plugin, retinue-web/, retinue/
+docs, and other files first added in this fork).

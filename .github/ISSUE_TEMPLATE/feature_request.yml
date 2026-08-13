@@ -1,85 +1,107 @@
-name: "✨ Feature Request"
-description: Suggest a new feature or improvement.
+name: Feature request
+description: Propose a change that is ready to become agreed work.
 title: "[Feature]: "
 labels: ["enhancement"]
 body:
   - type: markdown
     attributes:
       value: |
-        Thanks for the suggestion! Before submitting, please consider:
+        Use this form when you can describe **actionable** work.
 
-        - **Is this a new skill?** Most capabilities should be [skills, not tools](https://github.com/NousResearch/hermes-agent/blob/main/CONTRIBUTING.md#should-it-be-a-skill-or-a-tool). If it's a specialized integration (crypto, NFT, niche SaaS), it belongs on the Skills Hub, not bundled.
-        - **Search [existing issues](https://github.com/NousResearch/hermes-agent/issues)** — someone may have already proposed this.
+        Broad ideas, "what if we…", and architecture questions belong in
+        [Discussions](https://github.com/novique-ai/retinue/discussions).
+        An accepted Discussion can be turned into an Issue later.
+
+        Search [existing issues](https://github.com/novique-ai/retinue/issues)
+        and read [docs/roadmap.md](https://github.com/novique-ai/retinue/blob/main/docs/roadmap.md)
+        first. Large features should be discussed before anyone writes code —
+        see [CONTRIBUTING.md](https://github.com/novique-ai/retinue/blob/main/CONTRIBUTING.md).
 
   - type: textarea
     id: problem
     attributes:
-      label: Problem or Use Case
-      description: What problem does this solve? What are you trying to do that you can't today?
+      label: Problem / use case
+      description: What are you trying to do that you cannot do today?
       placeholder: |
-        I'm trying to use Hermes with [provider/platform/workflow] but currently
-        there's no way to...
+        I want two retainers to hand off a writing task in one room, but
+        currently I have to…
     validations:
       required: true
 
   - type: textarea
     id: solution
     attributes:
-      label: Proposed Solution
-      description: How do you think this should work? Be as specific as you can — CLI flags, config options, UI behavior.
-      placeholder: |
-        Add a `--foo` flag to `hermes chat` that enables...
-        Or: Add a config key `bar.baz` that controls...
+      label: Proposed behavior
+      description: What should happen? UI copy, API shape, or config keys if you know them.
     validations:
       required: true
 
   - type: textarea
     id: alternatives
     attributes:
-      label: Alternatives Considered
-      description: What other approaches did you consider? Why is the proposed solution better?
+      label: Alternatives considered
+      description: Other shapes you thought about, including "do this upstream in Hermes" or "this is already a skill."
 
   - type: dropdown
-    id: type
+    id: surface
     attributes:
-      label: Feature Type
+      label: Surface
+      multiple: true
       options:
-        - New tool
-        - New bundled skill
-        - CLI improvement
-        - Gateway / messaging improvement
-        - Configuration option
-        - Performance / reliability
-        - Developer experience (tests, docs, CI)
+        - Rooms / turn-taking
+        - Web UI
+        - Hire / agents / sidebar
+        - Voice
+        - Workspace computer / podman
+        - IDE-attached rooms
+        - Routines
+        - Packaging / install
+        - AI provider / model preset
+        - Documentation / contributor tooling
         - Other
     validations:
       required: true
 
   - type: dropdown
+    id: desktop
+    attributes:
+      label: Desktop / platform (if relevant)
+      multiple: true
+      options:
+        - Not desktop-specific
+        - Linux (general)
+        - Wayland
+        - X11
+        - KDE
+        - GNOME
+        - Other desktop
+        - macOS / Windows / WSL (unsupported, but relevant)
+
+  - type: dropdown
+    id: provider
+    attributes:
+      label: AI provider (if relevant)
+      options:
+        - Not provider-specific
+        - xAI / Grok (API or OAuth)
+        - Anthropic
+        - OpenAI
+        - Local (llama.cpp / vLLM / Ollama / LM Studio)
+        - Other cloud provider
+
+  - type: dropdown
     id: scope
     attributes:
-      label: Scope
-      description: How big is this change?
+      label: Rough size
       options:
-        - Small (single file, < 50 lines)
-        - Medium (few files, < 300 lines)
-        - Large (new module or significant refactor)
+        - Small (a few files)
+        - Medium
+        - Large (needs a Discussion first)
 
   - type: checkboxes
     id: pr-ready
     attributes:
       label: Contribution
       options:
-        - label: I'd like to implement this myself and submit a PR
-
-  - type: textarea
-    id: debug-report
-    attributes:
-      label: Debug Report (optional)
-      description: |
-        If this feature request is related to a problem you're experiencing, run `hermes debug share` and paste the links here.
-        In an interactive chat session, you can use `/debug` instead.
-        This helps us understand your environment and any related logs.
-      placeholder: |
-        Report   https://paste.rs/abc123
-      render: shell
+        - label: I would like to implement this and open a pull request
+        - label: I have opened a Discussion for this idea already

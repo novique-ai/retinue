@@ -1,102 +1,71 @@
-name: "🔧 Setup / Installation Help"
-description: Having trouble installing or configuring Hermes? Ask here.
+name: Setup / installation help
+description: You cannot get from clone to a running room.
 title: "[Setup]: "
-labels: ["setup"]
+labels: ["question"]
 body:
   - type: markdown
     attributes:
       value: |
-        Sorry you're having trouble! Please fill out the details below so we can help.
+        For "how should this work?" questions, prefer
+        [Discussions](https://github.com/novique-ai/retinue/discussions).
+        Use this form when a documented setup step failed.
 
-        **Quick checks first:**
-        - Run `hermes debug share` and paste the links in the Debug Report section below
-        - If you're in a chat session, you can use `/debug` instead — it does the same thing
-        - Try `hermes update` to get the latest version
-        - Check the [README troubleshooting section](https://github.com/NousResearch/hermes-agent#troubleshooting)
-        - For general questions, consider the [Nous Research Discord](https://discord.gg/NousResearch) for faster help
+        First pass: [docs/development.md](https://github.com/novique-ai/retinue/blob/main/docs/development.md)
+        and `./scripts/retinue-dev-setup.sh`.
 
   - type: textarea
     id: description
     attributes:
-      label: What's Going Wrong?
-      description: Describe what you're trying to do and where it fails.
-      placeholder: |
-        I ran `hermes setup` and selected Nous Portal, but when I try to
-        start the gateway I get...
+      label: What are you trying to do, and where does it fail?
     validations:
       required: true
 
   - type: textarea
     id: steps
     attributes:
-      label: Steps Taken
-      description: What did you do? Include the exact commands you ran.
-      placeholder: |
-        1. Ran the install script: `curl -fsSL ... | bash`
-        2. Ran `hermes setup` and chose "Quick setup"
-        3. Selected OpenRouter, entered API key
-        4. Ran `hermes chat` and got error...
+      label: Commands you ran
+      description: Paste the exact commands, including any `HERMES_HOME` / `RETINUE_*` exports.
     validations:
       required: true
 
   - type: dropdown
     id: install-method
     attributes:
-      label: Installation Method
+      label: Installation method
       options:
-        - Install script (curl | bash)
-        - Manual clone + pip/uv install
-        - PowerShell installer (Windows)
-        - Docker
+        - scripts/retinue-dev-setup.sh
+        - Manual uv / pip from a clone
+        - Existing Hermes install + rooms env
         - Other
     validations:
       required: true
 
   - type: input
-    id: os
+    id: distro
     attributes:
-      label: Operating System
-      placeholder: Ubuntu 24.04 / macOS 15.2 / Windows 11
+      label: Linux distribution
+      placeholder: Ubuntu 24.04
     validations:
       required: true
 
   - type: input
     id: python-version
     attributes:
-      label: Python Version
-      description: Output of `python --version` (or `python3 --version`)
-      placeholder: "3.11.9"
+      label: Python version
+      description: Output of python3 --version
+      placeholder: "3.12.3"
 
   - type: input
-    id: hermes-version
+    id: commit
     attributes:
-      label: Hermes Version
-      description: Output of `hermes version` (if install got that far)
-      placeholder: "2.1.0"
-
-  - type: textarea
-    id: debug-report
-    attributes:
-      label: Debug Report
-      description: |
-        Run `hermes debug share` from your terminal and paste the links it prints here.
-        This uploads your system info, config, and recent logs to a paste service automatically.
-
-        If you're in an interactive chat session, you can also use the `/debug` slash command — it does the same thing.
-
-        If the upload fails or install didn't get that far, run `hermes debug share --local` and paste the output directly.
-        If even that doesn't work, run `hermes doctor` and paste that output instead.
-      placeholder: |
-        Report   https://paste.rs/abc123
-        agent.log   https://paste.rs/def456
-        gateway.log   https://paste.rs/ghi789
-      render: shell
+      label: git commit
+      description: Output of git rev-parse --short HEAD
+      placeholder: "30a518d20"
 
   - type: textarea
     id: error-output
     attributes:
-      label: Full Error Output
-      description: Paste the complete error message or traceback. This will be auto-formatted.
+      label: Full error output
       render: shell
     validations:
       required: true
@@ -104,9 +73,8 @@ body:
   - type: textarea
     id: tried
     attributes:
-      label: What I've Already Tried
-      description: List any fixes or workarounds you've already attempted.
+      label: What you already tried
       placeholder: |
-        - Ran `hermes update`
-        - Tried reinstalling with `pip install -e ".[all]"`
-        - Checked that OPENROUTER_API_KEY is set in ~/.hermes/.env
+        - Reran retinue-dev-setup.sh
+        - Built retinue-web/dist
+        - Confirmed RETINUE_ROOMS_ENABLED=1 and GATEWAY_MULTIPLEX_PROFILES=true

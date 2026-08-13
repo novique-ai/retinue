@@ -143,7 +143,8 @@ the room meta / `retinue-agent.json`; they hide an entry without deleting it.
 
 ## The workspace computer (P3)
 
-Grok Bot's model, reproduced locally: **all of a workspace's agents share one persistent
+The shared-computer model (inspired by Grok Bot; Retinue is not affiliated
+with xAI), reproduced locally: **all of a workspace's agents share one persistent
 container** — shared files and state are what make agent-to-agent handoffs cheap. Hermes'
 Docker backend already runs on podman (upstream `find_docker()` falls back to `podman` on
 PATH; force with `HERMES_DOCKER_BINARY`). What Retinue adds is the *sharing*: container

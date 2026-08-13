@@ -1,3 +1,5 @@
+> **本仓库是 [Retinue](README.md)** — Hermes Agent 的插件层 fork，不是上游项目本身。请先阅读 [README.md](README.md)。下文是继承而来的 Hermes Agent 中文说明。
+
 <p align="center">
   <img src="assets/banner.png" alt="Hermes Agent" width="100%">
 </p>

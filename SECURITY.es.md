@@ -1,3 +1,5 @@
+> **Este repositorio es [Retinue](README.md).** Cómo reportar vulnerabilidades de este fork: [.github/SECURITY.md](.github/SECURITY.md). El texto de abajo es el modelo de confianza heredado de Hermes Agent.
+
 # Política de Seguridad de Hermes Agent
 
 Este documento describe el modelo de confianza de Hermes Agent, identifica el

@@ -1,5 +1,7 @@
 <div dir="rtl">
 
+> **یہ ریپو [Retinue](README.md) ہے** — Hermes Agent کا plugin-layer فورک، اپسٹریم پروجیکٹ نہیں۔ پہلے [README.md](README.md) پڑھیں۔ نیچے والا متن وراثت میں ملا ہوا Hermes Agent کا اردو تعارف ہے۔
+
 <p align="center">
   <img src="assets/banner.png" alt="Hermes Agent" width="100%">
 </p>

@@ -1,3 +1,5 @@
+> **Este repositorio es [Retinue](README.md).** La guía de contribución de este fork está en [CONTRIBUTING.md](CONTRIBUTING.md). El texto de abajo es la guía heredada de Hermes Agent.
+
 # Contribuir a Hermes Agent
 
 ¡Gracias por contribuir a Hermes Agent! Esta guía cubre todo lo que necesitas: configurar tu entorno de desarrollo, entender la arquitectura, decidir qué construir y conseguir que tu PR sea aceptado.

@@ -1,5 +1,14 @@
 # Voice interaction — alternatives (2026-08-13 look)
 
+> Public note: hold-to-talk has shipped in `retinue-web/`. Some sections
+> below still describe a private-install sidecar (host names, unit drop-ins)
+> and at least one stale "zero voice code" claim. Treat those as historical
+> operator notes, not a supported public layout. A cleanup issue is listed
+> in [docs/contributor-issues.md](../docs/contributor-issues.md).
+>
+> Voice backends here are interoperable APIs (including xAI STT/TTS).
+> Retinue is not affiliated with or endorsed by xAI.
+
 A room is a **shared transcript**. Voice for Retinue has to produce that
 transcript and speak from it. Speech-to-speech that bypasses the room bus is a
 different product.
