@@ -151,17 +151,36 @@ def _plain_env(name: str) -> str:
     return (os.environ.get(name) or "").strip()
 
 
-def _xai_creds() -> Dict[str, str]:
-    """Prefer an explicit API key — OAuth may 402 billed STT/TTS endpoints.
+def _with_default_secret_scope(fn):
+    """Run *fn* inside the workspace (default-home) secret scope.
 
-    Do **not** call ``get_env_value`` here. The rooms HTTP thread is outside
-    a multiplex secret scope, and Hermes fail-closes that read.
+    The rooms HTTP thread is not a member turn. Hermes multiplexing
+    fail-closes unscoped ``get_env_value`` / ``get_secret`` reads, and
+    ``resolve_xai_http_credentials`` hits that on the base-URL override
+    even after the OAuth pool already has a token.
     """
+    from agent.secret_scope import (
+        build_profile_secret_scope,
+        reset_secret_scope,
+        set_secret_scope,
+    )
+    from hermes_constants import get_hermes_home
+
+    token = set_secret_scope(build_profile_secret_scope(Path(get_hermes_home())))
+    try:
+        return fn()
+    finally:
+        reset_secret_scope(token)
+
+
+def _xai_creds() -> Dict[str, str]:
+    """Prefer an explicit API key — OAuth may 402 billed STT/TTS endpoints."""
     direct = _plain_env("XAI_API_KEY")
     if direct:
         base = _plain_env("XAI_BASE_URL") or XAI_DEFAULT_BASE
         return {"provider": "xai", "api_key": direct, "base_url": base.rstrip("/")}
-    try:
+
+    def _resolve() -> Dict[str, str]:
         from tools.xai_http import resolve_xai_http_credentials
 
         creds = resolve_xai_http_credentials()
@@ -170,6 +189,9 @@ def _xai_creds() -> Dict[str, str]:
             "api_key": str(creds.get("api_key") or "").strip(),
             "base_url": str(creds.get("base_url") or XAI_DEFAULT_BASE).rstrip("/"),
         }
+
+    try:
+        return _with_default_secret_scope(_resolve)
     except Exception as e:
         logger.debug("Retinue voice: xAI credential resolve failed: %s", e)
         return {"provider": "", "api_key": "", "base_url": XAI_DEFAULT_BASE}
