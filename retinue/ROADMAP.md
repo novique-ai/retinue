@@ -25,3 +25,10 @@ origin, no CORS), with:
 - **Workspace take-over (status)**: `GET /workspace` reports the shared
   podman/docker computer (label `hermes-profile=<TERMINAL_DOCKER_SHARED_CONTAINER_KEY>`)
   and the attach command. Full noVNC screen take-over is the next increment.
+
+## Voice (looked 2026-08-13, not started)
+
+Transcript-preserving hold-to-talk in the room UI. Alternatives and the
+recommended first slice (xAI STT/TTS; optional second model on claymore-1)
+are in [VOICE.md](VOICE.md). Do not start until the operator picks a track.
+NoVNC (`infra-dfc1`) is a separate gated increment.
