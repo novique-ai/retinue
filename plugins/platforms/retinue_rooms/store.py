@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+import time
 from typing import Dict, List, Optional
 
 from .engine import Room, RoomMessage
@@ -32,6 +33,7 @@ class RoomStore:
         self.base_dir = base_dir or default_base_dir()
         os.makedirs(self.base_dir, exist_ok=True)
         self._lock = threading.Lock()
+        self._cv = threading.Condition(self._lock)
         self._next_seq: Dict[str, int] = {}
 
     # ── paths ────────────────────────────────────────────────────────────
@@ -98,7 +100,7 @@ class RoomStore:
         """Assign the next seq and durably append. Caller provides seq=0."""
         import time as _time
 
-        with self._lock:
+        with self._cv:
             if message.seq <= 0:
                 message.seq = self._peek_next_seq(room_id)
             self._next_seq[room_id] = message.seq + 1
@@ -106,6 +108,7 @@ class RoomStore:
                 message.ts = _time.time()
             with open(self._transcript_path(room_id), "a", encoding="utf-8") as f:
                 f.write(json.dumps(message.to_dict()) + "\n")
+            self._cv.notify_all()
         return message
 
     def _peek_next_seq(self, room_id: str) -> int:
@@ -119,6 +122,27 @@ class RoomStore:
 
     def read_since(self, room_id: str, since_seq: int = 0) -> List[RoomMessage]:
         return [m for m in self._read_all(room_id) if m.seq > since_seq]
+
+    def wait_since(
+        self, room_id: str, since_seq: int = 0, timeout: float = 0.0
+    ) -> List[RoomMessage]:
+        """Block until a message newer than *since_seq* arrives, or *timeout*.
+
+        Used by both the long-poll transcript route and the SSE stream so
+        neither path busy-loops. *timeout* <= 0 is a non-blocking read.
+        """
+        if timeout <= 0:
+            return self.read_since(room_id, since_seq)
+        deadline = time.time() + timeout
+        with self._cv:
+            while True:
+                messages = [m for m in self._read_all(room_id) if m.seq > since_seq]
+                if messages:
+                    return messages
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    return []
+                self._cv.wait(timeout=remaining)
 
     def _read_all(self, room_id: str) -> List[RoomMessage]:
         messages: List[RoomMessage] = []

@@ -500,11 +500,14 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
 
     def _json(self, status: int, payload: Any) -> None:
         body = json.dumps(payload).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            return
 
     def _authorized(self) -> bool:
         key = self.server.adapter.api_key
@@ -512,7 +515,13 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
             return True  # no key => the server is bound localhost-only
         header = self.headers.get("Authorization", "")
         token = header[len("Bearer "):] if header.startswith("Bearer ") else ""
-        return hmac.compare_digest(token, key)
+        if token and hmac.compare_digest(token, key):
+            return True
+        # EventSource cannot set Authorization; accept the same secret as a
+        # query param on the SSE route (and only via compare_digest).
+        query = parse_qs(urlparse(self.path).query)
+        qtoken = (query.get("access_token") or [""])[0] or ""
+        return bool(qtoken) and hmac.compare_digest(qtoken, key)
 
     def _read_body(self) -> Optional[dict]:
         try:
@@ -599,15 +608,55 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
             query = parse_qs(parsed.query)
             since = int((query.get("since") or ["0"])[0] or 0)
             wait = min(float((query.get("wait") or ["0"])[0] or 0), 60.0)
-            deadline = time.time() + wait
-            while True:
-                messages = adapter.store.read_since(parts[1], since)
-                if messages or time.time() >= deadline:
-                    return self._json(
-                        200, {"messages": [m.to_dict() for m in messages]}
-                    )
-                time.sleep(0.5)
+            messages = adapter.store.wait_since(parts[1], since, timeout=wait)
+            return self._json(200, {"messages": [m.to_dict() for m in messages]})
+        if len(parts) == 3 and parts[0] == "rooms" and parts[2] == "stream":
+            room = adapter.store.get(parts[1])
+            if room is None:
+                return self._json(404, {"error": "no such room"})
+            query = parse_qs(parsed.query)
+            since = int((query.get("since") or ["0"])[0] or 0)
+            return self._sse_transcript(parts[1], since)
         return self._json(404, {"error": "not found"})
+
+    def _sse_transcript(self, room_id: str, since: int) -> None:
+        """Push transcript lines as ``event: messages`` until the client goes."""
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "keep-alive")
+            self.send_header("X-Accel-Buffering", "no")
+            self.end_headers()
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            return
+        adapter = self.server.adapter
+
+        def emit(messages: List[Any], keepalive: bool = False) -> None:
+            if messages:
+                payload = json.dumps({"messages": [m.to_dict() for m in messages]})
+                self.wfile.write(f"event: messages\ndata: {payload}\n\n".encode())
+            elif keepalive:
+                self.wfile.write(b": keepalive\n\n")
+            self.wfile.flush()
+
+        try:
+            # Catch-up first so EventSource sees history without a wait.
+            caught = adapter.store.read_since(room_id, since)
+            if caught:
+                emit(caught)
+                since = max(since, max(m.seq for m in caught))
+            else:
+                emit([], keepalive=True)
+            while True:
+                messages = adapter.store.wait_since(room_id, since, timeout=15.0)
+                emit(messages, keepalive=not messages)
+                if messages:
+                    since = max(since, max(m.seq for m in messages))
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            return
+        except OSError:
+            return
 
     def do_POST(self):
         if not self._authorized():

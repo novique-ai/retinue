@@ -59,11 +59,11 @@ convention: no `RETINUE_ROOMS_API_KEY` → localhost-only):
 | `GET/POST /rooms` | list / create (`{name, members[], lead?, max_agent_turns?}`) |
 | `GET/DELETE /rooms/{id}` | inspect / remove |
 | `POST /rooms/{id}/messages` | user speaks (`{text, from?}`) → 202, cycle runs async |
-| `GET /rooms/{id}/transcript?since=N&wait=S` | poll (optionally long-poll) the transcript |
+| `GET /rooms/{id}/transcript?since=N&wait=S` | poll (optionally long-poll) the transcript — CLI / fallback |
+| `GET /rooms/{id}/stream?since=N` | SSE transcript (`event: messages`); `access_token` query accepted |
 
 `python -m plugins.platforms.retinue_rooms.cli` is the reference client (create / list /
-send / watch / chat). The P2 web UI replaces it as the human surface; this HTTP API is
-what the web room view will consume (SSE upgrade planned then).
+send / watch / chat). The web UI consumes the SSE stream; the CLI keeps long-poll.
 
 ## Model presets (per-hire model selection)
 

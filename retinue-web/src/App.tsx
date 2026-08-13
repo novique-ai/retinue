@@ -49,39 +49,24 @@ function RoomView({ room, userName }: { room: RoomMeta; userName: string }) {
   const sinceRef = useRef(0);
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  // Long-poll loop; the adapter holds the request up to `wait` seconds.
+  // SSE transcript stream; long-poll is the fallback (see api.watchTranscript).
   useEffect(() => {
     sinceRef.current = 0;
     setMessages([]);
     const ctl = new AbortController();
-    let alive = true;
-    (async () => {
-      while (alive) {
-        try {
-          const { messages: fresh } = await api.transcript(
-            room.id,
-            sinceRef.current,
-            25,
-            ctl.signal,
-          );
-          if (!alive) return;
-          if (fresh.length) {
-            sinceRef.current = Math.max(...fresh.map((m) => m.seq));
-            setMessages((prev) => [...prev, ...fresh]);
-            setThinking((waiting) =>
-              waiting.filter((w) => !fresh.some((m) => m.kind === "agent" && m.speaker === w)),
-            );
-          }
-        } catch (e) {
-          if (!alive || (e instanceof DOMException && e.name === "AbortError")) return;
-          await new Promise((r) => setTimeout(r, 3000));
-        }
-      }
-    })();
-    return () => {
-      alive = false;
-      ctl.abort();
-    };
+    api.watchTranscript(
+      room.id,
+      0,
+      (fresh) => {
+        sinceRef.current = Math.max(sinceRef.current, ...fresh.map((m) => m.seq));
+        setMessages((prev) => [...prev, ...fresh]);
+        setThinking((waiting) =>
+          waiting.filter((w) => !fresh.some((m) => m.kind === "agent" && m.speaker === w)),
+        );
+      },
+      ctl.signal,
+    );
+    return () => ctl.abort();
   }, [room.id]);
 
   useEffect(() => {

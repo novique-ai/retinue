@@ -63,6 +63,71 @@ async function req<T>(
   return data as T;
 }
 
+async function longPollLoop(
+  id: string,
+  since: number,
+  onMessages: (messages: RoomMsg[]) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  let cursor = since;
+  while (!signal?.aborted) {
+    try {
+      const { messages } = await req<{ messages: RoomMsg[] }>(
+        "GET",
+        `/rooms/${id}/transcript?since=${cursor}&wait=25`,
+        undefined,
+        signal,
+      );
+      if (messages.length) {
+        cursor = Math.max(cursor, ...messages.map((m) => m.seq));
+        onMessages(messages);
+      }
+    } catch (e) {
+      if (signal?.aborted || (e instanceof DOMException && e.name === "AbortError")) return;
+      await new Promise((r) => setTimeout(r, 3000));
+    }
+  }
+}
+
+function watchTranscript(
+  id: string,
+  since: number,
+  onMessages: (messages: RoomMsg[]) => void,
+  signal?: AbortSignal,
+): void {
+  const params = new URLSearchParams({ since: String(since) });
+  const key = getApiKey();
+  if (key) params.set("access_token", key);
+  let cursor = since;
+  let sawEvent = false;
+  const es = new EventSource(`/rooms/${id}/stream?${params.toString()}`);
+  const apply = (ev: MessageEvent<string>) => {
+    try {
+      const payload = JSON.parse(ev.data) as { messages?: RoomMsg[] };
+      const messages = payload.messages ?? [];
+      if (!messages.length) return;
+      sawEvent = true;
+      cursor = Math.max(cursor, ...messages.map((m) => m.seq));
+      onMessages(messages);
+    } catch {
+      /* ignore a malformed frame */
+    }
+  };
+  es.addEventListener("messages", apply);
+  es.onmessage = apply;
+  es.onerror = () => {
+    es.close();
+    if (signal?.aborted) return;
+    if (!sawEvent) {
+      void longPollLoop(id, cursor, onMessages, signal);
+    } else {
+      // Dropped mid-stream — reconnect via SSE from the last seq.
+      watchTranscript(id, cursor, onMessages, signal);
+    }
+  };
+  signal?.addEventListener("abort", () => es.close(), { once: true });
+}
+
 export const api = {
   listRooms: () => req<{ rooms: RoomMeta[] }>("GET", "/rooms"),
   createRoom: (name: string, members: string[], lead: string | null) =>
@@ -74,6 +139,17 @@ export const api = {
       undefined,
       signal,
     ),
+  /**
+   * Prefer SSE (`GET /rooms/{id}/stream`). Falls back to the long-poll
+   * transcript route if EventSource errors before the first event (old
+   * gateway, proxy, etc.). Long-poll remains the CLI path.
+   */
+  watchTranscript: (
+    id: string,
+    since: number,
+    onMessages: (messages: RoomMsg[]) => void,
+    signal?: AbortSignal,
+  ) => watchTranscript(id, since, onMessages, signal),
   send: (id: string, text: string, from: string) =>
     req<{ seq: number; planned: string[] }>("POST", `/rooms/${id}/messages`, { text, from }),
   listAgents: () => req<{ agents: AgentMeta[] }>("GET", "/agents"),

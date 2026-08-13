@@ -150,6 +150,80 @@ def test_store_update_last_seen_roundtrip(tmp_path):
     assert RoomStore(base_dir=str(tmp_path)).get("r-1").last_seen == {"scout": 7}
 
 
+def test_wait_since_wakes_on_append(tmp_path):
+    import threading
+    import time as _time
+
+    store = RoomStore(base_dir=str(tmp_path))
+    store.create(_room())
+    got: list[str] = []
+
+    def waiter():
+        got.extend(m.text for m in store.wait_since("r-1", 0, timeout=2.0))
+
+    t = threading.Thread(target=waiter)
+    t.start()
+    _time.sleep(0.05)
+    store.append("r-1", RoomMessage(seq=0, ts=0, kind=KIND_USER, speaker="Mark", text="hello"))
+    t.join(3)
+    assert got == ["hello"]
+
+
+def test_wait_since_timeout_empty(tmp_path):
+    import time as _time
+
+    store = RoomStore(base_dir=str(tmp_path))
+    store.create(_room())
+    t0 = _time.time()
+    assert store.wait_since("r-1", 0, timeout=0.2) == []
+    assert _time.time() - t0 >= 0.15
+
+
+def test_sse_stream_emits_existing_messages(tmp_path, monkeypatch):
+    """GET /rooms/{id}/stream is text/event-stream and emits already-written
+    lines immediately (the EventSource catch-up case)."""
+    import http.client
+    import json
+    import threading
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from gateway.config import PlatformConfig
+
+    from .adapter import RetinueRoomsAdapter, _RoomsRequestHandler, _RoomsServer
+
+    adapter = RetinueRoomsAdapter(PlatformConfig())
+    adapter.store = RoomStore(base_dir=str(tmp_path / "rooms"))
+    adapter.store.create(_room())
+    adapter.store.append(
+        "r-1", RoomMessage(seq=0, ts=0, kind=KIND_USER, speaker="Mark", text="hi")
+    )
+    httpd = _RoomsServer(("127.0.0.1", 0), _RoomsRequestHandler, adapter)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        host, port = httpd.server_address[:2]
+        conn = http.client.HTTPConnection(host, port, timeout=3)
+        conn.request("GET", "/rooms/r-1/stream?since=0")
+        resp = conn.getresponse()
+        assert resp.status == 200
+        assert "text/event-stream" in (resp.getheader("Content-Type") or "")
+        lines: list[str] = []
+        while True:
+            raw = resp.fp.readline()
+            assert raw, "SSE stream closed before a messages event"
+            line = raw.decode().rstrip("\n")
+            lines.append(line.rstrip("\r"))
+            if line in ("\n", "\r\n", "") and any(l.startswith("data:") for l in lines):
+                break
+        data_line = next(l for l in lines if l.startswith("data:"))
+        payload = json.loads(data_line[len("data:") :].strip())
+        assert [m["text"] for m in payload["messages"]] == ["hi"]
+        conn.close()
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
 def test_store_delete_and_corrupt_line_tolerance(tmp_path):
     store = RoomStore(base_dir=str(tmp_path))
     store.create(_room())
