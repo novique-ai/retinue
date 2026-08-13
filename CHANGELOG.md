@@ -17,6 +17,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Contributor-facing README, CONTRIBUTING, Code of Conduct, security
   reporting wrapper, development/architecture/roadmap docs, issue and
   PR templates, and a fast **Retinue delta** GitHub Actions workflow.
+- GitHub Issues, Discussions, label taxonomy, and a `main` ruleset
+  requiring the Retinue delta check. Starter issues #1–#9 and Ideas
+  discussions #10–#12.
 
 ## 2026-08-13
 
