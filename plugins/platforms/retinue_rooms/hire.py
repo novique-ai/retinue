@@ -495,6 +495,7 @@ def scaffold_profile(
         "job": job,
         "how": (how or "").strip(),
         "model_preset": model_preset,
+        "archived": False,
         "created_at": time.time(),
     }
     with open(os.path.join(profile_dir, AGENT_META_FILENAME), "w", encoding="utf-8") as f:

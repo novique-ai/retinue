@@ -47,6 +47,7 @@ def test_scaffold_creates_profile(tmp_path):
     assert (pdir / ".env").read_text() == "PROVIDER_KEY=abc\n"
     saved = json.loads((pdir / hire.AGENT_META_FILENAME).read_text())
     assert saved["job"] == "research things"
+    assert saved["archived"] is False
 
 
 def test_scaffold_without_root_config_uses_fallback_model(tmp_path):
