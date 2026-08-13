@@ -60,10 +60,9 @@ _turn_member: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
 
 
 def turn_timeout() -> float:
-    try:
-        return max(5.0, float(os.getenv("RETINUE_ROOMS_TURN_TIMEOUT", "300")))
-    except (ValueError, TypeError):
-        return 300.0
+    """Cloud/default per-turn wait. Local-LLM members use the longer
+    ``hire.turn_timeout_for`` budget instead."""
+    return hire.cloud_turn_timeout()
 
 
 def _member_from_scope() -> Optional[str]:
@@ -411,7 +410,14 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         planned = engine.plan_user_turns(room, text)
         fut = asyncio.run_coroutine_threadsafe(self._run_cycle(room_id, message), self._loop)
         if wait:
-            fut.result(timeout=turn_timeout() * max(1, room.max_agent_turns) + 30)
+            home = self._home_dir()
+            sample = planned or room.members
+            per = (
+                hire.local_turn_timeout()
+                if any(hire.profile_uses_local_llm(home, m) for m in sample)
+                else hire.cloud_turn_timeout()
+            )
+            fut.result(timeout=per * max(1, room.max_agent_turns) + 30)
         return {"seq": message.seq, "planned": planned}
 
     def save_routine_from_room(
@@ -577,11 +583,12 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         finally:
             _turn_member.reset(token)
 
+        budget = hire.turn_timeout_for(self._home_dir(), member)
         try:
-            return await asyncio.wait_for(asyncio.wrap_future(fut), timeout=turn_timeout())
+            return await asyncio.wait_for(asyncio.wrap_future(fut), timeout=budget)
         except asyncio.TimeoutError:
             self._resolve_pending(room.id, ok=False, text="turn timed out", member=member)
-            return False, f"no reply within {int(turn_timeout())}s"
+            return False, f"no reply within {int(budget)}s"
 
     def _post_system(self, room_id: str, text: str) -> None:
         try:

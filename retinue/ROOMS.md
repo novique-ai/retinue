@@ -119,7 +119,8 @@ profiles (`~/.hermes/profiles/<name>/`, or `default`); creation warns about unkn
 | `RETINUE_ROOMS_ENABLED` | unset | enable the platform (or set an API key) |
 | `RETINUE_ROOMS_API_KEY` | unset | bearer auth; unset ⇒ localhost-only bind |
 | `RETINUE_ROOMS_HOST` / `_PORT` | `127.0.0.1` / `8643` | bind address |
-| `RETINUE_ROOMS_TURN_TIMEOUT` | `300` | seconds to wait for one agent turn |
+| `RETINUE_ROOMS_TURN_TIMEOUT` | `300` | seconds to wait for one **cloud** agent turn |
+| `RETINUE_ROOMS_LOCAL_TURN_TIMEOUT` | `1800` | seconds to wait for one **local-LLM** turn (covers a slow first token and a sibling queued on the same llama-server) |
 
 ## The workspace computer (P3)
 

@@ -125,6 +125,56 @@ def test_scaffold_unknown_preset_creates_nothing(tmp_path):
         hire.scaffold_profile(str(tmp_path), "Ghost", "haunt", "", model_preset="broken")
 
 
+def test_model_block_is_local_detects_custom_lan_and_local_alias():
+    local = (
+        "model:\n  provider: custom\n  model: local/auto\n"
+        "  base_url: http://10.44.0.13:8091/v1\n"
+    )
+    grok = "model:\n  default: grok-4.5\n  provider: xai-oauth\n  base_url: https://api.x.ai/v1\n"
+    ollama = "model:\n  provider: ollama\n  model: llama3\n"
+    assert hire.model_block_is_local(local) is True
+    assert hire.model_block_is_local(grok) is False
+    assert hire.model_block_is_local(ollama) is True
+    assert hire.model_block_is_local("model:\n  provider: anthropic\n  default: claude-haiku-4-5\n") is False
+
+
+def test_profile_uses_local_llm_reads_profile_then_root(tmp_path):
+    (tmp_path / "config.yaml").write_text(
+        "model:\n  provider: custom\n  model: local/auto\n  base_url: http://127.0.0.1:8091/v1\n"
+    )
+    hire.scaffold_profile(str(tmp_path), "Scout", "research", "")
+    hire.scaffold_profile(str(tmp_path), "Boss", "lead", "")
+    # overwrite boss onto grok after scaffold
+    (tmp_path / "profiles" / "boss" / "config.yaml").write_text(
+        "model:\n  default: grok-4.5\n  provider: xai-oauth\n"
+    )
+    assert hire.profile_uses_local_llm(str(tmp_path), "scout") is True
+    assert hire.profile_uses_local_llm(str(tmp_path), "boss") is False
+    assert hire.profile_uses_local_llm(str(tmp_path), "default") is True
+    assert hire.profile_uses_local_llm(str(tmp_path), "missing") is True  # fail-safe
+
+
+def test_turn_timeout_for_is_longer_for_local(tmp_path, monkeypatch):
+    monkeypatch.delenv("RETINUE_ROOMS_TURN_TIMEOUT", raising=False)
+    monkeypatch.delenv("RETINUE_ROOMS_LOCAL_TURN_TIMEOUT", raising=False)
+    (tmp_path / "config.yaml").write_text(
+        "model:\n  provider: custom\n  model: local/auto\n  base_url: http://10.0.0.2:8091/v1\n"
+    )
+    hire.scaffold_profile(str(tmp_path), "Scout", "research", "")
+    (tmp_path / "profiles" / "scout" / "config.yaml").write_text(
+        "model:\n  provider: custom\n  model: local/auto\n  base_url: http://10.0.0.2:8091/v1\n"
+    )
+    (tmp_path / "profiles" / "boss").mkdir()
+    (tmp_path / "profiles" / "boss" / "config.yaml").write_text(
+        "model:\n  default: grok-4.5\n  provider: xai-oauth\n"
+    )
+    local_t = hire.turn_timeout_for(str(tmp_path), "scout")
+    cloud_t = hire.turn_timeout_for(str(tmp_path), "boss")
+    assert cloud_t == 300
+    assert local_t >= 1800
+    assert local_t > cloud_t
+
+
 def test_scaffold_seeds_root_auth_store(tmp_path):
     (tmp_path / "config.yaml").write_text("model:\n  default: m\n  provider: anthropic\n")
     (tmp_path / "auth.json").write_text('{"providers": {"xai-oauth": {}}}')

@@ -32,6 +32,10 @@ optional_env:
     prompt: "Rooms port (default 8643)"
     password: false
   - name: RETINUE_ROOMS_TURN_TIMEOUT
-    description: "Seconds to wait for a single agent turn before moving on (default 300)."
-    prompt: "Turn timeout seconds (default 300)"
+    description: "Seconds to wait for one cloud-provider agent turn (default 300)."
+    prompt: "Cloud turn timeout seconds (default 300)"
+    password: false
+  - name: RETINUE_ROOMS_LOCAL_TURN_TIMEOUT
+    description: "Seconds to wait for a local-LLM agent turn (default 1800). Parallel local turns share one llama-server, so this must cover queue + generation."
+    prompt: "Local-LLM turn timeout seconds (default 1800)"
     password: false

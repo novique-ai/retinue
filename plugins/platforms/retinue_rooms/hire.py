@@ -86,17 +86,126 @@ def _extract_model_block(root_config_path: str) -> str:
     )
 
 
-def _summarize_model_block(block: str) -> str:
-    """One-line human summary of a model block, e.g. 'custom · local/auto'."""
-    fields = {}
-    for line in block.splitlines()[1:]:
+def _fields_from_model_block(block: str) -> Dict[str, str]:
+    fields: Dict[str, str] = {}
+    for line in (block or "").splitlines()[1:]:
         stripped = line.strip()
         if ":" in stripped and not stripped.startswith("#"):
             key, _, value = stripped.partition(":")
             fields[key.strip()] = value.strip().strip("\"'")
+    return fields
+
+
+def _summarize_model_block(block: str) -> str:
+    """One-line human summary of a model block, e.g. 'custom · local/auto'."""
+    fields = _fields_from_model_block(block)
     model = fields.get("default") or fields.get("model") or "?"
     provider = fields.get("provider") or "auto"
     return f"{provider} · {model}"
+
+
+_CLOUD_TURN_DEFAULT = 300.0
+_LOCAL_TURN_DEFAULT = 1800.0
+_LOCAL_PROVIDERS = {
+    "custom",
+    "local",
+    "ollama",
+    "llamacpp",
+    "llama.cpp",
+    "lmstudio",
+    "vllm",
+    "openai-compatible",
+}
+
+
+def _url_is_private(url: str) -> bool:
+    host = (url or "").strip().lower()
+    if not host:
+        return False
+    host = host.split("://", 1)[-1].split("/", 1)[0].split(":", 1)[0]
+    if host in {"localhost", "127.0.0.1", "::1"} or host.endswith(".local"):
+        return True
+    if host.endswith(".ts.net"):
+        return True
+    if host.startswith("10.") or host.startswith("192.168.") or host.startswith("169.254."):
+        return True
+    if host.startswith("172."):
+        try:
+            second = int(host.split(".")[1])
+        except (IndexError, ValueError):
+            return False
+        return 16 <= second <= 31
+    return False
+
+
+def model_block_is_local(block: str) -> bool:
+    """True when this model: block is a self-hosted / local-LLM endpoint.
+
+    Local generations on claymore-1 routinely take minutes (and longer when
+    two room members share one llama-server), so they must not share the
+    cloud turn budget.
+    """
+    fields = _fields_from_model_block(block)
+    model = (fields.get("default") or fields.get("model") or "").lower()
+    provider = (fields.get("provider") or "").lower()
+    base = fields.get("base_url") or ""
+    if model.startswith("local/") or model.startswith("local-"):
+        return True
+    if _url_is_private(base):
+        return True
+    if provider in {"ollama", "llamacpp", "llama.cpp", "lmstudio", "vllm"}:
+        return True
+    if provider == "custom" and not base.lower().startswith("https://api."):
+        return True
+    if provider in _LOCAL_PROVIDERS and _url_is_private(base):
+        return True
+    return False
+
+
+def profile_uses_local_llm(home_dir: str, slug: str) -> bool:
+    """Look at profiles/<slug>/config.yaml, then the workspace root.
+
+    Unknown / unreadable profiles fail safe to local (longer wait) so a
+    slow first turn is not cut off.
+    """
+    slug = (slug or "default").strip() or "default"
+    if slug == "default":
+        path = os.path.join(home_dir, "config.yaml")
+    else:
+        path = os.path.join(home_dir, "profiles", slug, "config.yaml")
+    block = _read_model_block(path)
+    if not block and slug != "default":
+        block = _read_model_block(os.path.join(home_dir, "config.yaml"))
+    if not block:
+        return True
+    return model_block_is_local(block)
+
+
+def _env_timeout(name: str, default: float) -> float:
+    raw = (os.getenv(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        return max(5.0, float(raw))
+    except (ValueError, TypeError):
+        return default
+
+
+def cloud_turn_timeout() -> float:
+    return _env_timeout("RETINUE_ROOMS_TURN_TIMEOUT", _CLOUD_TURN_DEFAULT)
+
+
+def local_turn_timeout() -> float:
+    raw = (os.getenv("RETINUE_ROOMS_LOCAL_TURN_TIMEOUT") or "").strip()
+    if raw:
+        return _env_timeout("RETINUE_ROOMS_LOCAL_TURN_TIMEOUT", _LOCAL_TURN_DEFAULT)
+    return max(_LOCAL_TURN_DEFAULT, cloud_turn_timeout())
+
+
+def turn_timeout_for(home_dir: str, slug: str) -> float:
+    if profile_uses_local_llm(home_dir, slug):
+        return local_turn_timeout()
+    return cloud_turn_timeout()
 
 
 def _models_dir(home_dir: str) -> str:
