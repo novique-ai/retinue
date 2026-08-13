@@ -1,6 +1,6 @@
-# Retinue
+<p align="center"><img src="retinue/assets/header.jpg" alt="Retinue — a suite of retainers around the person they serve" width="100%"></p>
 
-<p align="center"><img src="retinue/assets/logo.png" width="168" alt="Retinue — a suite of retainers around the person they serve"></p>
+# Retinue
 
 > **A suite of retainers in your service.** Self-hosted AI teammates that work together.
 
