@@ -90,6 +90,50 @@ def test_followups_zero_budget_yields_nothing():
     assert engine.plan_agent_followups(room, "scout", "@editor", [], 0) == []
 
 
+# ── parallel waves ───────────────────────────────────────────────────────
+
+
+def test_take_wave_respects_budget():
+    wave, rest = engine.take_wave(["scout", "editor", "critic"], 2)
+    assert wave == ["scout", "editor"]
+    assert rest == ["critic"]
+
+
+def test_take_wave_zero_or_empty():
+    assert engine.take_wave(["scout"], 0) == ([], ["scout"])
+    assert engine.take_wave([], 4) == ([], [])
+
+
+def test_merge_followups_from_parallel_replies_preserves_mention_order():
+    """Independent speakers run together; their @mentions form the next wave
+    in speaker-then-mention order, skipping anyone already spoken/queued."""
+    room = _room()
+    follow = engine.merge_followups(
+        room,
+        replies=[
+            ("scout", "hand this to @critic and @editor"),
+            ("editor", "also ask @critic"),
+        ],
+        already_queued=[],
+        already_spoken=["scout", "editor"],
+        budget_left=4,
+    )
+    # editor is already spoken, critic once only
+    assert follow == ["critic"]
+
+
+def test_merge_followups_respects_budget():
+    room = _room(members=["scout", "editor", "critic", "herald"])
+    follow = engine.merge_followups(
+        room,
+        replies=[("scout", "@editor @critic @herald")],
+        already_queued=[],
+        already_spoken=["scout"],
+        budget_left=2,
+    )
+    assert follow == ["editor", "critic"]
+
+
 # ── formatting ───────────────────────────────────────────────────────────
 
 
@@ -139,6 +183,17 @@ def test_store_seq_survives_reopen(tmp_path):
     reopened = RoomStore(base_dir=str(tmp_path))
     m2 = reopened.append("r-1", RoomMessage(seq=0, ts=0, kind=KIND_USER, speaker="Mark", text="b"))
     assert m2.seq == 2
+
+
+def test_touch_last_seen_merges_parallel_cursors(tmp_path):
+    store = RoomStore(base_dir=str(tmp_path))
+    store.create(_room())
+    store.touch_last_seen("r-1", "scout", 3)
+    store.touch_last_seen("r-1", "editor", 5)
+    store.touch_last_seen("r-1", "scout", 2)  # must not go backwards
+    seen = store.get("r-1").last_seen
+    assert seen["scout"] == 3
+    assert seen["editor"] == 5
 
 
 def test_store_update_last_seen_roundtrip(tmp_path):

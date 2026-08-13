@@ -87,6 +87,22 @@ class RoomStore:
         with self._lock:
             self._write_meta(room)
 
+    def touch_last_seen(self, room_id: str, member: str, seq: int) -> None:
+        """Merge one member's last_seen without clobbering siblings.
+
+        Parallel turns update last_seen concurrently; a full-room rewrite
+        of a stale Room object would drop the other member's cursor.
+        """
+        with self._lock:
+            room = None
+            try:
+                with open(self._meta_path(room_id), encoding="utf-8") as f:
+                    room = Room.from_dict(json.load(f))
+            except (OSError, ValueError, KeyError):
+                return
+            room.last_seen[member] = max(room.last_seen.get(member, 0), int(seq))
+            self._write_meta(room)
+
     def _write_meta(self, room: Room) -> None:
         path = self._meta_path(room.id)
         tmp = f"{path}.tmp"

@@ -131,6 +131,46 @@ def plan_agent_followups(
     return picks[:budget_left]
 
 
+def take_wave(queue: List[str], budget_left: int) -> tuple[List[str], List[str]]:
+    """Split *queue* into (this independent wave, remainder).
+
+    Members already in the queue were scheduled independently (a user
+    @mentioned them together, or they were collected as follow-ups of the
+    previous wave). They do not depend on each other's replies, so the
+    adapter may run the wave concurrently. *budget_left* caps the wave.
+    """
+    if budget_left <= 0 or not queue:
+        return [], list(queue)
+    return list(queue[:budget_left]), list(queue[budget_left:])
+
+
+def merge_followups(
+    room: Room,
+    replies: List[tuple[str, str]],
+    already_queued: List[str],
+    already_spoken: List[str],
+    budget_left: int,
+) -> List[str]:
+    """Next wave: @mentions from a just-finished wave, in speaker order.
+
+    Dedupes against *already_queued*, *already_spoken*, and earlier
+    follow-ups in this merge so a member is scheduled at most once.
+    """
+    extra: List[str] = []
+    blocked = set(already_queued) | set(already_spoken)
+    remaining = budget_left
+    for speaker, text in replies:
+        if remaining <= 0:
+            break
+        picks = plan_agent_followups(
+            room, speaker, text, list(blocked), remaining
+        )
+        extra.extend(picks)
+        blocked.update(picks)
+        remaining -= len(picks)
+    return extra
+
+
 def format_lines(messages: List[RoomMessage]) -> str:
     """Attributed transcript block for channel_context delivery."""
     lines = []

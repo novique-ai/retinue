@@ -214,6 +214,74 @@ def test_hire_agent_without_runner_does_not_demand_restart(tmp_path, monkeypatch
     assert "restart" not in meta["activation"].lower()
 
 
+def test_send_resolves_only_the_matching_member():
+    """Parallel speakers share a chat_id; notify must not steal the sibling."""
+    import asyncio
+    from concurrent.futures import Future
+
+    from gateway.config import PlatformConfig
+
+    from .adapter import RetinueRoomsAdapter, _PendingTurn
+
+    adapter = RetinueRoomsAdapter(PlatformConfig())
+    scout_f, editor_f = Future(), Future()
+    adapter._pending[("r", "scout")] = _PendingTurn("t1", "r", "scout", scout_f)
+    adapter._pending[("r", "editor")] = _PendingTurn("t2", "r", "editor", editor_f)
+    asyncio.run(
+        adapter.send(
+            "r", "from scout", metadata={"notify": True, "retinue_member": "scout"}
+        )
+    )
+    assert scout_f.result() == (True, "from scout")
+    assert not editor_f.done()
+
+
+def test_member_thread_id_splits_shared_room_session_keys():
+    """BasePlatformAdapter keys sessions without the multiplex profile
+    namespace. Two members in one room must still get distinct keys or
+    they share _active_sessions and clobber each other's model."""
+    from gateway.config import PlatformConfig
+    from gateway.session import build_session_key
+
+    from .adapter import RetinueRoomsAdapter
+
+    adapter = RetinueRoomsAdapter(PlatformConfig())
+    scout = adapter.build_source(chat_id="room-1", chat_type="group", thread_id="scout")
+    editor = adapter.build_source(chat_id="room-1", chat_type="group", thread_id="editor")
+    ks = build_session_key(scout, group_sessions_per_user=False)
+    ke = build_session_key(editor, group_sessions_per_user=False)
+    assert ks != ke
+    assert "scout" in ks and "editor" in ke
+
+
+def test_send_uses_turn_contextvar_when_gateway_metadata_has_no_member():
+    """The gateway's notify metadata is thread_meta + notify only.
+    Member identity has to ride a ContextVar set around handle_message."""
+    import asyncio
+    from concurrent.futures import Future
+
+    from gateway.config import PlatformConfig
+
+    from . import adapter as adapter_mod
+    from .adapter import RetinueRoomsAdapter, _PendingTurn
+
+    rooms = RetinueRoomsAdapter(PlatformConfig())
+    scout_f, editor_f = Future(), Future()
+    rooms._pending[("r", "scout")] = _PendingTurn("t1", "r", "scout", scout_f)
+    rooms._pending[("r", "editor")] = _PendingTurn("t2", "r", "editor", editor_f)
+
+    async def fire():
+        token = adapter_mod._turn_member.set("editor")
+        try:
+            await rooms.send("r", "from editor", metadata={"notify": True})
+        finally:
+            adapter_mod._turn_member.reset(token)
+
+    asyncio.run(fire())
+    assert editor_f.result() == (True, "from editor")
+    assert not scout_f.done()
+
+
 def test_connect_rescan_picks_up_disk_profiles(tmp_path, monkeypatch):
     """Profiles hired before hot-register (or while the gateway was down)
     must be registered on connect — class-level, not just the next hire."""

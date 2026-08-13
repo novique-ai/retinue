@@ -43,8 +43,14 @@ user ──HTTP──▶ RetinueRoomsAdapter ──MessageEvent(profile=member)�
    the turn queue (self-mentions and already-queued members are skipped).
 3. **Budget**: at most `max_agent_turns` agent turns per user message (default 8). On
    exhaustion the room posts a system notice and waits for the user.
-4. Turns are strictly sequential per room (an asyncio lock); one agent speaks at a time.
-   A user message that arrives mid-cycle starts its cycle after the current one finishes.
+4. **Independent waves run concurrently.** Members scheduled together (a user's
+   `@scout @editor`, or follow-ups collected from the previous wave) do not
+   depend on each other's replies, so their turns run in parallel. Replies are
+   appended in mention order. A later `@mention` of someone who just spoke is
+   a new wave and waits. One user-message cycle still holds the room lock, so
+   a second user message queues behind the current cycle.
+5. Reply capture is per `(room, member)` so two in-flight speakers cannot
+   steal each other's notify.
 
 ## Surfaces
 
@@ -139,7 +145,7 @@ just omit the shared key).
 
 ## Deliberate v1 limits
 
-Sequential turns (no parallel speakers); no streaming into the room (finals only — the
+No token-streaming into the room (finals only — the
 adapter declares no message editing, so the gateway skips the stream consumer); approvals
 degrade to the gateway's text fallback inside the member's turn; mention token = profile
 name (display aliases later); transcript is plain text (media later).

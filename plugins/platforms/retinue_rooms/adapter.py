@@ -17,6 +17,7 @@ notes: retinue/ROOMS.md. Follows the A2A plugin's proven mechanics:
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import hmac
 import json
 import logging
@@ -48,12 +49,41 @@ _DEFAULT_PORT = 8643
 _MAX_BODY = 262_144  # 256 KB is plenty for a chat message
 _DEFAULT_USER_NAME = "User"
 
+# Parallel turns share one adapter.send(chat_id=room). The gateway's notify
+# metadata does not echo event.metadata, and send() runs AFTER the runner
+# leaves _profile_runtime_scope — so HERMES_HOME is the default home for
+# every speaker. This ContextVar is set around handle_message in the same
+# task that later calls send().
+_turn_member: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    "retinue_turn_member", default=None
+)
+
 
 def turn_timeout() -> float:
     try:
         return max(5.0, float(os.getenv("RETINUE_ROOMS_TURN_TIMEOUT", "300")))
     except (ValueError, TypeError):
         return 300.0
+
+
+def _member_from_scope() -> Optional[str]:
+    """Profile name of the in-flight multiplex turn, if any.
+
+    Final-reply ``send()`` metadata is the gateway's thread meta + notify;
+    it does not echo our event metadata. The turn still runs inside
+    ``_profile_runtime_scope``, so HERMES_HOME is ``.../profiles/<member>``.
+    """
+    try:
+        from pathlib import Path
+
+        from hermes_constants import get_hermes_home
+
+        home = Path(get_hermes_home())
+        if home.parent.name == "profiles":
+            return home.name
+        return "default"
+    except Exception:
+        return None
 
 
 def rooms_enabled() -> bool:
@@ -95,7 +125,7 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         self._httpd: Optional[ThreadingHTTPServer] = None
         self._server_thread: Optional[threading.Thread] = None
         self._room_locks: Dict[str, asyncio.Lock] = {}
-        self._pending: Dict[str, _PendingTurn] = {}  # room_id -> pending turn
+        self._pending: Dict[tuple[str, str], _PendingTurn] = {}  # (room, member)
         self._pending_lock = threading.Lock()
 
     def _live_runner(self):
@@ -190,7 +220,14 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         message_id = str(int(time.time() * 1000))
         if not (metadata or {}).get("notify"):
             return SendResult(success=True, message_id=message_id)
-        self._resolve_pending(chat_id, ok=True, text=content or "")
+        meta = metadata or {}
+        member = (
+            meta.get("retinue_member")
+            or meta.get("thread_id")
+            or _turn_member.get()
+            or _member_from_scope()
+        )
+        self._resolve_pending(chat_id, ok=True, text=content or "", member=member)
         return SendResult(success=True, message_id=message_id)
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
@@ -207,17 +244,37 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         if pending is None or pending.future.done():
             return
         if outcome == ProcessingOutcome.FAILURE:
-            self._resolve_pending(pending.room_id, ok=False, text="agent processing failed")
+            self._resolve_pending(
+                pending.room_id, ok=False, text="agent processing failed", member=pending.member
+            )
         elif outcome == ProcessingOutcome.CANCELLED:
-            self._resolve_pending(pending.room_id, ok=False, text="turn cancelled")
+            self._resolve_pending(
+                pending.room_id, ok=False, text="turn cancelled", member=pending.member
+            )
         else:
-            self._resolve_pending(pending.room_id, ok=False, text="agent returned no reply")
+            self._resolve_pending(
+                pending.room_id, ok=False, text="agent returned no reply", member=pending.member
+            )
 
-    def _resolve_pending(self, room_id: str, *, ok: bool, text: str) -> None:
+    def _resolve_pending(
+        self,
+        room_id: str,
+        *,
+        ok: bool,
+        text: str,
+        member: Optional[str] = None,
+    ) -> None:
+        key = (room_id, member or "")
         with self._pending_lock:
-            pending = self._pending.pop(room_id, None)
+            pending = self._pending.pop(key, None)
+            if pending is None and not member:
+                # Legacy/single-pending fallback: one turn in this room.
+                for candidate_key, candidate in list(self._pending.items()):
+                    if candidate_key[0] == room_id:
+                        pending = self._pending.pop(candidate_key)
+                        break
         if pending is None:
-            logger.debug("Retinue rooms: send for room %s had no pending turn", room_id)
+            logger.debug("Retinue rooms: send for room %s/%s had no pending turn", room_id, member)
             return
         if not pending.future.done():
             pending.future.set_result((ok, text))
@@ -375,6 +432,7 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             return
         budget = room.max_agent_turns
         queue = engine.plan_user_turns(room, user_message.text)
+        spoken: List[str] = []
         turns_taken = 0
         while queue:
             if turns_taken >= budget:
@@ -384,20 +442,34 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
                     f"Still queued: {', '.join(queue)}",
                 )
                 break
-            member = queue.pop(0)
-            turns_taken += 1
-            ok, reply = await self._agent_turn(room, member)
-            room = self.store.get(room_id) or room  # meta may have moved (last_seen)
-            if not ok:
-                self._post_system(room_id, f"{member} did not reply ({reply})")
-                continue
-            self.store.append(
-                room_id, RoomMessage(seq=0, ts=0, kind=KIND_AGENT, speaker=member, text=reply)
+            wave, queue = engine.take_wave(queue, budget - turns_taken)
+            if not wave:
+                break
+            # Start everyone in the wave now; append in mention order so a
+            # fast lead is visible before a slow teammate finishes.
+            tasks = {
+                member: asyncio.create_task(self._agent_turn(room, member))
+                for member in wave
+            }
+            room = self.store.get(room_id) or room
+            replies: List[tuple[str, str]] = []
+            for member in wave:
+                ok, reply = await tasks[member]
+                turns_taken += 1
+                spoken.append(member)
+                if not ok:
+                    self._post_system(room_id, f"{member} did not reply ({reply})")
+                    continue
+                self.store.append(
+                    room_id,
+                    RoomMessage(seq=0, ts=0, kind=KIND_AGENT, speaker=member, text=reply),
+                )
+                replies.append((member, reply))
+            queue.extend(
+                engine.merge_followups(
+                    room, replies, queue, spoken, budget - turns_taken
+                )
             )
-            followups = engine.plan_agent_followups(
-                room, member, reply, queue, budget - turns_taken
-            )
-            queue.extend(followups)
 
     async def _agent_turn(self, room: Room, member: str) -> tuple[bool, str]:
         """Deliver the unseen transcript to ``member`` and await its reply."""
@@ -427,18 +499,25 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             chat_type="group",
             user_id=f"{trigger.kind}:{trigger.speaker}",
             user_name=speaker_display,
+            # thread_id is load-bearing for parallelism: BasePlatformAdapter
+            # builds the session key WITHOUT the multiplex profile namespace,
+            # so two members in the same room would share one _active_sessions
+            # slot and one SessionDB row. thread_id splits that key AND is
+            # copied into notify metadata so send() can resolve the speaker.
+            thread_id=member,
         )
         source.is_bot = trigger.kind == KIND_AGENT
         # Route this turn to the member's profile (in-process multiplexer).
         source.profile = None if member == "default" else member
 
-        task_id = f"room-{room.id}-{int(time.time() * 1000)}"
+        task_id = f"room-{room.id}-{member}-{int(time.time() * 1000)}"
         fut: Future = Future()
+        key = (room.id, member)
         with self._pending_lock:
-            stale = self._pending.pop(room.id, None)
+            stale = self._pending.pop(key, None)
             if stale is not None and not stale.future.done():
                 stale.future.set_result((False, "superseded by a newer turn"))
-            self._pending[room.id] = _PendingTurn(
+            self._pending[key] = _PendingTurn(
                 task_id=task_id, room_id=room.id, member=member, future=fut
             )
 
@@ -455,18 +534,25 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
 
         # Mark the delta delivered before dispatch; on failure the trigger is
         # re-shown next turn only if new messages arrive — acceptable v1.
+        # touch_last_seen merges under the store lock so parallel members
+        # cannot clobber each other's cursor.
+        self.store.touch_last_seen(room.id, member, delta[-1].seq)
         room.last_seen[member] = max(room.last_seen.get(member, 0), delta[-1].seq)
-        self.store.update(room)
 
+        token = _turn_member.set(member)
         try:
             await self.handle_message(event)
         except Exception as e:
-            self._resolve_pending(room.id, ok=False, text=f"dispatch failed: {e}")
+            self._resolve_pending(
+                room.id, ok=False, text=f"dispatch failed: {e}", member=member
+            )
+        finally:
+            _turn_member.reset(token)
 
         try:
             return await asyncio.wait_for(asyncio.wrap_future(fut), timeout=turn_timeout())
         except asyncio.TimeoutError:
-            self._resolve_pending(room.id, ok=False, text="turn timed out")
+            self._resolve_pending(room.id, ok=False, text="turn timed out", member=member)
             return False, f"no reply within {int(turn_timeout())}s"
 
     def _post_system(self, room_id: str, text: str) -> None:
