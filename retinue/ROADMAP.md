@@ -18,6 +18,10 @@ origin, no CORS), with:
 - **Workspace computer** mode: one long-lived container per workspace that every agent's terminal targets — the team shares files and state the way it would on one machine.
 - Optional stricter mode: per-agent containers.
 
-## Phase 4 — Later
-- **Routines**: demonstrate a task once, save it, re-run on a schedule.
-- **Take-over view**: watch an agent's screen and take the controls (e.g., to perform a login), via VNC into the workspace container.
+## Phase 4 — Routines + workspace take-over (v1)
+- **Routines**: save a room's user prompts as a named demonstration
+  (`POST /routines`) and replay them into a room (`POST /routines/{slug}/run`).
+  Schedule via Hermes cron hitting the run endpoint.
+- **Workspace take-over (status)**: `GET /workspace` reports the shared
+  podman/docker computer (label `hermes-profile=<TERMINAL_DOCKER_SHARED_CONTAINER_KEY>`)
+  and the attach command. Full noVNC screen take-over is the next increment.

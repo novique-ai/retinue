@@ -25,7 +25,7 @@ Retinue brings that experience home:
 | **Rooms** | A shared transcript where N agents and you converse, with turn-taking — built as a Hermes platform adapter | **v1 shipped** |
 | **Web UI** | Native chat interface plus a three-field "hire an agent" flow that templates a persona, model, and toolset per agent | **v1 shipped** |
 | **Podman execution** | A long-lived workspace container as the team's shared computer, or stricter per-agent isolation | **v1 shipped** |
-| **Routines & take-over view** | Learn-by-demonstration task replay and a watch/take-over screen | Planned |
+| **Routines & take-over view** | Save a room's user prompts and replay them; workspace-computer status + attach | **v1 shipped** (noVNC screen take-over later) |
 
 Everything Hermes already does — the agent loop, tools (terminal, browser, files, computer use, MCP), skills, memory, messaging-platform gateways — is inherited, not reimplemented.
 

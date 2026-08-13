@@ -39,7 +39,7 @@ from gateway.platforms.base import (
     SendResult,
 )
 
-from . import engine, hire
+from . import engine, hire, routines, workspace
 from .engine import KIND_AGENT, KIND_SYSTEM, KIND_USER, Room, RoomMessage
 from .store import RoomStore
 
@@ -395,7 +395,9 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         dist = os.path.join(repo_root, "retinue-web", "dist")
         return dist if os.path.isdir(dist) else None
 
-    def post_user_message(self, room_id: str, text: str, from_name: str) -> Dict[str, Any]:
+    def post_user_message(
+        self, room_id: str, text: str, from_name: str, wait: bool = False
+    ) -> Dict[str, Any]:
         room = self.store.get(room_id)
         if room is None:
             raise KeyError(room_id)
@@ -407,8 +409,34 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             room_id, RoomMessage(seq=0, ts=0, kind=KIND_USER, speaker=from_name, text=text)
         )
         planned = engine.plan_user_turns(room, text)
-        asyncio.run_coroutine_threadsafe(self._run_cycle(room_id, message), self._loop)
+        fut = asyncio.run_coroutine_threadsafe(self._run_cycle(room_id, message), self._loop)
+        if wait:
+            fut.result(timeout=turn_timeout() * max(1, room.max_agent_turns) + 30)
         return {"seq": message.seq, "planned": planned}
+
+    def save_routine_from_room(
+        self, name: str, room_id: str, since: int = 0, until: Optional[int] = None
+    ) -> Dict[str, Any]:
+        if self.store.get(room_id) is None:
+            raise KeyError(room_id)
+        prompts = routines.user_prompts_from_messages(
+            self.store.read_since(room_id, 0), since=since, until=until
+        )
+        return routines.save_routine(self._home_dir(), name, prompts, source_room=room_id)
+
+    def run_routine(self, slug: str, room_id: str) -> Dict[str, Any]:
+        meta = routines.get_routine(self._home_dir(), slug)
+        if meta is None:
+            raise KeyError(slug)
+        if self.store.get(room_id) is None:
+            raise KeyError(room_id)
+        speaker = f"routine:{slug}"
+        ran = []
+        for prompt in meta.get("messages") or []:
+            ran.append(
+                self.post_user_message(room_id, prompt, speaker, wait=True)
+            )
+        return {"slug": slug, "room": room_id, "steps": ran}
 
     # ── the turn cycle (runs on the gateway loop) ────────────────────────
 
@@ -662,7 +690,7 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
         return True
 
-    _API_PREFIXES = ("rooms", "agents", "models", "health")
+    _API_PREFIXES = ("rooms", "agents", "models", "health", "routines", "workspace")
 
     def do_GET(self):
         parsed = urlparse(self.path)
@@ -680,6 +708,15 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
             return self._json(200, {"agents": adapter.list_agents()})
         if parts == ["models"]:
             return self._json(200, {"models": adapter.list_model_presets()})
+        if parts == ["routines"]:
+            return self._json(200, {"routines": routines.list_routines(adapter._home_dir())})
+        if len(parts) == 2 and parts[0] == "routines":
+            meta = routines.get_routine(adapter._home_dir(), parts[1])
+            if meta is None:
+                return self._json(404, {"error": "no such routine"})
+            return self._json(200, meta)
+        if parts == ["workspace"]:
+            return self._json(200, workspace.workspace_status())
         if parts == ["rooms"]:
             return self._json(200, {"rooms": [r.to_dict() for r in adapter.store.list_rooms()]})
         if len(parts) == 2 and parts[0] == "rooms":
@@ -791,6 +828,31 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
             except RuntimeError as e:
                 return self._json(503, {"error": str(e)})
             return self._json(202, result)
+        if parts == ["routines"]:
+            try:
+                payload = adapter.save_routine_from_room(
+                    name=str(body.get("name") or ""),
+                    room_id=str(body.get("room") or body.get("room_id") or ""),
+                    since=int(body.get("since") or 0),
+                    until=(int(body["until"]) if body.get("until") is not None else None),
+                )
+            except KeyError:
+                return self._json(404, {"error": "no such room"})
+            except ValueError as e:
+                return self._json(400, {"error": str(e)})
+            except FileExistsError as e:
+                return self._json(409, {"error": f"a routine named '{e}' already exists"})
+            return self._json(201, payload)
+        if len(parts) == 3 and parts[0] == "routines" and parts[2] == "run":
+            try:
+                payload = adapter.run_routine(
+                    parts[1], str(body.get("room") or body.get("room_id") or "")
+                )
+            except KeyError as e:
+                return self._json(404, {"error": f"not found: {e}"})
+            except RuntimeError as e:
+                return self._json(503, {"error": str(e)})
+            return self._json(202, payload)
         return self._json(404, {"error": "not found"})
 
     def do_DELETE(self):
@@ -801,4 +863,8 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
             if self.server.adapter.store.delete(parts[1]):
                 return self._json(200, {"deleted": parts[1]})
             return self._json(404, {"error": "no such room"})
+        if len(parts) == 2 and parts[0] == "routines":
+            if routines.delete_routine(self.server.adapter._home_dir(), parts[1]):
+                return self._json(200, {"deleted": parts[1]})
+            return self._json(404, {"error": "no such routine"})
         return self._json(404, {"error": "not found"})

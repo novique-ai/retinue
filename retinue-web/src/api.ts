@@ -30,6 +30,24 @@ export interface ModelPreset {
   summary: string;
 }
 
+export interface RoutineMeta {
+  name: string;
+  slug: string;
+  source_room?: string;
+  messages: string[];
+  created_at?: number;
+}
+
+export interface WorkspaceStatus {
+  enabled: boolean;
+  key: string | null;
+  runtime: string | null;
+  running: boolean;
+  attach: string | null;
+  detail: string | null;
+  container?: { id: string; name: string; status: string; image: string } | null;
+}
+
 const KEY_STORAGE = "retinue.apiKey";
 
 export class AuthRequiredError extends Error {}
@@ -156,4 +174,15 @@ export const api = {
   listModels: () => req<{ models: ModelPreset[] }>("GET", "/models"),
   hire: (name: string, job: string, how: string, model?: string) =>
     req<AgentMeta>("POST", "/agents", { name, job, how, model: model || undefined }),
+  listRoutines: () => req<{ routines: RoutineMeta[] }>("GET", "/routines"),
+  saveRoutine: (name: string, room: string) =>
+    req<RoutineMeta>("POST", "/routines", { name, room }),
+  runRoutine: (slug: string, room: string) =>
+    req<{ slug: string; room: string; steps: unknown[] }>(
+      "POST",
+      `/routines/${slug}/run`,
+      { room },
+    ),
+  deleteRoutine: (slug: string) => req<{ deleted: string }>("DELETE", `/routines/${slug}`),
+  workspace: () => req<WorkspaceStatus>("GET", "/workspace"),
 };

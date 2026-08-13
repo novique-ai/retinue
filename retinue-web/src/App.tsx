@@ -7,7 +7,9 @@ import {
   ModelPreset,
   RoomMeta,
   RoomMsg,
+  RoutineMeta,
   setApiKey,
+  WorkspaceStatus,
 } from "./api";
 
 const CHIP_COLORS = ["#7aa2f7", "#9ece6a", "#e0af68", "#bb9af7", "#7dcfff", "#f7768e", "#73daca"];
@@ -99,6 +101,21 @@ function RoomView({ room, userName }: { room: RoomMeta; userName: string }) {
               {room.lead === m ? " ★" : ""}
             </span>
           ))}
+          <button
+            className="mini"
+            onClick={async () => {
+              const name = window.prompt("Save this room's user prompts as a routine named:");
+              if (!name) return;
+              try {
+                const created = await api.saveRoutine(name, room.id);
+                alert(`Saved routine "${created.name}" (${created.messages.length} steps)`);
+              } catch (e) {
+                alert(String(e));
+              }
+            }}
+          >
+            Save routine
+          </button>
         </div>
       </header>
       <div className="messages" ref={scrollRef}>
@@ -336,15 +353,24 @@ type Modal = "hire" | "room" | "key" | null;
 export default function App() {
   const [rooms, setRooms] = useState<RoomMeta[]>([]);
   const [agents, setAgents] = useState<AgentMeta[]>([]);
+  const [routineList, setRoutineList] = useState<RoutineMeta[]>([]);
+  const [workspaceInfo, setWorkspaceInfo] = useState<WorkspaceStatus | null>(null);
   const [current, setCurrent] = useState<RoomMeta | null>(null);
   const [modal, setModal] = useState<Modal>(null);
   const [userName] = useState(() => localStorage.getItem("retinue.userName") ?? "You");
 
   const refresh = useCallback(async () => {
     try {
-      const [r, a] = await Promise.all([api.listRooms(), api.listAgents()]);
+      const [r, a, rt, ws] = await Promise.all([
+        api.listRooms(),
+        api.listAgents(),
+        api.listRoutines(),
+        api.workspace(),
+      ]);
       setRooms(r.rooms);
       setAgents(a.agents);
+      setRoutineList(rt.routines);
+      setWorkspaceInfo(ws);
     } catch (e) {
       if (e instanceof AuthRequiredError) setModal("key");
       else console.error(e);
@@ -396,8 +422,46 @@ export default function App() {
             </div>
           ))}
         </div>
+        <div className="section">
+          <div className="section-head">
+            <span>Routines</span>
+          </div>
+          {routineList.map((rt) => (
+            <div key={rt.slug} className="agent-item">
+              <span className="nav-sub">
+                {rt.name} · {rt.messages.length} step{rt.messages.length === 1 ? "" : "s"}
+              </span>
+              <button
+                className="mini"
+                disabled={!current}
+                onClick={async () => {
+                  if (!current) return;
+                  try {
+                    await api.runRoutine(rt.slug, current.id);
+                  } catch (e) {
+                    alert(String(e));
+                  }
+                }}
+              >
+                Run
+              </button>
+            </div>
+          ))}
+          {routineList.length === 0 && (
+            <p className="note pad">Save a room&apos;s prompts as a routine, then replay.</p>
+          )}
+        </div>
         <footer className="foot">
-          self-hosted AI teammates ·{" "}
+          {workspaceInfo?.enabled ? (
+            <span>
+              workspace {workspaceInfo.running ? "up" : "idle"}
+              {workspaceInfo.container?.name ? ` · ${workspaceInfo.container.name}` : ""}
+              {workspaceInfo.attach ? ` · ${workspaceInfo.attach}` : ""}
+            </span>
+          ) : (
+            <span>self-hosted AI teammates</span>
+          )}
+          {" · "}
           <a href="https://github.com/novique-ai/retinue" target="_blank" rel="noreferrer">
             github
           </a>

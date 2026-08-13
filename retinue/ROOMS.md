@@ -67,6 +67,10 @@ convention: no `RETINUE_ROOMS_API_KEY` → localhost-only):
 | `POST /rooms/{id}/messages` | user speaks (`{text, from?}`) → 202, cycle runs async |
 | `GET /rooms/{id}/transcript?since=N&wait=S` | poll (optionally long-poll) the transcript — CLI / fallback |
 | `GET /rooms/{id}/stream?since=N` | SSE transcript (`event: messages`); `access_token` query accepted |
+| `GET/POST /routines` | list / save a demonstration (`{name, room, since?, until?}`) |
+| `GET/DELETE /routines/{slug}` | inspect / remove |
+| `POST /routines/{slug}/run` | replay the prompts into `{room}` (waits each cycle) |
+| `GET /workspace` | shared workspace-computer status + attach command |
 
 `python -m plugins.platforms.retinue_rooms.cli` is the reference client (create / list /
 send / watch / chat). The web UI consumes the SSE stream; the CLI keeps long-poll.
