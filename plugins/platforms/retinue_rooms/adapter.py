@@ -40,7 +40,7 @@ from gateway.platforms.base import (
     SendResult,
 )
 
-from . import auth, engine, hire, ide, routines, sidebar, voice, workspace
+from . import auth, engine, hire, ide, keepalive, routines, sidebar, voice, workspace
 from .engine import KIND_AGENT, KIND_SYSTEM, KIND_USER, Room, RoomMessage
 from .store import RoomStore
 
@@ -133,6 +133,7 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         self._workspace_env_lock = asyncio.Lock()
         self._pending: Dict[tuple[str, str], _PendingTurn] = {}  # (room, member)
         self._pending_lock = threading.Lock()
+        self._xai_keepalive: Optional[keepalive.XaiKeepalive] = None
 
     def _live_runner(self):
         """The in-process GatewayRunner, if this adapter is serving."""
@@ -200,10 +201,37 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             self._rescan_disk_profiles()
         except Exception:
             logger.debug("Retinue rooms: profile rescan at connect failed", exc_info=True)
+        self._start_xai_keepalive()
         logger.info("Retinue rooms: serving on %s:%s", self.host, self.port)
         return True
 
+    def _start_xai_keepalive(self) -> None:
+        """Warm the workspace xAI grant before JWT expiry while idle (#34)."""
+        self._stop_xai_keepalive()
+        interval = keepalive.interval_from_env()
+        if interval is None:
+            return
+        try:
+            self._xai_keepalive = keepalive.XaiKeepalive(
+                self._home_dir, interval=interval
+            )
+            self._xai_keepalive.start()
+        except Exception:
+            logger.debug("Retinue rooms: xAI keepalive failed to start", exc_info=True)
+            self._xai_keepalive = None
+
+    def _stop_xai_keepalive(self) -> None:
+        ka = self._xai_keepalive
+        if ka is None:
+            return
+        try:
+            ka.stop()
+        except Exception:
+            logger.debug("Retinue rooms: xAI keepalive stop failed", exc_info=True)
+        self._xai_keepalive = None
+
     async def disconnect(self) -> None:
+        self._stop_xai_keepalive()
         if self._httpd is not None:
             try:
                 self._httpd.shutdown()

@@ -41,6 +41,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Idle xAI OAuth keepalive. While a hired cloud member uses `xai-oauth`
+  and the workspace grant is ok, rooms refresh that grant shortly
+  before the access JWT expires (same Hermes skew as on-turn refresh).
+  Terminal `invalid_grant` lights the existing Reauth banner. No
+  second rotating copy in profile `auth.json`. Closes #34.
 - In-product provider reauth when a cloud grant dies. `GET /health`
   and `GET /agents` expose `ok` / `relogin_required` / `missing`; the
   rooms UI shows a banner and a **Reauth** control that runs Hermes
