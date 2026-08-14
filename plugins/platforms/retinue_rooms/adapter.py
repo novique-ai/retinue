@@ -51,6 +51,10 @@ _MAX_BODY = 262_144  # 256 KB is plenty for a chat message
 _MAX_AUDIO = 8 * 1024 * 1024  # 8 MiB ≈ 4 min of 16 kHz mono WAV
 _DEFAULT_USER_NAME = "User"
 
+
+class AgentBusy(ValueError):
+    """Raised when a model switch would evict a mid-turn agent."""
+
 # Parallel turns share one adapter.send(chat_id=room). The gateway's notify
 # metadata does not echo event.metadata, and send() runs AFTER the runner
 # leaves _profile_runtime_scope — so HERMES_HOME is the default home for
@@ -434,11 +438,18 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             for i, item in enumerate(layout["items"])
             if item.get("kind") == "agent"
         }
+        busy = self.busy_slugs()
         for agent in agents:
             slug = str(agent.get("slug") or "")
             agent["team"] = team_of.get(slug)
+            agent["busy"] = slug in busy
         agents.sort(key=lambda a: (order.get(str(a.get("slug") or ""), 10_000), str(a.get("slug") or "")))
         return agents
+
+    def busy_slugs(self) -> set:
+        """Profile names that currently have an in-flight room turn."""
+        with self._pending_lock:
+            return {member for (_room, member) in self._pending}
 
     def list_model_presets(self) -> List[Dict[str, Any]]:
         try:
@@ -475,6 +486,10 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             hire.update_agent(self._home_dir(), slug, **persona)
         evicted = 0
         if model:
+            if slug in self.busy_slugs():
+                raise AgentBusy(
+                    f"{slug} is mid-turn — wait until they finish before switching models"
+                )
             try:
                 hire.ensure_bundled_cloud_presets(self._home_dir())
             except Exception:
@@ -1179,6 +1194,8 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
                 payload = adapter.patch_agent(parts[1], body)
             except KeyError:
                 return self._json(404, {"error": "no such agent"})
+            except AgentBusy as e:
+                return self._json(409, {"error": str(e)})
             except ValueError as e:
                 return self._json(400, {"error": str(e)})
             return self._json(200, payload)

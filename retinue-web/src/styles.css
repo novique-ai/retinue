@@ -158,6 +158,11 @@ body {
   border-radius: 6px;
 }
 
+.agent-model:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 .nav-faces {
   display: flex;
   gap: 3px;

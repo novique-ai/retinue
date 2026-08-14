@@ -33,6 +33,7 @@ export interface AgentMeta {
   turn_timeout?: number;
   archived?: boolean;
   team?: string | null;
+  busy?: boolean;
 }
 
 export interface SidebarTeam {

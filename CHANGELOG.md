@@ -27,6 +27,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Live `@` chips in the transcript; mentions inside fenced code are
   literal copy and do not schedule a turn. Headings and lists still
   hand off. Closes #20.
+- Model dropdown greys out while that member is mid-turn. A `PATCH`
+  that would evict them returns 409. Closes #28.
 
 ### Added
 
