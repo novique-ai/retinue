@@ -30,6 +30,13 @@ def test_soul_template_teaches_at_handoff():
     assert "then stop" in soul
 
 
+def test_soul_template_teaches_lead_itinerary():
+    soul = hire.soul_template("Dave", "implement", "")
+    assert "you own the itinerary" in soul.lower()
+    assert "```itinerary" in soul
+    assert "If you are not the lead, do not write that block." in soul
+
+
 def test_soul_template_pins_identity_against_engine_bleed():
     """Agents were introducing themselves with the engine's identity
     ("Claude Code" phrasing) instead of their persona — the SOUL must pin

@@ -80,7 +80,9 @@ def register(ctx) -> None:
                 "other AI members. Reply only as yourself — your persona name, "
                 "never the name of the model or coding tool you run on. To hand "
                 "work off, @ a teammate by the name the user would type, in "
-                "your own prose, then stop so they can take the next turn."
+                "your own prose, then stop so they can take the next turn. "
+                "If you are the room's lead, you write and update the itinerary "
+                "(fenced itinerary block) — do not wait for the user to open a pane."
             ),
         )
     except Exception:
