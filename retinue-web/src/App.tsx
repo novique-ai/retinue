@@ -410,6 +410,8 @@ function RoomView({
   const [speakReplies, setSpeakReplies] = useState(
     () => localStorage.getItem(SPEAK_KEY) !== "0",
   );
+  const roomRef = useRef(room.id);
+  roomRef.current = room.id;
   const sinceRef = useRef(0);
   const scrollRef = useRef<HTMLDivElement>(null);
   const draftRef = useRef<HTMLTextAreaElement>(null);
@@ -474,6 +476,8 @@ function RoomView({
   useEffect(() => {
     sinceRef.current = 0;
     setMessages([]);
+    setThinking([]);
+    setSending(false);
     spokenRef.current = new Set();
     openedAtRef.current = Date.now() / 1000;
     const ctl = new AbortController();
@@ -535,6 +539,7 @@ function RoomView({
       }
       const body = [text, ...paths].filter(Boolean).join("\n");
       const { planned } = await api.send(room.id, body, userName);
+      if (roomRef.current !== room.id) return;
       setThinking(planned);
       setDraft("");
       setPendingFiles([]);
@@ -566,6 +571,7 @@ function RoomView({
     try {
       const blob = await rec.stop();
       const { planned, text } = await api.sendAudio(room.id, blob, userName);
+      if (roomRef.current !== room.id) return;
       setThinking(planned);
       setVoiceNote(text ? `Heard: ${text}` : "");
     } catch (e) {
@@ -2267,6 +2273,7 @@ export default function App() {
       <main className="main">
         {current ? (
           <RoomView
+            key={current.id}
             room={current}
             userName={userName}
             agents={agents}

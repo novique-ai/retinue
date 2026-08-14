@@ -14,6 +14,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- A member “thinking” in one room no longer appears after you switch
+  rooms. RoomView is keyed by room id so draft, send, and thinking stay
+  with that transcript. Closes #47.
 - Room turns are sequential. Mentioned members used to start as one
   concurrent wave, so reviewers ran against an empty draft. The queue is
   now mention order, then follow-up `@mention`s; each reply is on the
