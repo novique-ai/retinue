@@ -79,15 +79,11 @@ def _classify_xai_state(state: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         str(err.get("message") or err.get("error") or err.get("code") or "").strip()
         or None
     )
-    if err.get("relogin_required"):
-        return {
-            "id": _XAI_PROVIDER,
-            "status": STATUS_RELOGIN,
-            "error": err_msg or "re-authentication required",
-        }
+    # A successful device-code save leaves tokens in place and may leave a
+    # stale last_auth_error from the previous revoked grant. Tokens win.
     if access and refresh:
         return {"id": _XAI_PROVIDER, "status": STATUS_OK, "error": None}
-    if state:
+    if err.get("relogin_required") or state:
         # Failed refresh often leaves the block with no tokens.
         return {
             "id": _XAI_PROVIDER,
@@ -123,24 +119,40 @@ def normalize_provider(provider: str) -> str:
     return raw
 
 
-def xai_status_for_store(path: Path) -> Dict[str, Any]:
-    return _classify_xai_state(_provider_state(_load_auth_store(path), _XAI_PROVIDER))
+def xai_status_for_store(path: Path) -> Optional[Dict[str, Any]]:
+    """Classify a store that has an xAI block. ``None`` = no opinion."""
+    state = _provider_state(_load_auth_store(path), _XAI_PROVIDER)
+    if state is None:
+        return None
+    return _classify_xai_state(state)
 
 
 def workspace_provider_status(home_dir: str) -> List[Dict[str, Any]]:
-    """Worst-of workspace + profile xAI status. File reads only."""
-    merged = xai_status_for_store(_auth_path(home_dir))
+    """Worst-of workspace + profile xAI status. File reads only.
+
+    Profiles with no ``providers.xai-oauth`` block inherit the workspace
+    grant — they must not pull a healthy root down to ``missing``.
+    """
+    opinions: List[Dict[str, Any]] = []
+    root = xai_status_for_store(_auth_path(home_dir))
+    if root is not None:
+        opinions.append(root)
     profiles = Path(home_dir) / "profiles"
     try:
         names = sorted(os.listdir(profiles))
     except OSError:
         names = []
-    error = merged.get("error")
-    status = merged["status"]
     for name in names:
         if not os.path.isdir(profiles / name):
             continue
         one = xai_status_for_store(_auth_path(home_dir, name))
+        if one is not None:
+            opinions.append(one)
+    if not opinions:
+        return [{"id": _XAI_PROVIDER, "status": STATUS_MISSING, "error": None}]
+    status = STATUS_OK
+    error = None
+    for one in opinions:
         status = _worse(status, one["status"])
         if one.get("error") and status == STATUS_RELOGIN:
             error = one.get("error") or error
@@ -172,8 +184,12 @@ def annotate_agents(home_dir: str, agents: List[Dict[str, Any]]) -> List[Dict[st
             continue
         own = xai_status_for_store(_auth_path(home_dir, slug))
         # A profile without its own block inherits the workspace grant.
-        if own["status"] == STATUS_MISSING:
-            own = workspace.get(_XAI_PROVIDER) or own
+        if own is None:
+            own = workspace.get(_XAI_PROVIDER) or {
+                "id": _XAI_PROVIDER,
+                "status": STATUS_MISSING,
+                "error": None,
+            }
         agent["auth_status"] = own["status"]
         agent["auth_error"] = own.get("error")
     return agents
@@ -400,11 +416,28 @@ def start_reauth(
     return public_session(sess)
 
 
+def _clear_root_last_auth_error(home_dir: str) -> None:
+    path = _auth_path(home_dir)
+    store = _load_auth_store(path)
+    state = _provider_state(store, _XAI_PROVIDER)
+    if not state or "last_auth_error" not in state:
+        return
+    state.pop("last_auth_error", None)
+    providers = store.setdefault("providers", {})
+    if isinstance(providers, dict):
+        providers[_XAI_PROVIDER] = state
+        try:
+            _atomic_write_auth(path, store)
+        except OSError:
+            logger.warning("Retinue auth: could not clear last_auth_error on %s", path)
+
+
 def finish_reauth_success(home_dir: str, provider: str, runner: Any = None) -> int:
     """After a good grant: drop profile shadows and evict cached agents."""
     provider = normalize_provider(provider)
     cleared = 0
     if provider == _XAI_PROVIDER:
+        _clear_root_last_auth_error(home_dir)
         cleared = clear_profile_xai_shadows(home_dir)
     evicted = 0
     for slug in slugs_using_provider(home_dir, provider):

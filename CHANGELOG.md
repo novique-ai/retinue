@@ -32,6 +32,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Workspace files named in a reply appear in the room. Images render
   inline; other `/workspace` paths become download links. Closes #19.
 
+### Fixed
+
+- Reauth modal now polls every 2s and closes on approve. A leftover
+  `last_auth_error` (or hired profiles with no local xAI block) no
+  longer keeps the workspace at `relogin_required` / `missing` after a
+  successful device-code login. Refs #18.
+
 ### Added
 
 - In-product provider reauth when a cloud grant dies. `GET /health`

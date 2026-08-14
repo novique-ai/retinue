@@ -57,8 +57,8 @@ def test_classify_ok_missing_relogin_and_stripped(tmp_path):
 
     missing = tmp_path / "none.json"
     _write(missing, {"providers": {}})
-    assert auth.xai_status_for_store(missing)["status"] == auth.STATUS_MISSING
-    assert auth.xai_status_for_store(tmp_path / "absent.json")["status"] == auth.STATUS_MISSING
+    assert auth.xai_status_for_store(missing) is None
+    assert auth.xai_status_for_store(tmp_path / "absent.json") is None
 
     dead = tmp_path / "dead.json"
     _write(dead, _xai_store(access="", refresh="", relogin=True))
@@ -70,6 +70,10 @@ def test_classify_ok_missing_relogin_and_stripped(tmp_path):
     _write(stripped, _xai_store(access="", refresh=""))
     assert auth.xai_status_for_store(stripped)["status"] == auth.STATUS_RELOGIN
 
+    stale = tmp_path / "stale-error.json"
+    _write(stale, _xai_store(access="tok", refresh="ref", relogin=True))
+    assert auth.xai_status_for_store(stale)["status"] == auth.STATUS_OK
+
 
 def test_workspace_status_picks_worst_profile_shadow(tmp_path):
     _write(tmp_path / "auth.json", _xai_store())
@@ -80,6 +84,12 @@ def test_workspace_status_picks_worst_profile_shadow(tmp_path):
     )
     providers = auth.workspace_provider_status(str(tmp_path))
     assert providers[0]["status"] == auth.STATUS_RELOGIN
+
+
+def test_workspace_status_ignores_profiles_without_xai_block(tmp_path):
+    _write(tmp_path / "auth.json", _xai_store(access="tok", refresh="ref"))
+    hire.scaffold_profile(str(tmp_path), "Sally", "writer", "draft")
+    assert auth.workspace_provider_status(str(tmp_path))[0]["status"] == auth.STATUS_OK
 
 
 def test_annotate_local_ok_cloud_inherits_workspace(tmp_path):
