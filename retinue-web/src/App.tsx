@@ -19,6 +19,9 @@ import {
   RoomMeta,
   RoomMsg,
   RoomWorkspace,
+  Itinerary,
+  ItineraryItem,
+  ItineraryStatus,
   RoutineMeta,
   setApiKey,
   SidebarItem,
@@ -413,6 +416,20 @@ function RoomView({
   const [caret, setCaret] = useState(0);
   const [mentionPick, setMentionPick] = useState(0);
   const [mentionOff, setMentionOff] = useState(false);
+  const [itineraryOpen, setItineraryOpen] = useState(() => {
+    try {
+      return localStorage.getItem(`retinue:itinerary:${room.id}`) === "1";
+    } catch {
+      return false;
+    }
+  });
+  useEffect(() => {
+    try {
+      setItineraryOpen(localStorage.getItem(`retinue:itinerary:${room.id}`) === "1");
+    } catch {
+      setItineraryOpen(false);
+    }
+  }, [room.id]);
   const handleOf = useCallback(
     (slug: string) => mentionHandle(slug, agents, room.members),
     [agents, room.members],
@@ -571,6 +588,21 @@ function RoomView({
             Delete
           </button>
           <button
+            className={`mini wide${itineraryOpen ? " picked" : ""}`}
+            aria-pressed={itineraryOpen}
+            onClick={() => {
+              const next = !itineraryOpen;
+              setItineraryOpen(next);
+              try {
+                localStorage.setItem(`retinue:itinerary:${room.id}`, next ? "1" : "0");
+              } catch {
+                /* ignore */
+              }
+            }}
+          >
+            Itinerary
+          </button>
+          <button
             className="mini wide"
             onClick={async () => {
               const name = window.prompt("Save this room's user prompts as a routine named:");
@@ -587,6 +619,8 @@ function RoomView({
           </button>
         </div>
       </header>
+      <div className="room-body">
+      <div className="room-chat">
       <div className="messages" ref={scrollRef}>
         {messages.length === 0 && (
           <div className="empty-hint">
@@ -758,7 +792,184 @@ function RoomView({
           {voiceNote && <span className="voice-note">{voiceNote}</span>}
         </div>
       </div>
+      </div>
+      {itineraryOpen && (
+        <ItineraryPane roomId={room.id} lead={room.lead} handleOf={handleOf} />
+      )}
+      </div>
     </div>
+  );
+}
+
+const STATUS_CYCLE: ItineraryStatus[] = ["todo", "doing", "done"];
+
+function nextStatus(status: ItineraryStatus): ItineraryStatus {
+  const i = STATUS_CYCLE.indexOf(status);
+  return STATUS_CYCLE[(i + 1) % STATUS_CYCLE.length];
+}
+
+function ItineraryPane({
+  roomId,
+  lead,
+  handleOf,
+}: {
+  roomId: string;
+  lead: string | null;
+  handleOf: (slug: string) => string;
+}) {
+  const [plan, setPlan] = useState<Itinerary | null>(null);
+  const [draftItem, setDraftItem] = useState("");
+  const [note, setNote] = useState("");
+  const saveTimer = useRef<number | null>(null);
+
+  const persist = useCallback(
+    async (next: Itinerary) => {
+      setPlan(next);
+      if (saveTimer.current) window.clearTimeout(saveTimer.current);
+      saveTimer.current = window.setTimeout(() => {
+        void api
+          .putItinerary(roomId, {
+            title: next.title,
+            summary: next.summary,
+            items: next.items,
+            updated_by: "user",
+          })
+          .then((saved) => setPlan(saved))
+          .catch((e) => setNote(String(e)));
+      }, 280);
+    },
+    [roomId],
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .getItinerary(roomId)
+      .then((got) => {
+        if (!cancelled) setPlan(got);
+      })
+      .catch((e) => {
+        if (!cancelled) setNote(String(e));
+      });
+    return () => {
+      cancelled = true;
+      if (saveTimer.current) window.clearTimeout(saveTimer.current);
+    };
+  }, [roomId]);
+
+  if (!plan) {
+    return (
+      <aside className="itinerary-pane" aria-label="Room itinerary">
+        <h3>Itinerary</h3>
+        <p className="note">{note || "Loading…"}</p>
+      </aside>
+    );
+  }
+
+  const addItem = () => {
+    const text = draftItem.trim();
+    if (!text) return;
+    const item: ItineraryItem = {
+      id: `n${Date.now().toString(36)}`,
+      text,
+      status: "todo",
+    };
+    setDraftItem("");
+    void persist({ ...plan, items: [...plan.items, item] });
+  };
+
+  return (
+    <aside className="itinerary-pane" aria-label="Room itinerary">
+      <header className="itinerary-head">
+        <h3>Itinerary</h3>
+        {lead ? (
+          <p className="note">
+            Lead @{handleOf(lead)} keeps this current. You can edit it too.
+          </p>
+        ) : (
+          <p className="note">Living outline for this room — not the transcript.</p>
+        )}
+      </header>
+      <label className="itinerary-field">
+        Title
+        <input
+          value={plan.title}
+          placeholder="What is this room doing?"
+          onChange={(e) => void persist({ ...plan, title: e.target.value })}
+        />
+      </label>
+      <label className="itinerary-field">
+        Where we are
+        <textarea
+          value={plan.summary}
+          rows={3}
+          placeholder="One or two sentences on current progress."
+          onChange={(e) => void persist({ ...plan, summary: e.target.value })}
+        />
+      </label>
+      <ul className="itinerary-items">
+        {plan.items.map((item) => (
+          <li key={item.id} className={`itinerary-item ${item.status}`}>
+            <button
+              type="button"
+              className={`itin-status ${item.status}`}
+              title="Cycle todo → doing → done"
+              onClick={() =>
+                void persist({
+                  ...plan,
+                  items: plan.items.map((it) =>
+                    it.id === item.id ? { ...it, status: nextStatus(it.status) } : it,
+                  ),
+                })
+              }
+            >
+              {item.status}
+            </button>
+            <input
+              value={item.text}
+              onChange={(e) =>
+                void persist({
+                  ...plan,
+                  items: plan.items.map((it) =>
+                    it.id === item.id ? { ...it, text: e.target.value } : it,
+                  ),
+                })
+              }
+            />
+            <button
+              type="button"
+              className="mini danger-btn"
+              aria-label={`Remove ${item.text}`}
+              onClick={() =>
+                void persist({
+                  ...plan,
+                  items: plan.items.filter((it) => it.id !== item.id),
+                })
+              }
+            >
+              ×
+            </button>
+          </li>
+        ))}
+      </ul>
+      <div className="itinerary-add">
+        <input
+          value={draftItem}
+          placeholder="Add a step…"
+          onChange={(e) => setDraftItem(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              addItem();
+            }
+          }}
+        />
+        <button type="button" className="mini" disabled={!draftItem.trim()} onClick={addItem}>
+          Add
+        </button>
+      </div>
+      {note && <p className="note">{note}</p>}
+    </aside>
   );
 }
 

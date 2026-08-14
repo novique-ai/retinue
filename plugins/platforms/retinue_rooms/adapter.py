@@ -40,7 +40,7 @@ from gateway.platforms.base import (
     SendResult,
 )
 
-from . import auth, engine, hire, ide, keepalive, routines, sidebar, voice, workspace
+from . import auth, engine, hire, ide, itinerary, keepalive, routines, sidebar, voice, workspace
 from .engine import KIND_AGENT, KIND_SYSTEM, KIND_USER, Room, RoomMessage
 from .store import RoomStore
 
@@ -783,7 +783,11 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             {m.speaker for m in self.store.read_since(room.id, 0) if m.kind == KIND_USER}
         ) or [_DEFAULT_USER_NAME]
         briefing = engine.room_briefing(
-            room, member, user_names, self._display_names(room)
+            room,
+            member,
+            user_names,
+            self._display_names(room),
+            itinerary=itinerary.load(self._home_dir(), room.id),
         )
 
         speaker_display = (
@@ -1073,6 +1077,11 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
             query = parse_qs(parsed.query)
             since = int((query.get("since") or ["0"])[0] or 0)
             return self._sse_transcript(parts[1], since)
+        if len(parts) == 3 and parts[0] == "rooms" and parts[2] == "itinerary":
+            room = adapter.store.get(parts[1])
+            if room is None:
+                return self._json(404, {"error": "no such room"})
+            return self._json(200, itinerary.load(adapter._home_dir(), parts[1]))
         if len(parts) == 3 and parts[0] == "rooms" and parts[2] == "files":
             room = adapter.store.get(parts[1])
             if room is None:
@@ -1312,6 +1321,19 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
                 return self._json(200, self.server.adapter.put_sidebar(body))
             except ValueError as e:
                 return self._json(400, {"error": str(e)})
+        if len(parts) == 3 and parts[0] == "rooms" and parts[2] == "itinerary":
+            if self.server.adapter.store.get(parts[1]) is None:
+                return self._json(404, {"error": "no such room"})
+            updated_by = str(body.get("updated_by") or "user")
+            return self._json(
+                200,
+                itinerary.save(
+                    self.server.adapter._home_dir(),
+                    parts[1],
+                    body,
+                    updated_by=updated_by,
+                ),
+            )
         return self._json(404, {"error": "not found"})
 
     def do_DELETE(self):

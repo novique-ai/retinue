@@ -322,6 +322,7 @@ def room_briefing(
     member: str,
     user_names: List[str],
     display_names: Optional[Dict[str, str]] = None,
+    itinerary: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Per-turn channel prompt: who you are, who is here, how to behave."""
     names = display_names or {}
@@ -369,5 +370,11 @@ def room_briefing(
         parts.append(
             "This room is sandboxed. Your terminal /workspace is an isolated "
             "container with no host IDE mount."
+        )
+    if itinerary:
+        from .itinerary import briefing_lines
+
+        parts.extend(
+            briefing_lines(itinerary, is_lead=bool(room.lead and room.lead == member))
         )
     return "\n".join(parts)

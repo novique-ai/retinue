@@ -914,6 +914,110 @@ select:focus {
   flex: none;
 }
 
+.room-header-actions .picked {
+  background: var(--accent);
+  color: var(--accent-text);
+  border-color: var(--accent);
+}
+
+.room-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.room-chat {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.itinerary-pane {
+  width: 300px;
+  flex: none;
+  border-left: 1px solid var(--border);
+  background: var(--bg-raised);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 12px 16px;
+  overflow-y: auto;
+}
+
+.itinerary-head h3 {
+  font-size: 14px;
+  margin-bottom: 4px;
+}
+
+.itinerary-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.itinerary-field input,
+.itinerary-field textarea,
+.itinerary-item input,
+.itinerary-add input {
+  width: 100%;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 6px 8px;
+  font: inherit;
+}
+
+.itinerary-items {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 0;
+  margin: 4px 0 0;
+}
+
+.itinerary-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.itinerary-item.done input {
+  text-decoration: line-through;
+  color: var(--text-dim);
+}
+
+.itin-status {
+  flex: none;
+  min-width: 52px;
+  border: 1px solid var(--border);
+  background: var(--bg-input);
+  color: var(--text-dim);
+  border-radius: 999px;
+  font-size: 11px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+
+.itin-status.doing {
+  color: #e0af68;
+  border-color: #e0af68;
+}
+
+.itin-status.done {
+  color: #9ece6a;
+  border-color: #9ece6a;
+}
+
+.itinerary-add {
+  display: flex;
+  gap: 6px;
+}
+
 .danger-btn {
   color: #f7768e;
 }

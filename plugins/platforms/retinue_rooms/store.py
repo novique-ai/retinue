@@ -65,6 +65,8 @@ class RoomStore:
         except OSError:
             return []
         for name in names:
+            if name.endswith(".itinerary.json"):
+                continue
             if name.endswith(".json"):
                 room = self.get(name[: -len(".json")])
                 if room is not None:

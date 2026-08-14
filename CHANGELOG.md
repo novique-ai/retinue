@@ -41,6 +41,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Slide-out room itinerary. The lead keeps a short living outline
+  (title, where we are, todo/doing/done steps). Persisted server-side;
+  the user can open the right pane and edit it. The lead's turn briefing
+  includes the current outline. Closes #37.
 - Idle xAI OAuth keepalive. While a hired cloud member uses `xai-oauth`
   and the workspace grant is ok, rooms refresh that grant shortly
   before the access JWT expires (same Hermes skew as on-turn refresh).

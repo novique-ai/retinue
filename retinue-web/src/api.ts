@@ -111,6 +111,23 @@ export interface ModelPreset {
   local?: boolean;
 }
 
+export type ItineraryStatus = "todo" | "doing" | "done";
+
+export interface ItineraryItem {
+  id: string;
+  text: string;
+  status: ItineraryStatus;
+}
+
+export interface Itinerary {
+  room_id: string;
+  title: string;
+  summary: string;
+  items: ItineraryItem[];
+  updated_at?: number;
+  updated_by?: string;
+}
+
 export interface RoutineMeta {
   name: string;
   slug: string;
@@ -291,6 +308,10 @@ export const api = {
     req<{ deleted: string }>("DELETE", `/agents/${slug}`),
   getSidebar: () => req<SidebarLayout>("GET", "/sidebar"),
   putSidebar: (layout: SidebarLayout) => req<SidebarLayout>("PUT", "/sidebar", layout),
+  getItinerary: (roomId: string) =>
+    req<Itinerary>("GET", `/rooms/${roomId}/itinerary`),
+  putItinerary: (roomId: string, body: Partial<Itinerary> & { updated_by?: string }) =>
+    req<Itinerary>("PUT", `/rooms/${roomId}/itinerary`, body),
   listRoutines: () => req<{ routines: RoutineMeta[] }>("GET", "/routines"),
   saveRoutine: (name: string, room: string) =>
     req<RoutineMeta>("POST", "/routines", { name, room }),
