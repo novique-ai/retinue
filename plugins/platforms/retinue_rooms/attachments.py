@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import os
 import re
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 from . import workspace
 
@@ -77,3 +77,147 @@ def read_upload(home_dir: str, room_id: str, raw_path: str) -> Optional[tuple[by
     with open(dest, "rb") as f:
         data = f.read()
     return data, workspace.content_type_for(path)
+
+
+def list_uploads(home_dir: str, room_id: str) -> List[Dict[str, Any]]:
+    """Room catalog — everything already published for this room."""
+    folder = _dir(home_dir, room_id)
+    try:
+        names = sorted(os.listdir(folder))
+    except OSError:
+        return []
+    out: List[Dict[str, Any]] = []
+    for name in names:
+        if name.endswith(".tmp") or name.startswith("."):
+            continue
+        dest = os.path.join(folder, name)
+        if not os.path.isfile(dest):
+            continue
+        out.append(
+            {
+                "name": name,
+                "path": public_path(name),
+                "bytes": os.path.getsize(dest),
+                "image": bool(_IMAGE_EXT.search(name)),
+            }
+        )
+    return out
+
+
+def publish_file(home_dir: str, room_id: str, src: str) -> Optional[Dict[str, Any]]:
+    """Copy a host file into the room catalog. None if unreadable/empty."""
+    try:
+        size = os.path.getsize(src)
+    except OSError:
+        return None
+    if size <= 0 or size > MAX_ATTACHMENT:
+        return None
+    name = safe_name(os.path.basename(src))
+    dest = os.path.join(_dir(home_dir, room_id), name)
+    if os.path.isfile(dest) and os.path.getsize(dest) == size:
+        return {
+            "name": name,
+            "path": public_path(name),
+            "bytes": size,
+            "image": bool(_IMAGE_EXT.search(name)),
+        }
+    try:
+        with open(src, "rb") as f:
+            data = f.read()
+    except OSError:
+        return None
+    try:
+        return save(home_dir, room_id, name, data)
+    except ValueError:
+        return None
+
+
+def _profile_output_dirs(home_dir: str, slug: str) -> List[str]:
+    root = os.path.join(home_dir, "profiles", slug)
+    return [
+        os.path.join(root, "image_cache"),
+        os.path.join(root, "images"),
+        os.path.join(root, "attachments"),
+        os.path.join(root, "cache", "images"),
+    ]
+
+
+def _iter_files(folder: str) -> Iterable[str]:
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return
+    for name in names:
+        if name.startswith(".") or name.endswith(".tmp"):
+            continue
+        path = os.path.join(folder, name)
+        if os.path.isfile(path):
+            yield path
+
+
+def _mentioned(name: str, text: str) -> bool:
+    stem, _ext = os.path.splitext(name)
+    if not stem:
+        return False
+    blob = (text or "").lower()
+    token = stem.lower().replace("_", " ").replace("-", " ")
+    if stem.lower() in blob or token in blob:
+        return True
+    bits = [b for b in re.split(r"[_\-\s]+", stem.lower()) if len(b) >= 5]
+    if not bits:
+        return False
+    hits = sum(1 for b in bits if b in blob)
+    return hits >= min(2, len(bits))
+
+
+def harvest(
+    home_dir: str,
+    room_id: str,
+    slug: str,
+    *,
+    since: float,
+    reply: str = "",
+) -> List[Dict[str, Any]]:
+    """Publish work this member made so the room can show and recall it.
+
+    *since* is the room's created_at (or the turn start). Files in the
+    member's image/output dirs at or after that time are copied into the
+    room catalog. A file whose name is mentioned in *reply* is taken even
+    if it is older (recall by name).
+    """
+    published: List[Dict[str, Any]] = []
+    seen: set[str] = {item["name"] for item in list_uploads(home_dir, room_id)}
+    for folder in _profile_output_dirs(home_dir, slug):
+        for src in _iter_files(folder):
+            name = safe_name(os.path.basename(src))
+            try:
+                mtime = os.path.getmtime(src)
+            except OSError:
+                continue
+            if mtime < since and not _mentioned(os.path.basename(src), reply):
+                continue
+            meta = publish_file(home_dir, room_id, src)
+            if meta is None:
+                continue
+            if meta["name"] in seen:
+                continue
+            seen.add(meta["name"])
+            published.append(meta)
+    return published
+
+
+def matching_uploads(home_dir: str, room_id: str, text: str) -> List[Dict[str, Any]]:
+    """Already-published files whose names match the user's ask."""
+    if not (text or "").strip():
+        return []
+    return [item for item in list_uploads(home_dir, room_id) if _mentioned(item["name"], text)]
+
+
+def with_published_paths(text: str, published: List[Dict[str, Any]]) -> str:
+    """Ensure the reply names every published /workspace path (UI inline)."""
+    extra = [p["path"] for p in published if p.get("path") and p["path"] not in (text or "")]
+    if not extra:
+        return text or ""
+    body = (text or "").rstrip()
+    block = "\n".join(extra)
+    return f"{body}\n\n{block}" if body else block

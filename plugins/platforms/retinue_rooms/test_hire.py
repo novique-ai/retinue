@@ -37,6 +37,12 @@ def test_soul_template_teaches_lead_itinerary():
     assert "If you are not the lead, do not write that block." in soul
 
 
+def test_soul_template_teaches_work_stays_in_the_room():
+    soul = hire.soul_template("Sheila", "make images", "")
+    assert "Write files under /workspace" in soul
+    assert "never go silent" in soul
+
+
 def test_soul_template_pins_identity_against_engine_bleed():
     """Agents were introducing themselves with the engine's identity
     ("Claude Code" phrasing) instead of their persona — the SOUL must pin

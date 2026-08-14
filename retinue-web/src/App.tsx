@@ -32,6 +32,7 @@ import {
   WorkspaceStatus,
 } from "./api";
 import { LOGO_SRC, YOU_SRC, agentIcon, speakerIcon } from "./icons";
+import { remainingThinkers, remainingThinkersAfter } from "./thinking";
 
 function Avatar({
   src,
@@ -437,6 +438,7 @@ function RoomView({
   const roomRef = useRef(room.id);
   roomRef.current = room.id;
   const sinceRef = useRef(0);
+  const messagesRef = useRef<RoomMsg[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
   const draftRef = useRef<HTMLTextAreaElement>(null);
   const micRef = useRef<{ stop: () => Promise<Blob> } | null>(null);
@@ -500,6 +502,7 @@ function RoomView({
   useEffect(() => {
     sinceRef.current = 0;
     setMessages([]);
+    messagesRef.current = [];
     setThinking([]);
     setSending(false);
     spokenRef.current = new Set();
@@ -510,10 +513,12 @@ function RoomView({
       0,
       (fresh) => {
         sinceRef.current = Math.max(sinceRef.current, ...fresh.map((m) => m.seq));
-        setMessages((prev) => [...prev, ...fresh]);
-        setThinking((waiting) =>
-          waiting.filter((w) => !fresh.some((m) => m.kind === "agent" && m.speaker === w)),
-        );
+        setMessages((prev) => {
+          const next = [...prev, ...fresh];
+          messagesRef.current = next;
+          return next;
+        });
+        setThinking((waiting) => remainingThinkers(waiting, fresh));
       },
       ctl.signal,
     );
@@ -523,6 +528,13 @@ function RoomView({
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [messages, thinking]);
+
+  // Self-heal: a no-reply system line (or a cycle abort) must drop the
+  // bubble even if it arrived before setThinking(planned), or if we only
+  // filtered on kind===agent (the previous bug).
+  useEffect(() => {
+    setThinking((waiting) => remainingThinkersAfter(waiting, messages));
+  }, [messages]);
 
   useEffect(() => {
     if (!speakReplies) return;
@@ -564,7 +576,7 @@ function RoomView({
       const body = [text, ...paths].filter(Boolean).join("\n");
       const { planned } = await api.send(room.id, body, userName);
       if (roomRef.current !== room.id) return;
-      setThinking(planned);
+      setThinking(remainingThinkersAfter(planned, messagesRef.current));
       setDraft("");
       setPendingFiles([]);
     } catch (e) {
@@ -596,7 +608,7 @@ function RoomView({
       const blob = await rec.stop();
       const { planned, text } = await api.sendAudio(room.id, blob, userName);
       if (roomRef.current !== room.id) return;
-      setThinking(planned);
+      setThinking(remainingThinkersAfter(planned, messagesRef.current));
       setVoiceNote(text ? `Heard: ${text}` : "");
     } catch (e) {
       setVoiceNote(String(e));

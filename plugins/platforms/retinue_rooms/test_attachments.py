@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from urllib.parse import quote
 
 import pytest
@@ -41,6 +42,58 @@ def test_empty_and_oversize(tmp_path):
 
 def test_non_upload_path_is_none(tmp_path):
     assert attachments.read_upload(str(tmp_path), "r-1", "/workspace/other.txt") is None
+
+
+def test_harvest_publishes_profile_image_cache(tmp_path):
+    cache = tmp_path / "profiles" / "sheila" / "image_cache"
+    cache.mkdir(parents=True)
+    src = cache / "graphics_test_midnight_monolith.png"
+    src.write_bytes(b"png-bytes")
+    os.utime(src, (2_000, 2_000))
+    got = attachments.harvest(str(tmp_path), "r-1", "sheila", since=1_000, reply="")
+    assert [g["path"] for g in got] == [
+        "/workspace/uploads/graphics_test_midnight_monolith.png"
+    ]
+    listed = attachments.list_uploads(str(tmp_path), "r-1")
+    assert listed[0]["name"] == "graphics_test_midnight_monolith.png"
+    # Second harvest is a no-op — already in the catalog.
+    assert attachments.harvest(str(tmp_path), "r-1", "sheila", since=1_000, reply="") == []
+
+
+def test_harvest_skips_older_unrelated_files(tmp_path):
+    cache = tmp_path / "profiles" / "sheila" / "image_cache"
+    cache.mkdir(parents=True)
+    old = cache / "retinue-intro-16x9.png"
+    old.write_bytes(b"old")
+    os.utime(old, (10, 10))
+    assert attachments.harvest(str(tmp_path), "r-1", "sheila", since=1_000, reply="") == []
+
+
+def test_harvest_recalls_older_file_by_name(tmp_path):
+    cache = tmp_path / "profiles" / "sheila" / "image_cache"
+    cache.mkdir(parents=True)
+    src = cache / "graphics_test_midnight_monolith.png"
+    src.write_bytes(b"png-bytes")
+    os.utime(src, (10, 10))
+    got = attachments.harvest(
+        str(tmp_path),
+        "r-1",
+        "sheila",
+        since=1_000,
+        reply="@Sheila show me that Midnight Monolith image again",
+    )
+    assert got[0]["path"].endswith("graphics_test_midnight_monolith.png")
+
+
+def test_matching_uploads_and_path_append(tmp_path):
+    attachments.save(str(tmp_path), "r-1", "graphics_test_midnight_monolith.png", b"png")
+    hits = attachments.matching_uploads(
+        str(tmp_path), "r-1", "show me the Midnight Monolith again"
+    )
+    assert hits[0]["path"] == "/workspace/uploads/graphics_test_midnight_monolith.png"
+    text = attachments.with_published_paths("Here it is.", hits)
+    assert "/workspace/uploads/graphics_test_midnight_monolith.png" in text
+    assert attachments.with_published_paths("", hits).startswith("/workspace/uploads/")
 
 
 @pytest.fixture

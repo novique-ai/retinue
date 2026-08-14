@@ -17,6 +17,12 @@ KIND_USER = "user"
 KIND_AGENT = "agent"
 KIND_SYSTEM = "system"
 
+# System-notice prefixes the web UI uses to drop a thinking bubble.
+# Keep in lockstep with retinue-web/src/thinking.ts.
+CYCLE_INTERNAL_ERROR_PREFIX = "internal error running the turn cycle"
+CYCLE_BUDGET_PREFIX = "turn budget"
+DID_NOT_REPLY_INFIX = " did not reply ("
+
 DEFAULT_MAX_AGENT_TURNS = 8
 
 # @name — profile names may contain letters, digits, underscores, hyphens.
@@ -306,6 +312,64 @@ def merge_followups(
     return extra
 
 
+def did_not_reply_notice(member: str, reason: str) -> str:
+    """System line posted when a planned speaker produces no agent message."""
+    return f"{member}{DID_NOT_REPLY_INFIX}{reason})"
+
+
+def cycle_internal_error_notice() -> str:
+    return f"{CYCLE_INTERNAL_ERROR_PREFIX} — see gateway log"
+
+
+def cycle_budget_notice(budget: int, queued: List[str]) -> str:
+    still = ", ".join(queued)
+    return (
+        f"{CYCLE_BUDGET_PREFIX} ({budget}) reached — waiting for the next "
+        f"user message. Still queued: {still}"
+    )
+
+
+def is_cycle_abort_notice(text: str) -> bool:
+    body = text or ""
+    return body.startswith(CYCLE_INTERNAL_ERROR_PREFIX) or body.startswith(
+        CYCLE_BUDGET_PREFIX
+    )
+
+
+def turn_concludes_waiter(msg: RoomMessage, waiter: str) -> bool:
+    """True when *msg* should drop *waiter* from the in-room thinking list."""
+    if msg.kind == KIND_AGENT and msg.speaker == waiter:
+        return True
+    if msg.kind != KIND_SYSTEM:
+        return False
+    text = msg.text or ""
+    if is_cycle_abort_notice(text):
+        return True
+    return text.startswith(f"{waiter}{DID_NOT_REPLY_INFIX}")
+
+
+def remaining_thinkers(waiting: List[str], fresh: List[RoomMessage]) -> List[str]:
+    if not waiting or not fresh:
+        return list(waiting)
+    if any(m.kind == KIND_SYSTEM and is_cycle_abort_notice(m.text) for m in fresh):
+        return []
+    return [w for w in waiting if not any(turn_concludes_waiter(m, w) for m in fresh)]
+
+
+def remaining_thinkers_after(waiting: List[str], messages: List[RoomMessage]) -> List[str]:
+    """Only messages after the latest user line can end the current turn."""
+    if not waiting:
+        return list(waiting)
+    last_user = -1
+    for i in range(len(messages) - 1, -1, -1):
+        if messages[i].kind == KIND_USER:
+            last_user = i
+            break
+    if last_user < 0:
+        return list(waiting)
+    return remaining_thinkers(waiting, messages[last_user + 1 :])
+
+
 def format_lines(messages: List[RoomMessage]) -> str:
     """Attributed transcript block for channel_context delivery."""
     lines = []
@@ -317,12 +381,42 @@ def format_lines(messages: List[RoomMessage]) -> str:
     return "\n".join(lines)
 
 
+_MEDIA_WORDS = (
+    "image",
+    "picture",
+    "photo",
+    "png",
+    "jpg",
+    "jpeg",
+    "graphic",
+    "illustration",
+    "still",
+    "artwork",
+)
+
+FALLBACK_MEDIA = "I'm sorry, I cannot find that image at the moment."
+FALLBACK_GENERIC = "I'm sorry — I couldn't complete that just now."
+
+
+def looks_like_media_request(text: str) -> bool:
+    blob = (text or "").lower()
+    return any(word in blob for word in _MEDIA_WORDS)
+
+
+def fallback_reply(trigger_text: str) -> str:
+    """Spoken line when a turn produces no reply. Never leave the room silent."""
+    if looks_like_media_request(trigger_text):
+        return FALLBACK_MEDIA
+    return FALLBACK_GENERIC
+
+
 def room_briefing(
     room: Room,
     member: str,
     user_names: List[str],
     display_names: Optional[Dict[str, str]] = None,
     itinerary: Optional[Dict[str, Any]] = None,
+    artifacts: Optional[List[str]] = None,
 ) -> str:
     """Per-turn channel prompt: who you are, who is here, how to behave."""
     names = display_names or {}
@@ -359,7 +453,14 @@ def room_briefing(
         "the room adds attribution for you.",
         "Keep replies conversational. A handoff is @Name plus one sentence, "
         "then you stop; that is not too short.",
+        "Work you make belongs in this room. Write files under /workspace "
+        "and include the /workspace/... path in your reply so it appears "
+        "on the transcript. If you cannot find a piece the user asks for, "
+        "say so in one sentence — never stay silent and never crash out.",
     ]
+    if artifacts:
+        parts.append("Work already in this room: " + ", ".join(artifacts) + ".")
+        parts.append("Reuse those paths when the user asks to see them again.")
     if (room.workspace or "sandbox") == "ide":
         parts.append(
             "This room is attached to this machine's IDE. Your terminal "

@@ -264,6 +264,101 @@ def test_merge_followups_respects_budget():
 # ── formatting ───────────────────────────────────────────────────────────
 
 
+def test_did_not_reply_notice_is_what_the_web_ui_parses():
+    text = engine.did_not_reply_notice(
+        "sheila-graphics-and-visual-produ", "agent returned no reply"
+    )
+    assert text == (
+        "sheila-graphics-and-visual-produ did not reply (agent returned no reply)"
+    )
+    assert text.startswith("sheila-graphics-and-visual-produ" + engine.DID_NOT_REPLY_INFIX)
+    abort = engine.cycle_internal_error_notice()
+    assert abort.startswith(engine.CYCLE_INTERNAL_ERROR_PREFIX)
+    budget = engine.cycle_budget_notice(8, ["scribe", "admin"])
+    assert budget.startswith(engine.CYCLE_BUDGET_PREFIX)
+    assert "scribe, admin" in budget
+
+
+def test_old_agent_only_filter_misses_no_reply_system_line():
+    """The live Graphics Test bug: thinking stayed up because the UI only
+    dropped a waiter on kind=agent. A system 'did not reply' is the end of
+    that turn and must clear the bubble."""
+    slug = "sheila-graphics-and-visual-produ"
+    fresh = [
+        RoomMessage(
+            seq=9,
+            ts=1,
+            kind=KIND_SYSTEM,
+            speaker="room",
+            text=engine.did_not_reply_notice(slug, "agent returned no reply"),
+        )
+    ]
+    old_filter = [
+        w
+        for w in [slug]
+        if not any(m.kind == KIND_AGENT and m.speaker == w for m in fresh)
+    ]
+    assert old_filter == [slug]
+    assert engine.remaining_thinkers([slug], fresh) == []
+
+
+def test_remaining_thinkers_keeps_queued_after_one_failure():
+    fresh = [
+        RoomMessage(
+            seq=2,
+            ts=1,
+            kind=KIND_SYSTEM,
+            speaker="room",
+            text=engine.did_not_reply_notice("admin", "agent returned no reply"),
+        )
+    ]
+    assert engine.remaining_thinkers(
+        ["admin", "sheila-graphics-and-visual-produ"], fresh
+    ) == ["sheila-graphics-and-visual-produ"]
+
+
+def test_remaining_thinkers_after_ignores_previous_turn_reply():
+    slug = "sheila-graphics-and-visual-produ"
+    messages = [
+        RoomMessage(1, 1, KIND_USER, "You", "first"),
+        RoomMessage(2, 2, KIND_AGENT, slug, "here is a still"),
+        RoomMessage(3, 3, KIND_USER, "You", "@Sheila show it again"),
+    ]
+    assert engine.remaining_thinkers_after([slug], messages) == [slug]
+    messages.append(
+        RoomMessage(
+            4,
+            4,
+            KIND_SYSTEM,
+            "room",
+            engine.did_not_reply_notice(slug, "agent returned no reply"),
+        )
+    )
+    assert engine.remaining_thinkers_after([slug], messages) == []
+
+
+def test_cycle_abort_clears_the_whole_queue():
+    waiting = ["admin", "scribe"]
+    assert (
+        engine.remaining_thinkers(
+            waiting,
+            [
+                RoomMessage(
+                    1, 1, KIND_SYSTEM, "room", engine.cycle_internal_error_notice()
+                )
+            ],
+        )
+        == []
+    )
+    assert (
+        engine.remaining_thinkers(
+            waiting,
+            [RoomMessage(1, 1, KIND_SYSTEM, "room", engine.cycle_budget_notice(8, ["scribe"]))],
+        )
+        == []
+    )
+
+
 def test_format_lines_attribution():
     msgs = [
         RoomMessage(seq=1, ts=1, kind=KIND_USER, speaker="Mark", text="hi"),
@@ -286,6 +381,25 @@ def test_briefing_names_room_and_members():
     assert "Mark" in text
     assert "Then stop" in text
     assert "say so briefly" not in text
+    assert "never stay silent" in text
+
+
+def test_briefing_lists_room_artifacts():
+    room = _room(lead="scout")
+    text = engine.room_briefing(
+        room,
+        "scout",
+        ["Mark"],
+        artifacts=["/workspace/uploads/midnight_monolith.png"],
+    )
+    assert "Work already in this room: /workspace/uploads/midnight_monolith.png." in text
+    assert "Reuse those paths" in text
+
+
+def test_fallback_reply_is_spoken_not_a_crash():
+    assert engine.fallback_reply("@Sheila show me that image again") == engine.FALLBACK_MEDIA
+    assert engine.fallback_reply("what is the status") == engine.FALLBACK_GENERIC
+    assert "crash" not in engine.fallback_reply("picture please").lower()
 
 
 def test_briefing_roster_uses_display_handles():

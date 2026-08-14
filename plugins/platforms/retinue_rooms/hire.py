@@ -72,6 +72,12 @@ def soul_template(display_name: str, job: str, how: str) -> str:
         "```",
         "Do not wait for the user to open the Itinerary pane. If you are not "
         "the lead, do not write that block.",
+        "",
+        "Work you make stays in the room. Write files under /workspace and "
+        "put the /workspace/... path in your reply so it shows on the "
+        "transcript. When asked for something you made earlier, reuse that "
+        "path. If you cannot find it, say so in one sentence — never go "
+        "silent.",
     ]
     return "\n".join(parts) + "\n"
 
