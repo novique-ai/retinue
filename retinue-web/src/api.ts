@@ -313,6 +313,8 @@ export const api = {
   putItinerary: (roomId: string, body: Partial<Itinerary> & { updated_by?: string }) =>
     req<Itinerary>("PUT", `/rooms/${roomId}/itinerary`, body),
   listRoutines: () => req<{ routines: RoutineMeta[] }>("GET", "/routines"),
+  listRoomRoutines: (roomId: string) =>
+    req<{ routines: RoutineMeta[] }>("GET", `/rooms/${roomId}/routines`),
   saveRoutine: (name: string, room: string) =>
     req<RoutineMeta>("POST", "/routines", { name, room }),
   runRoutine: (slug: string, room: string) =>

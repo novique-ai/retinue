@@ -34,6 +34,40 @@ def test_save_list_get_delete_routine(tmp_path):
     assert routines.delete_routine(str(tmp_path), "daily-standup") is False
 
 
+def test_http_lists_routines_for_source_room(tmp_path, monkeypatch):
+    import http.client
+    import json
+    import threading
+
+    from gateway.config import PlatformConfig
+
+    from .adapter import RetinueRoomsAdapter, _RoomsRequestHandler, _RoomsServer
+    from .engine import Room
+    from .store import RoomStore
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    adapter = RetinueRoomsAdapter(PlatformConfig())
+    adapter.store = RoomStore(base_dir=str(tmp_path / "rooms"))
+    adapter.store.create(Room(id="room-a", name="A", members=["sally"], lead="sally"))
+    adapter.store.create(Room(id="room-b", name="B", members=["sally"], lead="sally"))
+    routines.save_routine(str(tmp_path), "From A", ["hi"], source_room="room-a")
+    routines.save_routine(str(tmp_path), "From B", ["yo"], source_room="room-b")
+    httpd = _RoomsServer(("127.0.0.1", 0), _RoomsRequestHandler, adapter)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        conn = http.client.HTTPConnection(*httpd.server_address[:2], timeout=3)
+        conn.request("GET", "/rooms/room-a/routines")
+        resp = conn.getresponse()
+        payload = json.loads(resp.read().decode())
+        conn.close()
+        assert resp.status == 200
+        assert [r["slug"] for r in payload["routines"]] == ["from-a"]
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
 def test_workspace_status_disabled_without_key(monkeypatch):
     monkeypatch.delenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", raising=False)
     status = workspace.workspace_status()

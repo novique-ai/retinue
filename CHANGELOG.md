@@ -41,6 +41,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Routines saved from a room show up in that room's chrome (name,
+  step count, Run) so you do not hunt the global sidebar. Closes #39.
 - Composer `+` (and drag-and-drop) attaches files and images to a
   room send. They are stored with the room and shown as
   `/workspace/uploads/…` chips in the transcript. Closes #38.

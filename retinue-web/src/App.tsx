@@ -416,6 +416,7 @@ function RoomView({
   const [caret, setCaret] = useState(0);
   const [mentionPick, setMentionPick] = useState(0);
   const [mentionOff, setMentionOff] = useState(false);
+  const [roomRoutines, setRoomRoutines] = useState<RoutineMeta[]>([]);
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   const fileRef = useRef<HTMLInputElement>(null);
   const [itineraryOpen, setItineraryOpen] = useState(() => {
@@ -457,6 +458,16 @@ function RoomView({
       .then(setVoice)
       .catch(() => setVoice(null));
   }, []);
+
+  const refreshRoomRoutines = useCallback(() => {
+    api
+      .listRoomRoutines(room.id)
+      .then((r) => setRoomRoutines(r.routines))
+      .catch(() => setRoomRoutines([]));
+  }, [room.id]);
+  useEffect(() => {
+    refreshRoomRoutines();
+  }, [refreshRoomRoutines]);
 
   // SSE transcript stream; long-poll is the fallback (see api.watchTranscript).
   useEffect(() => {
@@ -618,6 +629,7 @@ function RoomView({
               if (!name) return;
               try {
                 const created = await api.saveRoutine(name, room.id);
+                refreshRoomRoutines();
                 alert(`Saved routine "${created.name}" (${created.messages.length} steps)`);
               } catch (e) {
                 alert(String(e));
@@ -628,6 +640,31 @@ function RoomView({
           </button>
         </div>
       </header>
+      {roomRoutines.length > 0 && (
+        <div className="room-routines" aria-label="Routines for this room">
+          {roomRoutines.map((rt) => (
+            <span key={rt.slug} className="routine-chip">
+              {rt.name}
+              <span className="nav-sub">
+                {" "}
+                · {rt.messages.length} step{rt.messages.length === 1 ? "" : "s"}
+              </span>
+              <button
+                className="mini"
+                onClick={async () => {
+                  try {
+                    await api.runRoutine(rt.slug, room.id);
+                  } catch (e) {
+                    alert(String(e));
+                  }
+                }}
+              >
+                Run
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
       <div className="room-body">
       <div className="room-chat">
       <div className="messages" ref={scrollRef}>
