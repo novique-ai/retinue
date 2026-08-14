@@ -194,5 +194,6 @@ mounted host path).
 
 No token-streaming into the room (finals only — the
 adapter declares no message editing, so the gateway skips the stream consumer); approvals
-degrade to the gateway's text fallback inside the member's turn; mention token = profile
-name (display aliases later); transcript is plain text (media later).
+degrade to the gateway's text fallback inside the member's turn; mention
+token is the slug, the unique display / first name, or a unique alias prefix
+(ambiguous prefixes do not steal a turn); transcript is plain text (media later).

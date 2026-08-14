@@ -18,6 +18,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   concurrent wave, so reviewers ran against an empty draft. The queue is
   now mention order, then follow-up `@mention`s; each reply is on the
   transcript before the next speaker starts. Closes #17.
+- `@Sheila` and `@slug` now address the same member. Composer chips and
+  an `@` picker insert the display / first name; the scheduled member is
+  still the slug. Ambiguous prefixes do not steal a turn. Closes #8.
 
 ### Added
 
