@@ -12,6 +12,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Added
+
+- Pulsing orange ring on a working member’s icon (welcome cast, sidebar
+  faces, in-room thinking row). Uses `GET /agents` `busy`, already
+  polled every 2s. Solid ring when `prefers-reduced-motion`. Closes #22.
+
 ### Fixed
 
 - A member “thinking” in one room no longer appears after you switch
