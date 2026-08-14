@@ -141,16 +141,17 @@ def plan_agent_followups(
 
 
 def take_wave(queue: List[str], budget_left: int) -> tuple[List[str], List[str]]:
-    """Split *queue* into (this independent wave, remainder).
+    """Split *queue* into (this speaker, remainder).
 
-    Members already in the queue were scheduled independently (a user
-    @mentioned them together, or they were collected as follow-ups of the
-    previous wave). They do not depend on each other's replies, so the
-    adapter may run the wave concurrently. *budget_left* caps the wave.
+    Rooms take turns. Mention order (then follow-up ``@mention``s from a
+    reply) is a queue, not a fan-out: the next speaker must see the
+    previous reply on the transcript. *budget_left* still gates whether
+    anyone runs. An explicit parallel control is later; it is not the
+    default.
     """
     if budget_left <= 0 or not queue:
         return [], list(queue)
-    return list(queue[:budget_left]), list(queue[budget_left:])
+    return [queue[0]], list(queue[1:])
 
 
 def merge_followups(
@@ -160,10 +161,12 @@ def merge_followups(
     already_spoken: List[str],
     budget_left: int,
 ) -> List[str]:
-    """Next wave: @mentions from a just-finished wave, in speaker order.
+    """Follow-up ``@mention``s from a just-finished speaker (or speakers).
 
     Dedupes against *already_queued*, *already_spoken*, and earlier
     follow-ups in this merge so a member is scheduled at most once.
+    Sequential cycles pass a single reply; the list form stays so a
+    later explicit parallel control can reuse the same merge.
     """
     extra: List[str] = []
     blocked = set(already_queued) | set(already_spoken)

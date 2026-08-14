@@ -17,7 +17,7 @@ Status words mean:
 | Item | Notes |
 |---|---|
 | Public fork + plugin-delta policy | [retinue/FORK-POLICY.md](../retinue/FORK-POLICY.md) |
-| Rooms | Shared transcript, `@mention` turn-taking, turn budget, parallel waves |
+| Rooms | Shared transcript, `@mention` turn-taking, turn budget, sequential turns |
 | Web UI + hire flow | `retinue-web/`, three-field brief, served by the adapter |
 | Workspace computer | Shared podman/docker container via carried patch |
 | Routines | Save / replay a room's user prompts |

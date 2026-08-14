@@ -407,17 +407,22 @@ function RoomView({
         {messages.map((m) => (
           <MessageRow key={m.seq} msg={m} userName={userName} />
         ))}
-        {thinking.map((w) => (
-          <div key={w} className="msg-row">
-            <Avatar src={agentIcon(w)} label={w} size={32} />
+        {thinking[0] && (
+          <div key={thinking[0]} className="msg-row">
+            <Avatar src={agentIcon(thinking[0])} label={thinking[0]} size={32} />
             <div className="bubble thinking">
-              <span className="chip" style={{ color: chipColor(w) }}>
-                {w}
+              <span className="chip" style={{ color: chipColor(thinking[0]) }}>
+                {thinking[0]}
               </span>
               <div className="msg-text dots">thinking</div>
             </div>
           </div>
-        ))}
+        )}
+        {thinking.length > 1 && (
+          <div className="queued-hint">
+            Up next: {thinking.slice(1).map((w) => `@${w}`).join(" → ")}
+          </div>
+        )}
       </div>
       <div className="composer">
         <div className="mention-bar">

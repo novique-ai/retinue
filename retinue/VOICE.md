@@ -74,7 +74,7 @@ member final (or streamed sentence) ──▶ TTS ──▶ speaker / browser pl
 ```
 
 - User speech becomes a normal room user line. `@mentions`, lead routing, budgets, SSE stay as they are.
-- Each retainer can have its own voice. Parallel waves need a playback queue (mention order), not simultaneous shouting.
+- Each retainer can have its own voice. Sequential turns still need a playback queue (mention order), so a later speaker is not talking over the earlier one.
 - Local members still get the 1800s budget; cloud stays 300s. Voice I/O does not change those.
 - Plugin-shaped only: `retinue-web/` + `plugins/platforms/retinue_rooms/`. No upstream-core edits. Configure `~/.retinue` `stt:` / `tts:` — do not patch `tools/transcription_tools.py`.
 
@@ -112,7 +112,7 @@ A **sidecar**, not a swap. Glimmer stays on `:8080`. Speech gets its own process
 
 Expose OpenAI-compatible `/v1/audio/transcriptions` + `/v1/audio/speech` on the tailnet. Point `~/.retinue` `stt.provider: openai` / `tts.provider: openai` at that base URL (same pattern as clay-blade `:8102`/`:8103`).
 
-**Do not** put speech on the Glimmer llama-server. Two locals in one room wave already share that server.
+**Do not** put speech on the Glimmer llama-server. Two locals in one room cycle already share that server.
 
 **Do not** start ollama for this.
 

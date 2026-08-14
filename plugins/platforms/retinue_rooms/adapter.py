@@ -674,29 +674,23 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             wave, queue = engine.take_wave(queue, budget - turns_taken)
             if not wave:
                 break
-            # Start everyone in the wave now; append in mention order so a
-            # fast lead is visible before a slow teammate finishes.
-            tasks = {
-                member: asyncio.create_task(self._agent_turn(room, member))
-                for member in wave
-            }
+            # One speaker at a time. Their reply is on the transcript
+            # before the next member starts, so reviewers see the draft.
+            member = wave[0]
             room = self.store.get(room_id) or room
-            replies: List[tuple[str, str]] = []
-            for member in wave:
-                ok, reply = await tasks[member]
-                turns_taken += 1
-                spoken.append(member)
-                if not ok:
-                    self._post_system(room_id, f"{member} did not reply ({reply})")
-                    continue
-                self.store.append(
-                    room_id,
-                    RoomMessage(seq=0, ts=0, kind=KIND_AGENT, speaker=member, text=reply),
-                )
-                replies.append((member, reply))
+            ok, reply = await self._agent_turn(room, member)
+            turns_taken += 1
+            spoken.append(member)
+            if not ok:
+                self._post_system(room_id, f"{member} did not reply ({reply})")
+                continue
+            self.store.append(
+                room_id,
+                RoomMessage(seq=0, ts=0, kind=KIND_AGENT, speaker=member, text=reply),
+            )
             queue.extend(
                 engine.merge_followups(
-                    room, replies, queue, spoken, budget - turns_taken
+                    room, [(member, reply)], queue, spoken, budget - turns_taken
                 )
             )
 
