@@ -47,6 +47,32 @@ def test_resolve_ide_path_falls_back_to_env(tmp_path, monkeypatch):
     assert ide.resolve_ide_path(None) == str(tmp_path)
 
 
+def test_list_folders_under_root(tmp_path, monkeypatch):
+    (tmp_path / "projects").mkdir()
+    (tmp_path / "projects" / "retinue").mkdir()
+    (tmp_path / ".hidden").mkdir()
+    (tmp_path / "notes.txt").write_text("x", encoding="utf-8")
+    monkeypatch.setenv("RETINUE_IDE_ROOT", str(tmp_path))
+    listing = ide.list_folders(None)
+    assert listing["path"] == str(tmp_path)
+    assert listing["parent"] is None
+    assert [f["name"] for f in listing["folders"]] == ["projects"]
+    child = ide.list_folders(str(tmp_path / "projects"))
+    assert child["parent"] == str(tmp_path)
+    assert [f["name"] for f in child["folders"]] == ["retinue"]
+    with pytest.raises(ValueError, match="under the configured IDE root"):
+        ide.list_folders("/tmp")
+
+
+def test_list_folders_requires_a_root_or_path(tmp_path, monkeypatch):
+    monkeypatch.delenv("RETINUE_IDE_ROOT", raising=False)
+    with pytest.raises(ValueError, match="RETINUE_IDE_ROOT"):
+        ide.list_folders(None)
+    listing = ide.list_folders(str(tmp_path))
+    assert listing["path"] == str(tmp_path)
+    assert listing["root"] is None
+
+
 def test_overlay_sandbox_clears_volumes(tmp_path):
     room = _room(workspace="sandbox")
     env = ide.overlay_env(room)
@@ -169,6 +195,13 @@ def test_http_create_ide_room(tmp_path, monkeypatch):
         )
         assert status == 400
         assert "ide_path" in payload["error"] or "RETINUE_IDE_ROOT" in payload["error"]
+
+        (tmp_path / "projects").mkdir()
+        monkeypatch.setenv("RETINUE_IDE_ROOT", str(tmp_path))
+        status, payload = call("GET", "/workspace/folders")
+        assert status == 200
+        assert payload["path"] == str(tmp_path)
+        assert any(f["name"] == "projects" for f in payload["folders"])
     finally:
         httpd.shutdown()
         httpd.server_close()

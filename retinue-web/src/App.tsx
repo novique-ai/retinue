@@ -15,6 +15,7 @@ import {
   ProviderAuth,
   getApiKey,
   workspaceFileUrl,
+  IdeFolderListing,
   ModelPreset,
   Principal,
   ReauthSession,
@@ -626,7 +627,9 @@ function RoomView({
             {room.name}
             {room.archived ? " (archived)" : ""}
             {(room.workspace ?? "sandbox") === "ide" && (
-              <span className="mode-badge">IDE</span>
+              <span className="mode-badge" title={room.ide_path || ""}>
+                {ideFolderLabel(room.ide_path)}
+              </span>
             )}
           </h2>
           <div className="room-members">
@@ -1236,10 +1239,18 @@ function HirePanel({ onDone }: { onDone: (created?: AgentMeta) => void }) {
   );
 }
 
+function ideFolderLabel(path?: string | null): string {
+  if (!path) return "IDE";
+  const bits = path.split("/").filter(Boolean);
+  return bits.length ? `IDE · ${bits[bits.length - 1]}` : "IDE";
+}
+
 function WorkspacePicker({
   value,
   onChange,
   ideRoot,
+  idePath,
+  onIdePath,
   confirm,
   onConfirm,
   switching,
@@ -1247,10 +1258,36 @@ function WorkspacePicker({
   value: RoomWorkspace;
   onChange: (next: RoomWorkspace) => void;
   ideRoot?: string | null;
+  idePath: string;
+  onIdePath: (next: string) => void;
   confirm: boolean;
   onConfirm: (ok: boolean) => void;
   switching?: boolean;
 }) {
+  const [listing, setListing] = useState<IdeFolderListing | null>(null);
+  const [browseNote, setBrowseNote] = useState("");
+  const browse = useCallback(
+    async (path?: string) => {
+      try {
+        setBrowseNote("");
+        setListing(await api.listIdeFolders(path));
+      } catch (e) {
+        setListing(null);
+        setBrowseNote(String(e));
+      }
+    },
+    [],
+  );
+  useEffect(() => {
+    if (value !== "ide") {
+      setListing(null);
+      setBrowseNote("");
+      return;
+    }
+    void browse(idePath || ideRoot || undefined);
+    // Only when the mode flips — typing the path browses on blur.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value, browse]);
   return (
     <div className="workspace-pick">
       <span className="field-label">Where should this room work?</span>
@@ -1268,7 +1305,10 @@ function WorkspacePicker({
         <button
           type="button"
           className={value === "ide" ? "pick picked" : "pick"}
-          onClick={() => onChange("ide")}
+          onClick={() => {
+            onChange("ide");
+            if (!idePath && ideRoot) onIdePath(ideRoot);
+          }}
         >
           This machine&apos;s IDE
         </button>
@@ -1276,21 +1316,60 @@ function WorkspacePicker({
       {value === "ide" && (
         <div className="ide-warn">
           <p>
-            Agents in this room work in a container that <strong>bind-mounts this
-            machine&apos;s IDE</strong>
-            {ideRoot ? (
-              <>
-                {" "}
-                (<code>{ideRoot}</code>)
-              </>
-            ) : (
-              <>
-                {" "}
-                (set <code>RETINUE_IDE_ROOT</code> on the gateway)
-              </>
-            )}
-            . They can read and write that tree. Casual rooms should stay isolated.
+            Agents in this room work in a container that <strong>bind-mounts a
+            folder on this machine</strong> at <code>/workspace</code>. They can
+            read and write that tree. Casual rooms should stay isolated.
           </p>
+          <label>
+            Folder on this machine
+            <input
+              value={idePath}
+              onChange={(e) => onIdePath(e.target.value)}
+              onBlur={() => {
+                if (idePath.trim()) void browse(idePath.trim());
+              }}
+              placeholder={ideRoot || "/absolute/path/to/project"}
+            />
+          </label>
+          {listing && (
+            <div className="ide-browse">
+              <div className="ide-browse-bar">
+                {listing.parent && (
+                  <button
+                    type="button"
+                    className="mini"
+                    onClick={() => {
+                      const up = listing.parent || "";
+                      onIdePath(up);
+                      void browse(up);
+                    }}
+                  >
+                    Up
+                  </button>
+                )}
+                <code className="ide-browse-path">{listing.path}</code>
+              </div>
+              <div className="ide-browse-list">
+                {listing.folders.map((f) => (
+                  <button
+                    key={f.path}
+                    type="button"
+                    className={f.path === idePath ? "pick picked" : "pick"}
+                    onClick={() => {
+                      onIdePath(f.path);
+                      void browse(f.path);
+                    }}
+                  >
+                    {f.name}
+                  </button>
+                ))}
+                {listing.folders.length === 0 && (
+                  <span className="nav-sub">No subfolders</span>
+                )}
+              </div>
+            </div>
+          )}
+          {browseNote && <p className="note">{browseNote}</p>}
           <label className="ide-confirm">
             <input
               type="checkbox"
@@ -1298,7 +1377,7 @@ function WorkspacePicker({
               onChange={(e) => onConfirm(e.target.checked)}
             />
             {switching
-              ? "Mount this machine’s IDE into this room"
+              ? "Mount this folder into this room"
               : "Create an IDE-attached room"}
           </label>
         </div>
@@ -1320,6 +1399,7 @@ function NewRoomPanel({
   const [picked, setPicked] = useState<string[]>([]);
   const [lead, setLead] = useState<string>("");
   const [workspace, setWorkspace] = useState<RoomWorkspace>("sandbox");
+  const [idePath, setIdePath] = useState(ideRoot || "");
   const [ideOk, setIdeOk] = useState(false);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState("");
@@ -1337,6 +1417,8 @@ function NewRoomPanel({
         value={workspace}
         onChange={setWorkspace}
         ideRoot={ideRoot}
+        idePath={idePath}
+        onIdePath={setIdePath}
         confirm={ideOk}
         onConfirm={setIdeOk}
       />
@@ -1380,7 +1462,10 @@ function NewRoomPanel({
             setBusy(true);
             try {
               onDone(
-                await api.createRoom(name, picked, lead || null, { workspace }),
+                await api.createRoom(name, picked, lead || null, {
+                  workspace,
+                  ide_path: workspace === "ide" ? idePath.trim() || null : null,
+                }),
               );
             } catch (e) {
               setNote(String(e));
@@ -1411,6 +1496,7 @@ function EditRoomPanel({
   const [picked, setPicked] = useState<string[]>(room.members);
   const [lead, setLead] = useState<string>(room.lead ?? "");
   const [workspace, setWorkspace] = useState<RoomWorkspace>(room.workspace ?? "sandbox");
+  const [idePath, setIdePath] = useState(room.ide_path || ideRoot || "");
   const [ideOk, setIdeOk] = useState((room.workspace ?? "sandbox") === "ide");
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState("");
@@ -1454,7 +1540,9 @@ function EditRoomPanel({
       <WorkspacePicker
         value={workspace}
         onChange={setWorkspace}
-        ideRoot={ideRoot ?? room.ide_path}
+        ideRoot={ideRoot}
+        idePath={idePath}
+        onIdePath={setIdePath}
         confirm={ideOk}
         onConfirm={setIdeOk}
         switching
@@ -1474,6 +1562,7 @@ function EditRoomPanel({
                   members: picked,
                   lead: lead || null,
                   workspace,
+                  ide_path: workspace === "ide" ? idePath.trim() || null : null,
                 }),
               );
             } catch (e) {
@@ -2152,7 +2241,9 @@ export default function App() {
                   {r.name}
                   {r.archived ? " (archived)" : ""}
                   {(r.workspace ?? "sandbox") === "ide" && (
-                    <span className="mode-badge">IDE</span>
+                    <span className="mode-badge" title={r.ide_path || ""}>
+                      {ideFolderLabel(r.ide_path)}
+                    </span>
                   )}
                   <span className="nav-sub nav-faces">
                     {r.members.map((m) => (

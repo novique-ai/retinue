@@ -196,10 +196,12 @@ run in podman/docker. File/browser/MCP tools stay host-side (unchanged).
 | `sandbox` (default) | Isolated container, no host mount | Every room unless marked IDE |
 | `ide` | Same runtime + bind-mount of a **host path** at `/workspace` | Only rooms created/patched with `workspace=ide` |
 
-IDE attach is **local to the gateway host**. Pass `ide_path` on create/patch,
-or set `RETINUE_IDE_ROOT` for the default. It is not SSHFS and not a remote-IDE
-protocol. If the browser and the IDE tree live on different machines, install
-the gateway on the machine that owns the tree and browse the UI from the other.
+IDE attach is **local to the gateway host**. The web UI folder picker sets
+`ide_path` on create/patch (type a path or browse under `RETINUE_IDE_ROOT`).
+`GET /workspace/folders?path=` lists immediate subdirectories, scoped to that
+root when it is set. It is not SSHFS and not a remote-IDE protocol. If the
+browser and the IDE tree live on different machines, install the gateway on
+the machine that owns the tree and browse the UI from the other.
 
 Each room gets its own `TERMINAL_DOCKER_SHARED_CONTAINER_KEY`
 (`retinue-<mode>-<room-id>`) so a sandbox room cannot share a container — or a

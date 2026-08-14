@@ -141,6 +141,18 @@ export interface RoutineMeta {
   created_at?: number;
 }
 
+export interface IdeFolder {
+  name: string;
+  path: string;
+}
+
+export interface IdeFolderListing {
+  path: string;
+  parent: string | null;
+  root: string | null;
+  folders: IdeFolder[];
+}
+
 export interface WorkspaceStatus {
   enabled: boolean;
   key: string | null;
@@ -339,6 +351,11 @@ export const api = {
     ),
   deleteRoutine: (slug: string) => req<{ deleted: string }>("DELETE", `/routines/${slug}`),
   workspace: () => req<WorkspaceStatus>("GET", "/workspace"),
+  listIdeFolders: (path?: string) =>
+    req<IdeFolderListing>(
+      "GET",
+      `/workspace/folders${path ? `?path=${encodeURIComponent(path)}` : ""}`,
+    ),
   voiceStatus: () => req<VoiceStatus>("GET", "/voice"),
   uploadAttachment: async (id: string, file: File) => {
     const headers: Record<string, string> = {

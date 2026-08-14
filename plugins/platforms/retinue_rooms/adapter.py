@@ -1111,6 +1111,12 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
             return self._json(200, principal.load(adapter._home_dir()))
         if parts == ["workspace"]:
             return self._json(200, workspace.workspace_status())
+        if parts == ["workspace", "folders"]:
+            query = parse_qs(parsed.query)
+            try:
+                return self._json(200, ide.list_folders((query.get("path") or [""])[0]))
+            except ValueError as e:
+                return self._json(400, {"error": str(e)})
         if parts == ["voice"]:
             return self._json(200, voice.status())
         if parts == ["sidebar"]:
