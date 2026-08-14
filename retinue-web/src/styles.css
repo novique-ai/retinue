@@ -87,6 +87,29 @@ body {
   overflow-y: auto;
 }
 
+.settings-panel {
+  max-width: 460px;
+}
+
+.settings-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.settings-key {
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+}
+
+.settings-key input {
+  width: 160px;
+}
+
 .brand {
   display: flex;
   align-items: center;

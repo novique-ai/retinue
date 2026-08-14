@@ -262,9 +262,15 @@ function watchTranscript(
 export const api = {
   health: () => req<HealthInfo>("GET", "/health"),
   authStatus: () =>
-    req<{ providers: ProviderAuth[]; session: ReauthSession | null }>("GET", "/auth"),
+    req<{
+      providers: ProviderAuth[];
+      accounts?: Array<ProviderAuth & { login?: string }>;
+      session: ReauthSession | null;
+    }>("GET", "/auth"),
   startReauth: (provider = "xai-oauth") =>
     req<ReauthSession>("POST", "/auth/reauth", { provider }),
+  saveApiKey: (provider: string, api_key: string) =>
+    req<ProviderAuth>("POST", "/auth/apikey", { provider, api_key }),
   reauthSession: (sessionId: string) =>
     req<ReauthSession>("GET", `/auth/reauth?session=${encodeURIComponent(sessionId)}`),
   listRooms: () => req<{ rooms: RoomMeta[] }>("GET", "/rooms"),

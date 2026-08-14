@@ -12,6 +12,7 @@ import {
   api,
   AuthRequiredError,
   AuthStatus,
+  ProviderAuth,
   getApiKey,
   workspaceFileUrl,
   ModelPreset,
@@ -1502,7 +1503,9 @@ function EditAgentPanel({
 
 function providerLabel(id: string | null | undefined): string {
   if (!id) return "provider";
-  if (id === "xai-oauth" || id === "xai") return "xAI";
+  if (id === "xai-oauth" || id === "xai") return "Grok / xAI";
+  if (id === "anthropic") return "Claude / Anthropic";
+  if (id === "openai-codex") return "Codex / OpenAI";
   return id;
 }
 
@@ -1604,6 +1607,117 @@ function ReauthPanel({
   );
 }
 
+function SettingsPanel({
+  onReauth,
+  onDone,
+}: {
+  onReauth: (provider: string) => void;
+  onDone: () => void;
+}) {
+  const [accounts, setAccounts] = useState<Array<ProviderAuth & { login?: string }>>([]);
+  const [voice, setVoice] = useState<VoiceStatus | null>(null);
+  const [workspace, setWorkspace] = useState<WorkspaceStatus | null>(null);
+  const [models, setModels] = useState<ModelPreset[]>([]);
+  const [claudeKey, setClaudeKey] = useState("");
+  const [note, setNote] = useState("");
+
+  const reload = useCallback(() => {
+    api
+      .authStatus()
+      .then((s) => setAccounts(s.accounts || s.providers || []))
+      .catch(() => setAccounts([]));
+    api.voiceStatus().then(setVoice).catch(() => setVoice(null));
+    api.workspace().then(setWorkspace).catch(() => setWorkspace(null));
+    api.listModels().then((r) => setModels(r.models)).catch(() => setModels([]));
+  }, []);
+  useEffect(() => {
+    reload();
+  }, [reload]);
+
+  return (
+    <div className="panel settings-panel">
+      <h3>Settings</h3>
+      <p className="note">Cloud logins, local workspace, and voice. Hired agents inherit the workspace grant.</p>
+      {accounts.map((acct) => (
+        <div key={acct.id} className="settings-row">
+          <div>
+            <strong>{providerLabel(acct.id)}</strong>
+            <div className="nav-sub">
+              {acct.status}
+              {acct.error ? ` · ${acct.error}` : ""}
+            </div>
+          </div>
+          {acct.login === "api_key" || acct.id === "anthropic" ? (
+            <div className="settings-key">
+              <input
+                type="password"
+                placeholder="Anthropic API key"
+                value={claudeKey}
+                onChange={(e) => setClaudeKey(e.target.value)}
+              />
+              <button
+                className="mini"
+                disabled={!claudeKey.trim()}
+                onClick={async () => {
+                  try {
+                    await api.saveApiKey("anthropic", claudeKey.trim());
+                    setClaudeKey("");
+                    setNote("Claude key saved in this workspace.");
+                    reload();
+                  } catch (e) {
+                    setNote(String(e));
+                  }
+                }}
+              >
+                Save
+              </button>
+            </div>
+          ) : (
+            <button className="mini" onClick={() => onReauth(acct.id)}>
+              Sign in
+            </button>
+          )}
+        </div>
+      ))}
+      <div className="settings-row">
+        <div>
+          <strong>Voice</strong>
+          <div className="nav-sub">
+            {voice ? `${voice.backend}${voice.ready ? "" : " (not ready)"}` : "…"}
+            {voice?.detail ? ` · ${voice.detail}` : ""}
+          </div>
+        </div>
+      </div>
+      <div className="settings-row">
+        <div>
+          <strong>Workspace computer</strong>
+          <div className="nav-sub">
+            {workspace
+              ? workspace.enabled
+                ? `${workspace.running ? "up" : "idle"}${workspace.ide_root ? ` · IDE ${workspace.ide_root}` : ""}`
+                : workspace.detail || "not enabled"
+              : "…"}
+          </div>
+        </div>
+      </div>
+      <div className="settings-row">
+        <div>
+          <strong>Hire presets</strong>
+          <div className="nav-sub">
+            {models.length ? models.map((m) => m.name).join(", ") : "none yet"}
+          </div>
+        </div>
+      </div>
+      {note && <p className="note">{note}</p>}
+      <div className="panel-actions">
+        <button className="primary" onClick={onDone}>
+          Done
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function KeyPanel({ onDone }: { onDone: () => void }) {
   const [key, setKey] = useState(getApiKey());
   return (
@@ -1631,7 +1745,7 @@ function KeyPanel({ onDone }: { onDone: () => void }) {
 
 // ── shell ────────────────────────────────────────────────────────────────
 
-type Modal = "hire" | "room" | "key" | "edit-room" | "edit-agent" | "reauth" | null;
+type Modal = "hire" | "room" | "key" | "edit-room" | "edit-agent" | "reauth" | "settings" | null;
 type DragPayload = { list: "rooms" | "items"; id: string };
 type DropHint = { list: "rooms" | "items"; id: string; place: "before" | "after" } | null;
 
@@ -1867,6 +1981,9 @@ export default function App() {
         <div className="brand">
           <img className="brand-logo" src={LOGO_SRC} alt="" />
           Retinue
+          <button className="mini" style={{ marginLeft: "auto" }} onClick={() => setModal("settings")}>
+            Settings
+          </button>
         </div>
         <div className="section">
           <div className="section-head">
@@ -2260,6 +2377,18 @@ export default function App() {
                 onDone={(ok) => {
                   setModal(null);
                   if (ok) void refresh();
+                }}
+              />
+            )}
+            {modal === "settings" && (
+              <SettingsPanel
+                onReauth={(provider) => {
+                  setReauthProvider(provider);
+                  setModal("reauth");
+                }}
+                onDone={() => {
+                  setModal(null);
+                  void refresh();
                 }}
               />
             )}

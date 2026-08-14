@@ -36,7 +36,12 @@ _XAI_ALIASES = frozenset(
     }
 )
 
-_SUPPORTED_REAUTH = frozenset({_XAI_PROVIDER})
+_CODEX_PROVIDER = "openai-codex"
+_ANTHROPIC_PROVIDER = "anthropic"
+_SUPPORTED_REAUTH = frozenset({_XAI_PROVIDER, _CODEX_PROVIDER})
+_API_KEY_PROVIDERS = {
+    _ANTHROPIC_PROVIDER: "ANTHROPIC_API_KEY",
+}
 
 _sessions: Dict[str, Dict[str, Any]] = {}
 _sessions_lock = threading.Lock()
@@ -395,11 +400,16 @@ def start_reauth(
     existing = active_pending(provider)
     if existing:
         return existing
-    device = _request_xai_device_code()
+    if provider == _CODEX_PROVIDER:
+        device = _request_codex_device_code()
+        poller = _poll_and_save_codex
+    else:
+        device = _request_xai_device_code()
+        poller = _poll_and_save_xai
     sess = _new_session(provider, device)
 
     def _run() -> None:
-        _poll_and_save_xai(sess["session_id"])
+        poller(sess["session_id"])
         with _sessions_lock:
             status = _sessions.get(sess["session_id"], {}).get("status")
         if status == "approved" and on_success is not None:
@@ -455,3 +465,197 @@ def finish_reauth_success(home_dir: str, provider: str, runner: Any = None) -> i
 def _reset_sessions_for_tests() -> None:
     with _sessions_lock:
         _sessions.clear()
+
+
+def _env_has_key(home_dir: str, name: str) -> bool:
+    path = Path(home_dir) / ".env"
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    prefix = f"{name}="
+    for line in text.splitlines():
+        raw = line.strip()
+        if raw.startswith("export "):
+            raw = raw[7:].strip()
+        if raw.startswith(prefix) and raw[len(prefix) :].strip().strip("\"'"):
+            return True
+    return False
+
+
+def upsert_env_key(home_dir: str, name: str, value: str) -> None:
+    """Set *name* in ``$HERMES_HOME/.env`` without dropping other keys."""
+    path = Path(home_dir) / ".env"
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        lines = []
+    prefix = f"{name}="
+    out: List[str] = []
+    found = False
+    for line in lines:
+        raw = line.strip()
+        check = raw[7:].strip() if raw.startswith("export ") else raw
+        if check.startswith(prefix):
+            out.append(f"{name}={value}")
+            found = True
+        else:
+            out.append(line)
+    if not found:
+        out.append(f"{name}={value}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text("\n".join(out) + "\n", encoding="utf-8")
+    os.chmod(tmp, 0o600)
+    tmp.replace(path)
+
+
+def save_api_key(home_dir: str, provider: str, api_key: str) -> Dict[str, Any]:
+    provider = normalize_provider(provider)
+    env_name = _API_KEY_PROVIDERS.get(provider)
+    if not env_name:
+        raise ValueError(f"API key login is not implemented for {provider}")
+    key = (api_key or "").strip()
+    if not key:
+        raise ValueError("api key is required")
+    upsert_env_key(home_dir, env_name, key)
+    return {"id": provider, "status": STATUS_OK, "error": None}
+
+
+def _codex_status(home_dir: str) -> Dict[str, Any]:
+    state = _provider_state(_load_auth_store(_auth_path(home_dir)), _CODEX_PROVIDER)
+    tokens = state.get("tokens") if isinstance(state, dict) else {}
+    if isinstance(tokens, dict) and str(tokens.get("access_token") or "").strip():
+        return {"id": _CODEX_PROVIDER, "status": STATUS_OK, "error": None}
+    if isinstance(state, dict) and state.get("last_auth_error"):
+        err = state.get("last_auth_error") if isinstance(state.get("last_auth_error"), dict) else {}
+        return {
+            "id": _CODEX_PROVIDER,
+            "status": STATUS_RELOGIN,
+            "error": str(err.get("message") or "Codex login required"),
+        }
+    return {"id": _CODEX_PROVIDER, "status": STATUS_MISSING, "error": None}
+
+
+def _anthropic_status(home_dir: str) -> Dict[str, Any]:
+    if _env_has_key(home_dir, "ANTHROPIC_API_KEY"):
+        return {"id": _ANTHROPIC_PROVIDER, "status": STATUS_OK, "error": None}
+    state = _provider_state(_load_auth_store(_auth_path(home_dir)), _ANTHROPIC_PROVIDER)
+    tokens = state.get("tokens") if isinstance(state, dict) else {}
+    if isinstance(tokens, dict) and (
+        str(tokens.get("access_token") or tokens.get("api_key") or "").strip()
+    ):
+        return {"id": _ANTHROPIC_PROVIDER, "status": STATUS_OK, "error": None}
+    return {"id": _ANTHROPIC_PROVIDER, "status": STATUS_MISSING, "error": None}
+
+
+def account_status(home_dir: str) -> List[Dict[str, Any]]:
+    """Grok / Claude / Codex status for the Settings panel."""
+    xai = workspace_provider_status(home_dir)
+    return [
+        {**xai[0], "login": "device_code"},
+        {**_anthropic_status(home_dir), "login": "api_key"},
+        {**_codex_status(home_dir), "login": "device_code"},
+    ]
+
+
+def _request_codex_device_code() -> Dict[str, Any]:
+    import httpx
+    from hermes_cli.auth import CODEX_OAUTH_CLIENT_ID
+
+    issuer = "https://auth.openai.com"
+    with httpx.Client(timeout=httpx.Timeout(20.0)) as client:
+        resp = client.post(
+            f"{issuer}/api/accounts/deviceauth/usercode",
+            json={"client_id": CODEX_OAUTH_CLIENT_ID},
+            headers={"Content-Type": "application/json"},
+        )
+    if resp.status_code != 200:
+        raise RuntimeError(f"Codex device-code request failed ({resp.status_code})")
+    data = resp.json()
+    user_code = str(data.get("user_code") or "")
+    device_auth_id = str(data.get("device_auth_id") or "")
+    if not user_code or not device_auth_id:
+        raise RuntimeError("Codex device-code response was incomplete")
+    return {
+        "device_code": device_auth_id,
+        "user_code": user_code,
+        "verification_uri": f"{issuer}/codex/device",
+        "verification_uri_complete": f"{issuer}/codex/device",
+        "expires_in": 900,
+        "interval": int(data.get("interval") or 5),
+    }
+
+
+def _poll_and_save_codex(session_id: str) -> None:
+    import httpx
+    from hermes_cli.auth import (
+        CODEX_OAUTH_CLIENT_ID,
+        CODEX_OAUTH_TOKEN_URL,
+        _save_codex_tokens,
+        mark_provider_active_if_unset,
+    )
+
+    with _sessions_lock:
+        sess = _sessions.get(session_id)
+    if not sess:
+        return
+    device_auth_id = sess["device_code"]
+    user_code = sess["user_code"]
+    interval = int(sess["poll_interval"])
+    issuer = "https://auth.openai.com"
+    deadline = float(sess["expires_at"])
+    try:
+        code_resp = None
+        with httpx.Client(timeout=httpx.Timeout(20.0)) as client:
+            while time.time() < deadline:
+                time.sleep(max(3, interval))
+                poll = client.post(
+                    f"{issuer}/api/accounts/deviceauth/token",
+                    json={"device_auth_id": device_auth_id, "user_code": user_code},
+                    headers={"Content-Type": "application/json"},
+                )
+                if poll.status_code == 200:
+                    code_resp = poll.json()
+                    break
+                if poll.status_code in {403, 404}:
+                    continue
+                raise RuntimeError(f"Codex poll failed ({poll.status_code})")
+        if not code_resp:
+            raise RuntimeError("Codex login timed out")
+        authorization_code = str(code_resp.get("authorization_code") or "")
+        code_verifier = str(code_resp.get("code_verifier") or "")
+        if not authorization_code or not code_verifier:
+            raise RuntimeError("Codex login returned an incomplete grant")
+        with httpx.Client(timeout=httpx.Timeout(20.0)) as client:
+            token_resp = client.post(
+                CODEX_OAUTH_TOKEN_URL,
+                data={
+                    "grant_type": "authorization_code",
+                    "code": authorization_code,
+                    "redirect_uri": f"{issuer}/deviceauth/callback",
+                    "client_id": CODEX_OAUTH_CLIENT_ID,
+                    "code_verifier": code_verifier,
+                },
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            )
+        if token_resp.status_code != 200:
+            raise RuntimeError(f"Codex token exchange failed ({token_resp.status_code})")
+        token_data = token_resp.json()
+        tokens = {
+            "access_token": str(token_data.get("access_token") or ""),
+            "refresh_token": str(token_data.get("refresh_token") or ""),
+            "id_token": str(token_data.get("id_token") or ""),
+        }
+        if not tokens["access_token"] or not tokens["refresh_token"]:
+            raise RuntimeError("Codex token exchange returned incomplete tokens")
+        _save_codex_tokens(tokens)
+        mark_provider_active_if_unset(_CODEX_PROVIDER)
+        with _sessions_lock:
+            sess["status"] = "approved"
+        logger.info("Retinue auth: Codex device-code login completed")
+    except Exception as exc:
+        logger.warning("Retinue auth: Codex device-code poll failed: %s", exc)
+        with _sessions_lock:
+            sess["status"] = "error"
+            sess["error"] = str(exc)

@@ -254,6 +254,20 @@ def test_reauth_start_poll_and_success_evicts(tmp_path, monkeypatch):
         httpd.server_close()
 
 
+def test_account_status_and_anthropic_api_key(tmp_path):
+    _write(tmp_path / "auth.json", _xai_store())
+    accounts = {a["id"]: a for a in auth.account_status(str(tmp_path))}
+    assert accounts["xai-oauth"]["status"] == auth.STATUS_OK
+    assert accounts["anthropic"]["status"] == auth.STATUS_MISSING
+    assert accounts["openai-codex"]["status"] == auth.STATUS_MISSING
+    saved = auth.save_api_key(str(tmp_path), "anthropic", "sk-ant-test")
+    assert saved["status"] == auth.STATUS_OK
+    env = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert "ANTHROPIC_API_KEY=sk-ant-test" in env
+    accounts = {a["id"]: a for a in auth.account_status(str(tmp_path))}
+    assert accounts["anthropic"]["status"] == auth.STATUS_OK
+
+
 def test_reauth_reuses_pending_session(monkeypatch):
     monkeypatch.setattr(
         auth,
