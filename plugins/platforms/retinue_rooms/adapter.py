@@ -763,7 +763,7 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
                 await self._run_cycle_locked(room_id, user_message)
         except Exception:
             logger.exception("Retinue rooms: cycle for room %s crashed", room_id)
-            self._post_system(room_id, "internal error running the turn cycle — see gateway log")
+            self._post_system(room_id, engine.cycle_internal_error_notice())
 
     async def _run_cycle_locked(self, room_id: str, user_message: RoomMessage) -> None:
         room = self.store.get(room_id)
@@ -785,9 +785,7 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         while queue:
             if turns_taken >= budget:
                 self._post_system(
-                    room_id,
-                    f"turn budget ({budget}) reached — waiting for the next user message. "
-                    f"Still queued: {', '.join(queue)}",
+                    room_id, engine.cycle_budget_notice(budget, queue)
                 )
                 break
             wave, queue = engine.take_wave(queue, budget - turns_taken)
@@ -800,9 +798,24 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             ok, reply = await self._agent_turn(room, member)
             turns_taken += 1
             spoken.append(member)
-            if not ok:
-                self._post_system(room_id, f"{member} did not reply ({reply})")
-                continue
+            ask = user_message.text or ""
+            found = attachments.harvest(
+                self._home_dir(),
+                room_id,
+                member,
+                since=float(room.created_at or 0),
+                reply=f"{ask}\n{reply or ''}",
+            )
+            recalled = attachments.matching_uploads(self._home_dir(), room_id, ask)
+            by_name = {item["name"]: item for item in recalled}
+            for item in found:
+                by_name[item["name"]] = item
+            published = list(by_name.values())
+            if published:
+                reply = attachments.with_published_paths(reply if ok else "", published)
+                ok = True
+            if not ok or not (reply or "").strip():
+                reply = engine.fallback_reply(ask)
             self.store.append(
                 room_id,
                 RoomMessage(seq=0, ts=0, kind=KIND_AGENT, speaker=member, text=reply),
@@ -836,6 +849,10 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             user_names,
             self._display_names(room),
             itinerary=itinerary.load(self._home_dir(), room.id),
+            artifacts=[
+                item["path"]
+                for item in attachments.list_uploads(self._home_dir(), room.id)
+            ],
         )
 
         speaker_display = (
