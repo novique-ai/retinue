@@ -217,6 +217,13 @@ def _read_from_container(cid: str, path: str) -> bytes:
     if not runtime:
         raise WorkspaceFileError(503, "neither podman nor docker is on PATH")
     try:
+        subprocess.run(
+            [runtime, "start", cid],
+            check=False,
+            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            timeout=15,
+        )
         proc = subprocess.run(
             [runtime, "exec", cid, "cat", path],
             check=False,
