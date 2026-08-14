@@ -218,6 +218,35 @@ def test_patch_agent_edits_persona_and_model(tmp_path, monkeypatch):
     assert again["model_preset"] == "grok-4.5"
 
 
+def test_model_switch_refuses_mid_turn(tmp_path, monkeypatch):
+    from concurrent.futures import Future
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("gateway.status.write_runtime_status", lambda **kw: None)
+    _write_presets(tmp_path)
+    hire.scaffold_profile(str(tmp_path), "Scout", "facts", "")
+    from gateway.config import PlatformConfig
+
+    from .adapter import AgentBusy, RetinueRoomsAdapter, _PendingTurn
+
+    adapter = RetinueRoomsAdapter(PlatformConfig())
+    adapter.gateway_runner = type("R", (), {"_agent_cache": {}, "pairing_stores": {}})()
+    roster = adapter.list_agents()
+    by_slug = {a["slug"]: a for a in roster}
+    assert by_slug["scout"]["busy"] is False
+
+    adapter._pending[("r-1", "scout")] = _PendingTurn(
+        task_id="t", room_id="r-1", member="scout", future=Future()
+    )
+    assert "scout" in adapter.busy_slugs()
+    assert {a["slug"]: a["busy"] for a in adapter.list_agents()}["scout"] is True
+    with pytest.raises(AgentBusy, match="mid-turn"):
+        adapter.switch_agent_model("scout", "grok-4.5")
+    # Persona-only edit is still allowed.
+    edited = adapter.patch_agent("scout", {"job": "still facts"})
+    assert edited["job"] == "still facts"
+
+
 def test_delete_agent_via_adapter_evicts_and_forbids_default(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr("gateway.status.write_runtime_status", lambda **kw: None)

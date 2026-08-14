@@ -1103,7 +1103,12 @@ function EditAgentPanel({
       {models.length > 0 && (
         <label>
           Model
-          <select value={model} onChange={(e) => setModel(e.target.value)}>
+          <select
+            value={model}
+            disabled={!!agent.busy}
+            title={agent.busy ? "working — switch after this turn" : undefined}
+            onChange={(e) => setModel(e.target.value)}
+          >
             {!model && <option value="">current model</option>}
             {models.map((m) => (
               <option key={m.name} value={m.name}>
@@ -1216,6 +1221,16 @@ export default function App() {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  useEffect(() => {
+    const t = window.setInterval(() => {
+      api
+        .listAgents()
+        .then((d) => setAgents(d.agents))
+        .catch(() => {});
+    }, 2000);
+    return () => window.clearInterval(t);
+  }, []);
 
   const persistLayout = useCallback(
     async (next: SidebarLayout) => {
@@ -1539,7 +1554,12 @@ export default function App() {
                       <select
                         className="agent-model"
                         value={a.model_preset || ""}
-                        title={a.model_summary || "switch model"}
+                        disabled={!!a.busy}
+                        title={
+                          a.busy
+                            ? "working — switch after this turn"
+                            : a.model_summary || "switch model"
+                        }
                         onChange={async (e) => {
                           const next = e.target.value;
                           if (!next || next === a.model_preset) return;
