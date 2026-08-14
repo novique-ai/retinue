@@ -72,7 +72,8 @@ convention: no `RETINUE_ROOMS_API_KEY` → localhost-only):
 |---|---|
 | `GET /health` | liveness (unauthenticated) plus `auth.providers[]` (`ok` / `relogin_required` / `missing`) |
 | `GET /auth` | workspace provider auth + in-flight reauth session |
-| `POST /auth/reauth` | start Hermes device-code login (`{provider?}`, default `xai-oauth`) → `{user_code, verification_url}` |
+| `POST /auth/reauth` | start Hermes device-code login (`{provider?}` = `xai-oauth` or `openai-codex`) → `{user_code, verification_url}` |
+| `POST /auth/apikey` | save a workspace API key (`{provider:anthropic, api_key}`) into `$HERMES_HOME/.env` |
 | `GET /auth/reauth?session=` | poll that login (`pending` / `approved` / `error` / `expired`) |
 | `GET /models` | workspace model presets a hire can choose from (versioned; an unversioned cloud id is hidden once versioned files exist) |
 | `GET/POST /agents` | roster / hire (`{name, job, how, model?}` — `model` names a preset) |

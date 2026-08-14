@@ -41,6 +41,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Settings menu for Grok, Claude, and Codex logins, plus voice,
+  workspace, and hire presets. Claude takes an API key; Grok and Codex
+  use in-product device-code Sign in. Bundled `claude-sonnet` and
+  `openai-codex` hire presets. Closes #40. Closes #41.
 - Routines saved from a room show up in that room's chrome (name,
   step count, Run) so you do not hunt the global sidebar. Closes #39.
 - Composer `+` (and drag-and-drop) attaches files and images to a

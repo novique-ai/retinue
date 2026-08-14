@@ -1079,7 +1079,9 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
                 200,
                 {
                     "providers": auth.workspace_provider_status(adapter._home_dir()),
-                    "session": auth.active_pending("xai-oauth"),
+                    "accounts": auth.account_status(adapter._home_dir()),
+                    "session": auth.active_pending("xai-oauth")
+                    or auth.active_pending("openai-codex"),
                 },
             )
         if parts == ["rooms"]:
@@ -1260,6 +1262,16 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
         body = self._read_body()
         if body is None:
             return self._json(400, {"error": "invalid or oversized JSON body"})
+        if parts == ["auth", "apikey"]:
+            try:
+                payload = auth.save_api_key(
+                    adapter._home_dir(),
+                    str(body.get("provider") or "anthropic"),
+                    str(body.get("api_key") or ""),
+                )
+            except ValueError as e:
+                return self._json(400, {"error": str(e)})
+            return self._json(200, payload)
         if parts == ["auth", "reauth"] or parts == ["auth"]:
             try:
                 payload = adapter.start_provider_reauth(

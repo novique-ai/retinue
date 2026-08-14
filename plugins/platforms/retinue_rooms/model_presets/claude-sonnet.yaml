@@ -1,0 +1,4 @@
+# Cloud: Anthropic Claude via workspace API key or OAuth.
+model:
+  default: claude-sonnet-4-5
+  provider: anthropic
