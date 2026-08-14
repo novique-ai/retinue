@@ -366,6 +366,12 @@ body {
   opacity: 0.7;
 }
 
+.queued-hint {
+  font-size: 12px;
+  color: var(--muted, #8a8a8a);
+  padding: 4px 8px 10px;
+}
+
 .chip {
   font-weight: 600;
   font-size: 12.5px;

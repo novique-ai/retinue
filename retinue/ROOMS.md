@@ -43,12 +43,12 @@ user ──HTTP──▶ RetinueRoomsAdapter ──MessageEvent(profile=member)�
    the turn queue (self-mentions and already-queued members are skipped).
 3. **Budget**: at most `max_agent_turns` agent turns per user message (default 8). On
    exhaustion the room posts a system notice and waits for the user.
-4. **Independent waves run concurrently.** Members scheduled together (a user's
-   `@scout @editor`, or follow-ups collected from the previous wave) do not
-   depend on each other's replies, so their turns run in parallel. Replies are
-   appended in mention order. A later `@mention` of someone who just spoke is
-   a new wave and waits. One user-message cycle still holds the room lock, so
-   a second user message queues behind the current cycle.
+4. **Turns are sequential.** The queue is mention order, then follow-up
+   `@mention`s from each reply. A speaker finishes and their reply is on the
+   transcript before the next speaker starts, so a reviewer sees the draft.
+   One user-message cycle still holds the room lock, so a second user message
+   queues behind the current cycle. An explicit "run these in parallel"
+   control is later; it is not the default.
 5. Reply capture is per `(room, member)` so two in-flight speakers cannot
    steal each other's notify.
 

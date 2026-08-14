@@ -12,6 +12,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Fixed
+
+- Room turns are sequential. Mentioned members used to start as one
+  concurrent wave, so reviewers ran against an empty draft. The queue is
+  now mention order, then follow-up `@mention`s; each reply is on the
+  transcript before the next speaker starts. Closes #17.
+
 ### Added
 
 - IDE-attached rooms (`workspace=sandbox|ide`). Same podman/docker

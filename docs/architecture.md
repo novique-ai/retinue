@@ -66,8 +66,8 @@ rewrites upstream `package-lock.json`. Keep it top-level.
    mention order. No mention → the room **lead** answers.
 2. An agent reply is scanned for `@name` mentions of other members;
    those names are appended to the queue.
-3. Independent names in the same wave run concurrently. A later mention
-   of someone who just spoke is a new wave.
+3. Turns are sequential. Mention order (then follow-up `@mention`s) is a
+   queue, not a fan-out. The next speaker sees the previous reply.
 4. `max_agent_turns` (default 8) is a hard cap per user message.
 
 Final replies only — the room does not currently stream tokens into the

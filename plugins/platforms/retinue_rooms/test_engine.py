@@ -90,13 +90,15 @@ def test_followups_zero_budget_yields_nothing():
     assert engine.plan_agent_followups(room, "scout", "@editor", [], 0) == []
 
 
-# ── parallel waves ───────────────────────────────────────────────────────
+# ── sequential turns ─────────────────────────────────────────────────────
 
 
-def test_take_wave_respects_budget():
-    wave, rest = engine.take_wave(["scout", "editor", "critic"], 2)
-    assert wave == ["scout", "editor"]
-    assert rest == ["critic"]
+def test_take_wave_is_one_speaker_even_with_budget():
+    """A leftover budget is not a license to fan out. Reviewers must see
+    the earlier reply before they start."""
+    wave, rest = engine.take_wave(["scout", "editor", "critic"], 8)
+    assert wave == ["scout"]
+    assert rest == ["editor", "critic"]
 
 
 def test_take_wave_zero_or_empty():
@@ -104,9 +106,43 @@ def test_take_wave_zero_or_empty():
     assert engine.take_wave([], 4) == ([], [])
 
 
-def test_merge_followups_from_parallel_replies_preserves_mention_order():
-    """Independent speakers run together; their @mentions form the next wave
-    in speaker-then-mention order, skipping anyone already spoken/queued."""
+def test_sequential_cycle_next_speaker_sees_prior_reply():
+    """Engine-level walk of one user message: mention order is a queue,
+    each reply is recorded before the next speaker is taken, and a
+    follow-up @mention is appended after the remaining queue."""
+    room = _room(members=["sally", "sheila", "editor", "scout"], lead="sally")
+    queue = engine.plan_user_turns(room, "@sally @editor please")
+    spoken: list[str] = []
+    transcript: list[tuple[str, str]] = []
+    replies = {
+        "sally": "draft here. @sheila header image.",
+        "editor": "tightened the draft.",
+        "sheila": "image brief ready.",
+    }
+    budget = 8
+    while queue and len(spoken) < budget:
+        wave, queue = engine.take_wave(queue, budget - len(spoken))
+        assert len(wave) == 1
+        member = wave[0]
+        # Prior speakers' replies are already on the transcript.
+        assert [s for s, _ in transcript] == spoken
+        spoken.append(member)
+        text = replies[member]
+        transcript.append((member, text))
+        queue.extend(
+            engine.merge_followups(
+                room, [(member, text)], queue, spoken, budget - len(spoken)
+            )
+        )
+    assert [s for s, _ in transcript] == ["sally", "editor", "sheila"]
+    assert transcript[0][1].startswith("draft here")
+    assert spoken.index("sally") < spoken.index("editor")
+    assert spoken.index("editor") < spoken.index("sheila")
+
+
+def test_merge_followups_from_replies_preserves_mention_order():
+    """Follow-ups from several replies merge in speaker-then-mention
+    order, skipping anyone already spoken/queued."""
     room = _room()
     follow = engine.merge_followups(
         room,
