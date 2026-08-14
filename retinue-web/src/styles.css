@@ -951,6 +951,27 @@ select:focus {
   border-color: var(--accent);
 }
 
+.room-routines {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 20px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-raised);
+}
+
+.routine-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 3px 8px 3px 10px;
+  font-size: 12.5px;
+}
+
 .room-body {
   flex: 1;
   min-height: 0;

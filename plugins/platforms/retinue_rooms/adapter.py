@@ -1105,6 +1105,16 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
             query = parse_qs(parsed.query)
             since = int((query.get("since") or ["0"])[0] or 0)
             return self._sse_transcript(parts[1], since)
+        if len(parts) == 3 and parts[0] == "rooms" and parts[2] == "routines":
+            room = adapter.store.get(parts[1])
+            if room is None:
+                return self._json(404, {"error": "no such room"})
+            owned = [
+                r
+                for r in routines.list_routines(adapter._home_dir())
+                if r.get("source_room") == parts[1]
+            ]
+            return self._json(200, {"routines": owned})
         if len(parts) == 3 and parts[0] == "rooms" and parts[2] == "itinerary":
             room = adapter.store.get(parts[1])
             if room is None:
