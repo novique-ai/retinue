@@ -449,6 +449,50 @@ body {
   align-items: flex-end;
 }
 
+.composer-input {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+
+.mention-picker {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 100%;
+  margin-bottom: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 4px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+  z-index: 5;
+}
+
+.mention-opt {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  color: var(--text);
+  border-radius: 8px;
+  padding: 6px 8px;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.mention-opt.active,
+.mention-opt:hover {
+  background: var(--bg-input);
+}
+
 textarea,
 input,
 select {

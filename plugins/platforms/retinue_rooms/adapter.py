@@ -414,6 +414,15 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             return True
         return os.path.isdir(os.path.join(cls._home_dir(), "profiles", member))
 
+    def _display_names(self, room: Room) -> Dict[str, str]:
+        """slug → hire display name for members of *room* (slug if unknown)."""
+        names: Dict[str, str] = {m: m for m in room.members}
+        for agent in hire.list_agents(self._home_dir()):
+            slug = str(agent.get("slug") or "")
+            if slug in names:
+                names[slug] = str(agent.get("display_name") or slug)
+        return names
+
     # ── agents (the hire flow) ───────────────────────────────────────────
 
     def list_agents(self) -> List[Dict[str, Any]]:
@@ -580,7 +589,7 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         message = self.store.append(
             room_id, RoomMessage(seq=0, ts=0, kind=KIND_USER, speaker=from_name, text=text)
         )
-        planned = engine.plan_user_turns(room, text)
+        planned = engine.plan_user_turns(room, text, self._display_names(room))
         fut = asyncio.run_coroutine_threadsafe(self._run_cycle(room_id, message), self._loop)
         if wait:
             home = self._home_dir()
@@ -660,7 +669,8 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
     async def _run_cycle_workspace(self, room: Room, user_message: RoomMessage) -> None:
         room_id = room.id
         budget = room.max_agent_turns
-        queue = engine.plan_user_turns(room, user_message.text)
+        names = self._display_names(room)
+        queue = engine.plan_user_turns(room, user_message.text, names)
         spoken: List[str] = []
         turns_taken = 0
         while queue:
@@ -690,7 +700,7 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             )
             queue.extend(
                 engine.merge_followups(
-                    room, [(member, reply)], queue, spoken, budget - turns_taken
+                    room, [(member, reply)], queue, spoken, budget - turns_taken, names
                 )
             )
 

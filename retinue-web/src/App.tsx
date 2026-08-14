@@ -48,6 +48,32 @@ function chipColor(name: string): string {
   return CHIP_COLORS[h % CHIP_COLORS.length];
 }
 
+const MENTION_TOKEN = /^[A-Za-z0-9_][A-Za-z0-9_-]*$/;
+
+function mentionHandle(slug: string, agents: AgentMeta[], members: string[]): string {
+  const bySlug = Object.fromEntries(agents.map((a) => [a.slug, a]));
+  const displayOf = (s: string) => (bySlug[s]?.display_name || s).trim() || s;
+  const raw = displayOf(slug);
+  if (MENTION_TOKEN.test(raw)) {
+    const owners = members.filter((m) => displayOf(m).toLowerCase() === raw.toLowerCase());
+    if (owners.length === 1 && owners[0] === slug) return raw;
+  }
+  const first = raw.split(/\s+/)[0] || slug;
+  if (!MENTION_TOKEN.test(first)) return slug;
+  const owners = members.filter((m) => {
+    const f = displayOf(m).split(/\s+/)[0] || m;
+    return f.toLowerCase() === first.toLowerCase();
+  });
+  return owners.length === 1 && owners[0] === slug ? first : slug;
+}
+
+function mentionPartial(text: string, caret: number): { start: number; query: string } | null {
+  const head = text.slice(0, caret);
+  const match = /(?:^|[\s([{])@([A-Za-z0-9_-]*)$/.exec(head);
+  if (!match) return null;
+  return { start: caret - match[1].length - 1, query: match[1] };
+}
+
 function encodeWav(samples: Float32Array, sampleRate: number): Blob {
   const n = samples.length;
   const buffer = new ArrayBuffer(44 + n * 2);
@@ -216,12 +242,14 @@ function MessageRow({ msg, userName }: { msg: RoomMsg; userName: string }) {
 function RoomView({
   room,
   userName,
+  agents,
   onEdit,
   onArchive,
   onDelete,
 }: {
   room: RoomMeta;
   userName: string;
+  agents: AgentMeta[];
   onEdit: () => void;
   onArchive: () => void;
   onDelete: () => void;
@@ -238,7 +266,26 @@ function RoomView({
   );
   const sinceRef = useRef(0);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const draftRef = useRef<HTMLTextAreaElement>(null);
   const micRef = useRef<{ stop: () => Promise<Blob> } | null>(null);
+  const [caret, setCaret] = useState(0);
+  const [mentionPick, setMentionPick] = useState(0);
+  const [mentionOff, setMentionOff] = useState(false);
+  const handleOf = useCallback(
+    (slug: string) => mentionHandle(slug, agents, room.members),
+    [agents, room.members],
+  );
+  const mentionQuery = mentionOff ? null : mentionPartial(draft, caret);
+  const mentionChoices = mentionQuery
+    ? room.members.filter((m) => {
+        const q = mentionQuery.query.toLowerCase();
+        const handle = handleOf(m).toLowerCase();
+        return handle.startsWith(q) || m.toLowerCase().startsWith(q);
+      })
+    : [];
+  useEffect(() => {
+    if (mentionPick >= mentionChoices.length) setMentionPick(0);
+  }, [mentionChoices.length, mentionPick]);
   const playQ = useRef(Promise.resolve());
   const spokenRef = useRef<Set<number>>(new Set());
   const openedAtRef = useRef(Date.now() / 1000);
@@ -362,9 +409,9 @@ function RoomView({
           <div className="room-members">
             {room.members.map((m) => (
               <span key={m} className="member-chip">
-                <Avatar src={agentIcon(m)} label={m} size={24} />
+                <Avatar src={agentIcon(m)} label={handleOf(m)} size={24} />
                 <span className="chip" style={{ color: chipColor(m) }}>
-                  @{m}
+                  @{handleOf(m)}
                   {room.lead === m ? " ★" : ""}
                 </span>
               </span>
@@ -401,7 +448,7 @@ function RoomView({
       <div className="messages" ref={scrollRef}>
         {messages.length === 0 && (
           <div className="empty-hint">
-            Say something — no @mention goes to the lead{room.lead ? ` (@${room.lead})` : ""}.
+            Say something — no @mention goes to the lead{room.lead ? ` (@${handleOf(room.lead)})` : ""}.
           </div>
         )}
         {messages.map((m) => (
@@ -409,10 +456,10 @@ function RoomView({
         ))}
         {thinking[0] && (
           <div key={thinking[0]} className="msg-row">
-            <Avatar src={agentIcon(thinking[0])} label={thinking[0]} size={32} />
+            <Avatar src={agentIcon(thinking[0])} label={handleOf(thinking[0])} size={32} />
             <div className="bubble thinking">
               <span className="chip" style={{ color: chipColor(thinking[0]) }}>
-                {thinking[0]}
+                {handleOf(thinking[0])}
               </span>
               <div className="msg-text dots">thinking</div>
             </div>
@@ -420,32 +467,105 @@ function RoomView({
         )}
         {thinking.length > 1 && (
           <div className="queued-hint">
-            Up next: {thinking.slice(1).map((w) => `@${w}`).join(" → ")}
+            Up next: {thinking.slice(1).map((w) => `@${handleOf(w)}`).join(" → ")}
           </div>
         )}
       </div>
       <div className="composer">
         <div className="mention-bar">
           {room.members.map((m) => (
-            <button key={m} className="mention-btn" onClick={() => setDraft((d) => `${d}@${m} `)}>
-              <Avatar src={agentIcon(m)} label={m} size={18} />
-              @{m}
+            <button
+              key={m}
+              className="mention-btn"
+              title={`@${m}`}
+              onClick={() => {
+                const token = `@${handleOf(m)} `;
+                setDraft((d) => `${d}${token}`);
+                setCaret((c) => c + token.length);
+              }}
+            >
+              <Avatar src={agentIcon(m)} label={handleOf(m)} size={18} />
+              @{handleOf(m)}
             </button>
           ))}
         </div>
         <div className="composer-row">
-          <textarea
-            value={draft}
-            placeholder={`Message ${room.name}…`}
-            onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                void send();
-              }
-            }}
-            rows={2}
-          />
+          <div className="composer-input">
+            {mentionChoices.length > 0 && (
+              <div className="mention-picker" role="listbox" aria-label="Mention a member">
+                {mentionChoices.map((m, i) => (
+                  <button
+                    key={m}
+                    role="option"
+                    aria-selected={i === mentionPick}
+                    className={i === mentionPick ? "mention-opt active" : "mention-opt"}
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      const q = mentionQuery;
+                      if (!q) return;
+                      const token = `@${handleOf(m)} `;
+                      const next = draft.slice(0, q.start) + token + draft.slice(caret);
+                      setDraft(next);
+                      setCaret(q.start + token.length);
+                      setMentionPick(0);
+                    }}
+                  >
+                    <Avatar src={agentIcon(m)} label={handleOf(m)} size={16} />
+                    @{handleOf(m)}
+                    {handleOf(m) !== m ? <span className="nav-sub"> @{m}</span> : null}
+                  </button>
+                ))}
+              </div>
+            )}
+            <textarea
+              ref={draftRef}
+              value={draft}
+              placeholder={`Message ${room.name}…  Type @ to mention`}
+              onChange={(e) => {
+                setDraft(e.target.value);
+                setCaret(e.target.selectionStart);
+                setMentionOff(false);
+              }}
+              onClick={(e) => setCaret((e.target as HTMLTextAreaElement).selectionStart)}
+              onKeyUp={(e) => setCaret((e.target as HTMLTextAreaElement).selectionStart)}
+              onKeyDown={(e) => {
+                if (mentionChoices.length > 0) {
+                  if (e.key === "ArrowDown") {
+                    e.preventDefault();
+                    setMentionPick((i) => (i + 1) % mentionChoices.length);
+                    return;
+                  }
+                  if (e.key === "ArrowUp") {
+                    e.preventDefault();
+                    setMentionPick((i) => (i - 1 + mentionChoices.length) % mentionChoices.length);
+                    return;
+                  }
+                  if (e.key === "Tab" || e.key === "Enter") {
+                    e.preventDefault();
+                    const m = mentionChoices[mentionPick] || mentionChoices[0];
+                    const q = mentionQuery;
+                    if (!q || !m) return;
+                    const token = `@${handleOf(m)} `;
+                    const next = draft.slice(0, q.start) + token + draft.slice(caret);
+                    setDraft(next);
+                    setCaret(q.start + token.length);
+                    setMentionPick(0);
+                    return;
+                  }
+                  if (e.key === "Escape") {
+                    e.preventDefault();
+                    setMentionOff(true);
+                    return;
+                  }
+                }
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  void send();
+                }
+              }}
+              rows={2}
+            />
+          </div>
           <button
             className={holding ? "talk-btn holding" : "talk-btn"}
             disabled={sending}
@@ -1421,6 +1541,7 @@ export default function App() {
           <RoomView
             room={current}
             userName={userName}
+            agents={agents}
             onEdit={() => {
               setEditingRoom(current);
               setModal("edit-room");

@@ -20,7 +20,8 @@ KIND_SYSTEM = "system"
 DEFAULT_MAX_AGENT_TURNS = 8
 
 # @name — profile names may contain letters, digits, underscores, hyphens.
-_MENTION_RE = re.compile(r"@([A-Za-z0-9_][A-Za-z0-9_-]*)")
+_TOKEN_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_-]*")
+_MENTION_RE = re.compile(r"@(" + _TOKEN_RE.pattern + r")")
 
 
 @dataclass
@@ -92,26 +93,114 @@ def new_room_id(name: str) -> str:
     return f"{slug}-{uuid.uuid4().hex[:6]}"
 
 
-def parse_mentions(text: str, candidates: List[str]) -> List[str]:
+def mention_index(
+    candidates: List[str],
+    display_names: Optional[Dict[str, str]] = None,
+) -> Dict[str, str]:
+    """Lowercase alias → member slug.
+
+    Slugs always win. A single-token display name and a unique first
+    name are added only when they do not collide with a slug or with
+    another member's alias. Prefix resolution lives in ``resolve_mention``.
+    """
+    names = display_names or {}
+    index: Dict[str, str] = {c.lower(): c for c in candidates}
+    first_claims: Dict[str, List[str]] = {}
+    for slug in candidates:
+        raw = (names.get(slug) or "").strip()
+        if not raw:
+            continue
+        full = raw.lower()
+        if _TOKEN_RE.fullmatch(raw) and full not in index:
+            index[full] = slug
+        first = raw.split()[0]
+        if first:
+            first_claims.setdefault(first.lower(), []).append(slug)
+    for first, slugs in first_claims.items():
+        if first not in index and len(set(slugs)) == 1:
+            index[first] = slugs[0]
+    return index
+
+
+def resolve_mention(token: str, index: Dict[str, str]) -> Optional[str]:
+    """Exact alias, else a unique prefix of the alias table.
+
+    Ambiguous prefixes (``@S`` with Sally and Scout) resolve to nothing
+    so they do not steal a turn.
+    """
+    key = (token or "").lower()
+    if not key:
+        return None
+    if key in index:
+        return index[key]
+    hits = {slug for alias, slug in index.items() if alias.startswith(key)}
+    if len(hits) == 1:
+        return hits.pop()
+    return None
+
+
+def mention_handle(
+    slug: str,
+    display_name: Optional[str],
+    candidates: List[str],
+    display_names: Optional[Dict[str, str]] = None,
+) -> str:
+    """Human token to insert for *slug* (``Sheila``, not the hire slug).
+
+    Prefers the unique full display name, then a unique first name.
+    Falls back to the slug when those collide or are not mention tokens.
+    """
+    names = dict(display_names or {})
+    names.setdefault(slug, display_name or slug)
+    raw = (names.get(slug) or slug).strip() or slug
+    if _TOKEN_RE.fullmatch(raw):
+        owners = [
+            m
+            for m in candidates
+            if (names.get(m) or m).strip().lower() == raw.lower()
+        ]
+        if owners == [slug]:
+            return raw
+    first = raw.split()[0]
+    if not _TOKEN_RE.fullmatch(first):
+        return slug
+    owners = [
+        m
+        for m in candidates
+        if ((names.get(m) or m).strip().split() or [m])[0].lower() == first.lower()
+    ]
+    return first if owners == [slug] else slug
+
+
+def parse_mentions(
+    text: str,
+    candidates: List[str],
+    display_names: Optional[Dict[str, str]] = None,
+) -> List[str]:
     """@-mentions of ``candidates`` in ``text``, in order of first appearance.
 
-    Case-insensitive, de-duplicated; tokens that match no candidate are
-    ignored (so "@Mark" in an agent reply never schedules a turn unless
-    "Mark" is a member).
+    Case-insensitive, de-duplicated. Tokens match a slug, a unique
+    display / first name, or a unique alias prefix. Tokens that match no
+    candidate are ignored (so "@Mark" in an agent reply never schedules
+    a turn unless "Mark" is a member).
     """
-    by_lower = {c.lower(): c for c in candidates}
+    index = mention_index(candidates, display_names)
     seen: List[str] = []
     for match in _MENTION_RE.finditer(text or ""):
-        member = by_lower.get(match.group(1).lower())
+        member = resolve_mention(match.group(1), index)
         if member is not None and member not in seen:
             seen.append(member)
     return seen
 
 
-def plan_user_turns(room: Room, text: str) -> List[str]:
+def plan_user_turns(
+    room: Room,
+    text: str,
+    display_names: Optional[Dict[str, str]] = None,
+) -> List[str]:
     """Turn queue for a fresh user message: mentioned members in mention
     order, else the room's default responder."""
-    mentioned = parse_mentions(text, room.members)
+    mentioned = parse_mentions(text, room.members, display_names)
     if mentioned:
         return mentioned
     responder = room.default_responder()
@@ -124,6 +213,7 @@ def plan_agent_followups(
     text: str,
     already_queued: List[str],
     budget_left: int,
+    display_names: Optional[Dict[str, str]] = None,
 ) -> List[str]:
     """Members an agent reply pulls into the conversation.
 
@@ -134,7 +224,7 @@ def plan_agent_followups(
         return []
     picks = [
         m
-        for m in parse_mentions(text, room.members)
+        for m in parse_mentions(text, room.members, display_names)
         if m != speaker and m not in already_queued
     ]
     return picks[:budget_left]
@@ -160,6 +250,7 @@ def merge_followups(
     already_queued: List[str],
     already_spoken: List[str],
     budget_left: int,
+    display_names: Optional[Dict[str, str]] = None,
 ) -> List[str]:
     """Follow-up ``@mention``s from a just-finished speaker (or speakers).
 
@@ -175,7 +266,7 @@ def merge_followups(
         if remaining <= 0:
             break
         picks = plan_agent_followups(
-            room, speaker, text, list(blocked), remaining
+            room, speaker, text, list(blocked), remaining, display_names
         )
         extra.extend(picks)
         blocked.update(picks)

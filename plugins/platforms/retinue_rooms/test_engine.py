@@ -31,6 +31,77 @@ def test_mentions_ignore_non_members_and_support_hyphens():
     assert got == ["data-scout"]
 
 
+def test_display_name_and_slug_address_same_member():
+    members = ["sheila-graphics-and-visual-produ", "editor"]
+    names = {"sheila-graphics-and-visual-produ": "Sheila", "editor": "Editor"}
+    assert engine.parse_mentions("@Sheila then @editor", members, names) == [
+        "sheila-graphics-and-visual-produ",
+        "editor",
+    ]
+    assert engine.parse_mentions(
+        "@sheila-graphics-and-visual-produ", members, names
+    ) == ["sheila-graphics-and-visual-produ"]
+
+
+def test_ambiguous_prefix_does_not_steal_a_turn():
+    members = ["sally", "scout"]
+    names = {"sally": "Sally", "scout": "Scout"}
+    assert engine.parse_mentions("hey @S what do you think", members, names) == []
+
+
+def test_unique_prefix_resolves_to_one_member():
+    members = ["sheila-graphics-and-visual-produ", "editor"]
+    names = {"sheila-graphics-and-visual-produ": "Sheila", "editor": "Editor"}
+    assert engine.parse_mentions("@Sheil please", members, names) == [
+        "sheila-graphics-and-visual-produ"
+    ]
+
+
+def test_followups_skip_self_when_called_by_display_name():
+    room = _room(members=["sheila-graphics-and-visual-produ", "editor"])
+    names = {"sheila-graphics-and-visual-produ": "Sheila", "editor": "Editor"}
+    got = engine.plan_agent_followups(
+        room,
+        "sheila-graphics-and-visual-produ",
+        "done @Sheila — @editor please tighten",
+        [],
+        5,
+        names,
+    )
+    assert got == ["editor"]
+
+
+def test_already_queued_still_skipped_with_aliases():
+    room = _room(members=["sheila-graphics-and-visual-produ", "editor"])
+    names = {"sheila-graphics-and-visual-produ": "Sheila", "editor": "Editor"}
+    got = engine.plan_agent_followups(
+        room,
+        "scout",
+        "@Sheila @editor",
+        ["sheila-graphics-and-visual-produ"],
+        5,
+        names,
+    )
+    assert got == ["editor"]
+
+
+def test_mention_handle_prefers_unique_display_name():
+    members = ["sheila-graphics-and-visual-produ", "editor"]
+    names = {"sheila-graphics-and-visual-produ": "Sheila", "editor": "Editor"}
+    assert (
+        engine.mention_handle(
+            "sheila-graphics-and-visual-produ", "Sheila", members, names
+        )
+        == "Sheila"
+    )
+
+
+def test_mention_handle_falls_back_when_first_names_collide():
+    members = ["sheila-a", "sheila-b"]
+    names = {"sheila-a": "Sheila West", "sheila-b": "Sheila East"}
+    assert engine.mention_handle("sheila-a", "Sheila West", members, names) == "sheila-a"
+
+
 def test_mention_regex_does_not_match_emails():
     got = engine.parse_mentions("mail me at mark@how3ll.net", ["how3ll"])
     # 'how3ll' appears after '@' in an email; accepting it would make every
