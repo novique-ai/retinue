@@ -9,11 +9,15 @@ from __future__ import annotations
 
 import os
 import re
+import subprocess
 from typing import Any, Dict, Iterable, List, Optional
 
 from . import workspace
 
 UPLOAD_PREFIX = "/workspace/uploads/"
+_UPLOAD_PATH_RE = re.compile(
+    r"/workspace/uploads/[A-Za-z0-9._+/-]+",
+)
 MAX_ATTACHMENT = 8 * 1024 * 1024
 _MAX_NAME = 80
 _NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
@@ -211,6 +215,111 @@ def matching_uploads(home_dir: str, room_id: str, text: str) -> List[Dict[str, A
     if not (text or "").strip():
         return []
     return [item for item in list_uploads(home_dir, room_id) if _mentioned(item["name"], text)]
+
+
+def upload_paths_in(text: str) -> List[str]:
+    """``/workspace/uploads/...`` mentions in a transcript line."""
+    seen: set[str] = set()
+    out: List[str] = []
+    for match in _UPLOAD_PATH_RE.finditer(text or ""):
+        path = match.group(0)
+        if path not in seen:
+            seen.add(path)
+            out.append(path)
+    return out
+
+
+def host_media_for_text(
+    home_dir: str, room_id: str, text: str
+) -> tuple[List[str], List[str]]:
+    """Host files + MIME types for upload paths in *text* (vision / docs)."""
+    urls: List[str] = []
+    types: List[str] = []
+    for raw in upload_paths_in(text):
+        name = safe_name(raw[len(UPLOAD_PREFIX) :])
+        dest = host_path(home_dir, room_id, name)
+        if not os.path.isfile(dest):
+            continue
+        urls.append(dest)
+        types.append(workspace.content_type_for(raw))
+    return urls, types
+
+
+def sync_uploads_into_room(home_dir: str, room: Any) -> int:
+    """Copy room attachments into the live container ``/workspace/uploads``.
+
+    New turns also bind-mount that dir. This copy covers containers that
+    were created before the mount existed.
+    """
+    from .engine import Room
+
+    if not isinstance(room, Room):
+        return 0
+    folder = _dir(home_dir, room.id)
+    try:
+        names = [n for n in os.listdir(folder) if not n.startswith(".") and not n.endswith(".tmp")]
+    except OSError:
+        return 0
+    files = [os.path.join(folder, n) for n in names if os.path.isfile(os.path.join(folder, n))]
+    if not files:
+        return 0
+    copied = 0
+    if (room.workspace or "sandbox") == "ide" and room.ide_path:
+        dest_dir = os.path.join(room.ide_path, "uploads")
+        try:
+            os.makedirs(dest_dir, exist_ok=True)
+        except OSError:
+            dest_dir = ""
+        if dest_dir:
+            for src in files:
+                dest = os.path.join(dest_dir, os.path.basename(src))
+                try:
+                    if not os.path.isfile(dest) or os.path.getsize(dest) != os.path.getsize(src):
+                        with open(src, "rb") as inf, open(dest, "wb") as outf:
+                            outf.write(inf.read())
+                    copied += 1
+                except OSError:
+                    continue
+    runtime = workspace._runtime()
+    if not runtime:
+        return copied
+    try:
+        cids = workspace._container_ids_for_room(room)
+    except workspace.WorkspaceFileError:
+        return copied
+    for cid in cids:
+        try:
+            subprocess.run(
+                [runtime, "start", cid],
+                check=False,
+                capture_output=True,
+                stdin=subprocess.DEVNULL,
+                timeout=15,
+            )
+            subprocess.run(
+                [runtime, "exec", cid, "mkdir", "-p", "/workspace/uploads"],
+                check=False,
+                capture_output=True,
+                stdin=subprocess.DEVNULL,
+                timeout=15,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        for src in files:
+            name = os.path.basename(src)
+            try:
+                proc = subprocess.run(
+                    [runtime, "cp", src, f"{cid}:/workspace/uploads/{name}"],
+                    check=False,
+                    capture_output=True,
+                    stdin=subprocess.DEVNULL,
+                    timeout=20,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                continue
+            if proc.returncode == 0:
+                copied += 1
+    return copied
 
 
 def with_published_paths(text: str, published: List[Dict[str, Any]]) -> str:

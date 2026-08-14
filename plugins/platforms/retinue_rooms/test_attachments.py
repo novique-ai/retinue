@@ -85,6 +85,36 @@ def test_harvest_recalls_older_file_by_name(tmp_path):
     assert got[0]["path"].endswith("graphics_test_midnight_monolith.png")
 
 
+def test_host_media_for_attached_image(tmp_path):
+    meta = attachments.save(str(tmp_path), "r-1", "FLUX_00001_.png", b"png-bytes")
+    urls, types = attachments.host_media_for_text(
+        str(tmp_path),
+        "r-1",
+        "@Lucy describe the image I just attached\n" + meta["path"],
+    )
+    assert urls == [attachments.host_path(str(tmp_path), "r-1", "FLUX_00001_.png")]
+    assert types == ["image/png"]
+
+
+def test_sync_uploads_into_ide_host_tree(tmp_path):
+    from .engine import Room
+
+    attachments.save(str(tmp_path), "r-1", "notes.txt", b"hello")
+    ide_root = tmp_path / "project"
+    ide_root.mkdir()
+    room = Room(
+        id="r-1",
+        name="Lab",
+        members=["lucy"],
+        workspace="ide",
+        ide_path=str(ide_root),
+    )
+    attachments.sync_uploads_into_room(str(tmp_path), room)
+    dest = ide_root / "uploads" / "notes.txt"
+    assert dest.is_file()
+    assert dest.read_bytes() == b"hello"
+
+
 def test_matching_uploads_and_path_append(tmp_path):
     attachments.save(str(tmp_path), "r-1", "graphics_test_midnight_monolith.png", b"png")
     hits = attachments.matching_uploads(

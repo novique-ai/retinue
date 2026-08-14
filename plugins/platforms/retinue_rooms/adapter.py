@@ -773,7 +773,8 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         # One process-wide env overlay. An asyncio lock (not threading.RLock)
         # so two rooms on the gateway loop cannot interleave mounts.
         async with self._workspace_env_lock:
-            with ide.apply_room_workspace(room):
+            attachments.sync_uploads_into_room(self._home_dir(), room)
+            with ide.apply_room_workspace(room, self._home_dir()):
                 await self._run_cycle_workspace(room, user_message)
 
     async def _run_cycle_workspace(self, room: Room, user_message: RoomMessage) -> None:
@@ -800,6 +801,7 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             turns_taken += 1
             spoken.append(member)
             ask = user_message.text or ""
+            already = set(attachments.upload_paths_in(ask))
             found = attachments.harvest(
                 self._home_dir(),
                 room_id,
@@ -807,7 +809,11 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
                 since=float(room.created_at or 0),
                 reply=f"{ask}\n{reply or ''}",
             )
-            recalled = attachments.matching_uploads(self._home_dir(), room_id, ask)
+            recalled = [
+                item
+                for item in attachments.matching_uploads(self._home_dir(), room_id, ask)
+                if item.get("path") not in already
+            ]
             by_name = {item["name"]: item for item in recalled}
             for item in found:
                 by_name[item["name"]] = item
@@ -894,14 +900,29 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
                 task_id=task_id, room_id=room.id, member=member, future=fut
             )
 
+        media_urls, media_types = attachments.host_media_for_text(
+            self._home_dir(),
+            room.id,
+            "\n".join(
+                p
+                for p in (trigger.text, context_block)
+                if p
+            ),
+        )
+        has_image = any(
+            (t or "").startswith("image/") or attachments._IMAGE_EXT.search(u or "")
+            for u, t in zip(media_urls, media_types)
+        )
         event = MessageEvent(
             text=trigger.text,
-            message_type=MessageType.TEXT,
+            message_type=MessageType.PHOTO if has_image else MessageType.TEXT,
             source=source,
             message_id=task_id,
             internal=True,  # queue behind a busy turn; never interrupt
             channel_prompt=briefing,
             channel_context=context_block,
+            media_urls=media_urls,
+            media_types=media_types,
             metadata={"retinue_room": room.id, "retinue_member": member},
         )
 

@@ -196,6 +196,12 @@ run in podman/docker. File/browser/MCP tools stay host-side (unchanged).
 | `sandbox` (default) | Isolated container, no host mount | Every room unless marked IDE |
 | `ide` | Same runtime + bind-mount of a **host path** at `/workspace` | Only rooms created/patched with `workspace=ide` |
 
+Composer **+** attachments live in the room catalog and are served as
+`/workspace/uploads/<name>`. Each turn bind-mounts that folder at
+`/workspace/uploads` (and copies into an already-running container) so
+members can open the files. Image paths on the user line are also passed
+as inbound media for vision.
+
 IDE attach is **local to the gateway host**. The web UI folder picker sets
 `ide_path` on create/patch (type a path or browse under `RETINUE_IDE_ROOT`).
 `GET /workspace/folders?path=` lists immediate subdirectories, scoped to that

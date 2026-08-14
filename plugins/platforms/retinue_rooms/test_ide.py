@@ -82,11 +82,23 @@ def test_overlay_sandbox_clears_volumes(tmp_path):
     assert env["TERMINAL_CWD"] == "/workspace"
 
 
+def test_overlay_sandbox_mounts_room_uploads(tmp_path):
+    room = _room(workspace="sandbox")
+    env = ide.overlay_env(room, str(tmp_path))
+    vols = json.loads(env["TERMINAL_DOCKER_VOLUMES"])
+    assert len(vols) == 1
+    assert vols[0].endswith(":/workspace/uploads:ro")
+    assert os.path.isdir(vols[0].split(":")[0])
+
+
 def test_overlay_ide_bind_mounts_host_path(tmp_path):
     room = _room(workspace="ide", ide_path=str(tmp_path))
     env = ide.overlay_env(room)
     assert env["TERMINAL_DOCKER_SHARED_CONTAINER_KEY"] == "retinue-ide-r-1"
     assert json.loads(env["TERMINAL_DOCKER_VOLUMES"]) == [f"{tmp_path}:/workspace:rw"]
+    with_home = json.loads(ide.overlay_env(room, str(tmp_path))["TERMINAL_DOCKER_VOLUMES"])
+    assert with_home[0] == f"{tmp_path}:/workspace:rw"
+    assert with_home[1].endswith(":/workspace/uploads:ro")
 
 
 def test_sandbox_and_ide_use_different_container_keys(tmp_path):
