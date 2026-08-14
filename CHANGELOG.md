@@ -41,6 +41,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Composer `+` (and drag-and-drop) attaches files and images to a
+  room send. They are stored with the room and shown as
+  `/workspace/uploads/…` chips in the transcript. Closes #38.
 - Slide-out room itinerary. The lead keeps a short living outline
   (title, where we are, todo/doing/done steps). Persisted server-side;
   the user can open the right pane and edit it. The lead's turn briefing

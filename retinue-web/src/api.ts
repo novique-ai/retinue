@@ -324,6 +324,23 @@ export const api = {
   deleteRoutine: (slug: string) => req<{ deleted: string }>("DELETE", `/routines/${slug}`),
   workspace: () => req<WorkspaceStatus>("GET", "/workspace"),
   voiceStatus: () => req<VoiceStatus>("GET", "/voice"),
+  uploadAttachment: async (id: string, file: File) => {
+    const headers: Record<string, string> = {
+      "Content-Type": file.type || "application/octet-stream",
+    };
+    const key = getApiKey();
+    if (key) headers.Authorization = `Bearer ${key}`;
+    const params = new URLSearchParams({ filename: file.name || "file" });
+    const resp = await fetch(`/rooms/${encodeURIComponent(id)}/attachments?${params}`, {
+      method: "POST",
+      headers,
+      body: file,
+    });
+    if (resp.status === 401) throw new AuthRequiredError("API key required");
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
+    return data as { name: string; path: string; bytes: number; image: boolean };
+  },
   sendAudio: async (id: string, blob: Blob, from: string, filename = "speech.wav") => {
     const headers: Record<string, string> = {
       "Content-Type": blob.type || "audio/wav",

@@ -416,6 +416,8 @@ function RoomView({
   const [caret, setCaret] = useState(0);
   const [mentionPick, setMentionPick] = useState(0);
   const [mentionOff, setMentionOff] = useState(false);
+  const [pendingFiles, setPendingFiles] = useState<File[]>([]);
+  const fileRef = useRef<HTMLInputElement>(null);
   const [itineraryOpen, setItineraryOpen] = useState(() => {
     try {
       return localStorage.getItem(`retinue:itinerary:${room.id}`) === "1";
@@ -511,18 +513,25 @@ function RoomView({
 
   const send = useCallback(async () => {
     const text = draft.trim();
-    if (!text || sending) return;
+    if ((!text && pendingFiles.length === 0) || sending) return;
     setSending(true);
     try {
-      const { planned } = await api.send(room.id, text, userName);
+      const paths: string[] = [];
+      for (const file of pendingFiles) {
+        const uploaded = await api.uploadAttachment(room.id, file);
+        paths.push(uploaded.path);
+      }
+      const body = [text, ...paths].filter(Boolean).join("\n");
+      const { planned } = await api.send(room.id, body, userName);
       setThinking(planned);
       setDraft("");
+      setPendingFiles([]);
     } catch (e) {
       alert(String(e));
     } finally {
       setSending(false);
     }
-  }, [draft, sending, room.id, userName]);
+  }, [draft, sending, pendingFiles, room.id, userName]);
 
   const beginTalk = useCallback(async () => {
     if (sending || holding) return;
@@ -654,7 +663,18 @@ function RoomView({
           </div>
         )}
       </div>
-      <div className="composer">
+      <div
+        className="composer"
+        onDragOver={(e) => {
+          e.preventDefault();
+          e.dataTransfer.dropEffect = "copy";
+        }}
+        onDrop={(e) => {
+          e.preventDefault();
+          const files = Array.from(e.dataTransfer.files || []);
+          if (files.length) setPendingFiles((cur) => [...cur, ...files]);
+        }}
+      >
         <div className="mention-bar">
           {room.members.map((m) => (
             <button
@@ -672,7 +692,44 @@ function RoomView({
             </button>
           ))}
         </div>
+        {pendingFiles.length > 0 && (
+          <div className="attach-chips">
+            {pendingFiles.map((file, i) => (
+              <span key={`${file.name}-${i}`} className="attach-chip">
+                {file.name}
+                <button
+                  type="button"
+                  className="mini"
+                  aria-label={`Remove ${file.name}`}
+                  onClick={() => setPendingFiles((cur) => cur.filter((_, j) => j !== i))}
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
         <div className="composer-row">
+          <input
+            ref={fileRef}
+            type="file"
+            multiple
+            hidden
+            onChange={(e) => {
+              const files = Array.from(e.target.files || []);
+              if (files.length) setPendingFiles((cur) => [...cur, ...files]);
+              e.target.value = "";
+            }}
+          />
+          <button
+            type="button"
+            className="attach-btn"
+            title="Attach a file or image"
+            aria-label="Attach a file or image"
+            onClick={() => fileRef.current?.click()}
+          >
+            +
+          </button>
           <div className="composer-input">
             {mentionChoices.length > 0 && (
               <div className="mention-picker" role="listbox" aria-label="Mention a member">
@@ -767,7 +824,11 @@ function RoomView({
           >
             {holding ? "Listening…" : "Hold to talk"}
           </button>
-          <button className="send-btn" disabled={sending || !draft.trim()} onClick={() => void send()}>
+          <button
+            className="send-btn"
+            disabled={sending || (!draft.trim() && pendingFiles.length === 0)}
+            onClick={() => void send()}
+          >
             Send
           </button>
         </div>

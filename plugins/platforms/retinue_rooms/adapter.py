@@ -40,7 +40,7 @@ from gateway.platforms.base import (
     SendResult,
 )
 
-from . import auth, engine, hire, ide, itinerary, keepalive, routines, sidebar, voice, workspace
+from . import attachments, auth, engine, hire, ide, itinerary, keepalive, routines, sidebar, voice, workspace
 from .engine import KIND_AGENT, KIND_SYSTEM, KIND_USER, Room, RoomMessage
 from .store import RoomStore
 
@@ -1089,7 +1089,11 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
             query = parse_qs(parsed.query)
             raw = (query.get("path") or [""])[0] or ""
             try:
-                data, ctype = workspace.read_workspace_file(room, raw)
+                upload = attachments.read_upload(adapter._home_dir(), parts[1], raw)
+                if upload is not None:
+                    data, ctype = upload
+                else:
+                    data, ctype = workspace.read_workspace_file(room, raw)
             except workspace.WorkspaceFileError as e:
                 return self._json(e.status, {"error": str(e)})
             return self._bytes(200, data, ctype)
@@ -1176,6 +1180,20 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
             return self._json(503, {"error": str(e)})
         return self._json(202, result)
 
+    def _post_attachment(self, adapter: RetinueRoomsAdapter, room_id: str, parsed) -> None:
+        if adapter.store.get(room_id) is None:
+            return self._json(404, {"error": "no such room"})
+        raw = self._read_raw(attachments.MAX_ATTACHMENT)
+        if raw is None:
+            return self._json(400, {"error": "invalid or oversized attachment"})
+        query = parse_qs(parsed.query)
+        filename = (query.get("filename") or ["file"])[0] or "file"
+        try:
+            payload = attachments.save(adapter._home_dir(), room_id, filename, raw)
+        except ValueError as e:
+            return self._json(400, {"error": str(e)})
+        return self._json(201, payload)
+
     def _post_tts(self) -> None:
         body = self._read_body()
         if body is None:
@@ -1197,6 +1215,8 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
         adapter = self.server.adapter
         if len(parts) == 3 and parts[0] == "rooms" and parts[2] == "audio":
             return self._post_audio(adapter, parts[1], parsed)
+        if len(parts) == 3 and parts[0] == "rooms" and parts[2] == "attachments":
+            return self._post_attachment(adapter, parts[1], parsed)
         if parts == ["tts"]:
             return self._post_tts()
         body = self._read_body()
