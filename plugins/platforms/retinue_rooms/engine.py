@@ -417,6 +417,7 @@ def room_briefing(
     display_names: Optional[Dict[str, str]] = None,
     itinerary: Optional[Dict[str, Any]] = None,
     artifacts: Optional[List[str]] = None,
+    principal_about: Optional[str] = None,
 ) -> str:
     """Per-turn channel prompt: who you are, who is here, how to behave."""
     names = display_names or {}
@@ -433,6 +434,7 @@ def room_briefing(
         f'You are {me_name}, a member of the room "{room.name}".',
         f"In this room you speak as @{me_handle}.",
         f"Humans here: {people}.",
+        "The human does not take agent turns. Do not @ them as if they were a retainer.",
         (
             "Other agent members: " + ", ".join(roster) + "."
             if roster
@@ -458,6 +460,9 @@ def room_briefing(
         "on the transcript. If you cannot find a piece the user asks for, "
         "say so in one sentence — never stay silent and never crash out.",
     ]
+    if principal_about:
+        who = people.split(",")[0].strip() if people else "the human"
+        parts.append(f"About {who}: {principal_about}")
     if artifacts:
         parts.append("Work already in this room: " + ", ".join(artifacts) + ".")
         parts.append("Reuse those paths when the user asks to see them again.")

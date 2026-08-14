@@ -103,6 +103,11 @@ export interface AgentPatch {
   archived?: boolean;
 }
 
+export interface Principal {
+  display_name: string;
+  about: string;
+}
+
 export interface ModelPreset {
   name: string;
   summary: string;
@@ -261,6 +266,9 @@ function watchTranscript(
 
 export const api = {
   health: () => req<HealthInfo>("GET", "/health"),
+  getPrincipal: () => req<Principal>("GET", "/principal"),
+  savePrincipal: (body: { display_name: string; about?: string }) =>
+    req<Principal>("PUT", "/principal", body),
   authStatus: () =>
     req<{
       providers: ProviderAuth[];
