@@ -34,6 +34,12 @@ user ──HTTP──▶ RetinueRoomsAdapter ──MessageEvent(profile=member)�
   earlier unseen, attributed lines as `event.channel_context`; the room briefing (roster,
   rules) rides `event.channel_prompt`. Feeding context this way — instead of writing into
   the member's SessionDB — preserves the agent cache and provider prompt caching.
+- **Idle xAI keepalive**: while any hired cloud member uses `xai-oauth` and the
+  workspace grant is `ok`, a daemon tick calls Hermes'
+  `resolve_xai_oauth_runtime_credentials(refresh_if_expiring=True)` against the
+  workspace `auth.json` (context-local `HERMES_HOME`, never a profile copy).
+  Same lifetime-aware skew as on-turn refresh. Terminal `invalid_grant` stays
+  on the existing Reauth banner. Disable with `RETINUE_XAI_KEEPALIVE_SECONDS=0`.
 
 ## Turn-taking (v1)
 
