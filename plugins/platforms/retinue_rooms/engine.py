@@ -172,6 +172,37 @@ def mention_handle(
     return first if owners == [slug] else slug
 
 
+def blank_fences(text: str) -> str:
+    """Replace fenced code (``` / ~~~) with spaces, keeping offsets.
+
+    Mentions inside a blog-draft fence are literal copy, not a handoff.
+    Headings and list items stay live.
+    """
+    if not text:
+        return ""
+    out: List[str] = []
+    i = 0
+    n = len(text)
+    fence: Optional[str] = None
+    while i < n:
+        if fence is None:
+            if text.startswith("```", i) or text.startswith("~~~", i):
+                fence = text[i : i + 3]
+                out.append("   ")
+                i += 3
+            else:
+                out.append(text[i])
+                i += 1
+        elif text.startswith(fence, i):
+            out.append("   ")
+            i += len(fence)
+            fence = None
+        else:
+            out.append(" ")
+            i += 1
+    return "".join(out)
+
+
 def parse_mentions(
     text: str,
     candidates: List[str],
@@ -182,11 +213,12 @@ def parse_mentions(
     Case-insensitive, de-duplicated. Tokens match a slug, a unique
     display / first name, or a unique alias prefix. Tokens that match no
     candidate are ignored (so "@Mark" in an agent reply never schedules
-    a turn unless "Mark" is a member).
+    a turn unless "Mark" is a member). Mentions inside fenced code
+    blocks are not live.
     """
     index = mention_index(candidates, display_names)
     seen: List[str] = []
-    for match in _MENTION_RE.finditer(text or ""):
+    for match in _MENTION_RE.finditer(blank_fences(text or "")):
         member = resolve_mention(match.group(1), index)
         if member is not None and member not in seen:
             seen.append(member)

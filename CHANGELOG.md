@@ -24,6 +24,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Hire SOUL and the per-turn room briefing teach members to `@`call a
   teammate by display name, then stop, instead of "say so briefly."
   Existing profiles get the rule from the briefing. Closes #21.
+- Live `@` chips in the transcript; mentions inside fenced code are
+  literal copy and do not schedule a turn. Headings and lists still
+  hand off. Closes #20.
 
 ### Added
 

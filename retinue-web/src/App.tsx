@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useRef, useState, type DragEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type DragEvent,
+  type ReactNode,
+} from "react";
 import {
   AgentMeta,
   AgentPatch,
@@ -65,6 +72,49 @@ function mentionHandle(slug: string, agents: AgentMeta[], members: string[]): st
     return f.toLowerCase() === first.toLowerCase();
   });
   return owners.length === 1 && owners[0] === slug ? first : slug;
+}
+
+function blankFences(text: string): string {
+  const out: string[] = [];
+  let i = 0;
+  let fence: string | null = null;
+  while (i < text.length) {
+    if (fence === null) {
+      if (text.startsWith("```", i) || text.startsWith("~~~", i)) {
+        fence = text.slice(i, i + 3);
+        out.push("   ");
+        i += 3;
+      } else {
+        out.push(text[i]);
+        i += 1;
+      }
+    } else if (text.startsWith(fence, i)) {
+      out.push("   ");
+      i += fence.length;
+      fence = null;
+    } else {
+      out.push(" ");
+      i += 1;
+    }
+  }
+  return out.join("");
+}
+
+function resolveTypedMention(
+  token: string,
+  members: string[],
+  handleOf: (slug: string) => string,
+): string | null {
+  const key = token.toLowerCase();
+  const aliases: Array<[string, string]> = [];
+  for (const slug of members) {
+    aliases.push([slug.toLowerCase(), slug]);
+    aliases.push([handleOf(slug).toLowerCase(), slug]);
+  }
+  const exact = aliases.find(([alias]) => alias === key);
+  if (exact) return exact[1];
+  const hits = [...new Set(aliases.filter(([alias]) => alias.startsWith(key)).map(([, slug]) => slug))];
+  return hits.length === 1 ? hits[0] : null;
 }
 
 function mentionPartial(text: string, caret: number): { start: number; query: string } | null {
@@ -213,7 +263,51 @@ function RowMenu({
 
 // ── message row ──────────────────────────────────────────────────────────
 
-function MessageRow({ msg, userName }: { msg: RoomMsg; userName: string }) {
+function MentionBody({
+  text,
+  members,
+  handleOf,
+}: {
+  text: string;
+  members: string[];
+  handleOf: (slug: string) => string;
+}) {
+  const unfenced = blankFences(text);
+  const re = /@([A-Za-z0-9_][A-Za-z0-9_-]*)/g;
+  const parts: ReactNode[] = [];
+  let last = 0;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(unfenced))) {
+    const slug = resolveTypedMention(match[1], members, handleOf);
+    if (!slug) continue;
+    if (match.index > last) parts.push(text.slice(last, match.index));
+    parts.push(
+      <span
+        key={match.index}
+        className="live-mention"
+        style={{ color: chipColor(slug) }}
+        title={`@${handleOf(slug)}`}
+      >
+        {text.slice(match.index, match.index + match[0].length)}
+      </span>,
+    );
+    last = match.index + match[0].length;
+  }
+  if (last < text.length) parts.push(text.slice(last));
+  return <>{parts}</>;
+}
+
+function MessageRow({
+  msg,
+  userName,
+  members,
+  handleOf,
+}: {
+  msg: RoomMsg;
+  userName: string;
+  members: string[];
+  handleOf: (slug: string) => string;
+}) {
   if (msg.kind === "system") {
     return <div className="msg-system">— {msg.text} —</div>;
   }
@@ -228,10 +322,12 @@ function MessageRow({ msg, userName }: { msg: RoomMsg; userName: string }) {
       <div className={mine ? "bubble mine" : "bubble"}>
         {!mine && (
           <span className="chip" style={{ color: chipColor(msg.speaker) }}>
-            {msg.speaker}
+            {handleOf(msg.speaker) !== msg.speaker ? handleOf(msg.speaker) : msg.speaker}
           </span>
         )}
-        <div className="msg-text">{msg.text}</div>
+        <div className="msg-text">
+          <MentionBody text={msg.text} members={members} handleOf={handleOf} />
+        </div>
       </div>
     </div>
   );
@@ -452,7 +548,13 @@ function RoomView({
           </div>
         )}
         {messages.map((m) => (
-          <MessageRow key={m.seq} msg={m} userName={userName} />
+          <MessageRow
+            key={m.seq}
+            msg={m}
+            userName={userName}
+            members={room.members}
+            handleOf={handleOf}
+          />
         ))}
         {thinking[0] && (
           <div key={thinking[0]} className="msg-row">

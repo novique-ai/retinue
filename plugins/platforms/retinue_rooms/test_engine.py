@@ -31,6 +31,26 @@ def test_mentions_ignore_non_members_and_support_hyphens():
     assert got == ["data-scout"]
 
 
+def test_heading_mention_is_live_fenced_mention_is_not():
+    members = ["sheila-graphics-and-visual-produ", "editor"]
+    names = {"sheila-graphics-and-visual-produ": "Sheila", "editor": "Editor"}
+    text = (
+        "### @Sheila — please take the image pass\n\n"
+        "```markdown\n"
+        "Call @editor in the blog body as an example.\n"
+        "```\n"
+    )
+    assert engine.parse_mentions(text, members, names) == [
+        "sheila-graphics-and-visual-produ"
+    ]
+
+
+def test_tilde_fence_is_also_literal():
+    members = ["editor"]
+    text = "~~~md\n@editor is example copy\n~~~\n"
+    assert engine.parse_mentions(text, members) == []
+
+
 def test_display_name_and_slug_address_same_member():
     members = ["sheila-graphics-and-visual-produ", "editor"]
     names = {"sheila-graphics-and-visual-produ": "Sheila", "editor": "Editor"}
