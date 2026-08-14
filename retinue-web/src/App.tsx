@@ -1211,6 +1211,8 @@ function ReauthPanel({
   const [session, setSession] = useState<ReauthSession | null>(null);
   const [error, setError] = useState("");
   const [starting, setStarting] = useState(true);
+  const onDoneRef = useRef(onDone);
+  onDoneRef.current = onDone;
 
   const start = useCallback(async () => {
     setStarting(true);
@@ -1229,20 +1231,30 @@ function ReauthPanel({
     void start();
   }, [start]);
 
+  const sessionId = session?.session_id;
+  const sessionStatus = session?.status;
   useEffect(() => {
-    if (!session || session.status !== "pending") return;
-    const wait = Math.max(2, session.poll_interval || 3) * 1000;
-    const t = window.setInterval(() => {
+    if (!sessionId || sessionStatus !== "pending") return;
+    let cancelled = false;
+    const tick = () => {
       api
-        .reauthSession(session.session_id)
+        .reauthSession(sessionId)
         .then((next) => {
+          if (cancelled) return;
           setSession(next);
-          if (next.status === "approved") onDone(true);
+          if (next.status === "approved") onDoneRef.current(true);
         })
-        .catch((e) => setError(String(e)));
-    }, wait);
-    return () => window.clearInterval(t);
-  }, [session, onDone]);
+        .catch((e) => {
+          if (!cancelled) setError(String(e));
+        });
+    };
+    tick();
+    const t = window.setInterval(tick, 2000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(t);
+    };
+  }, [sessionId, sessionStatus]);
 
   const url = session?.verification_url || session?.verification_uri || "";
   return (
