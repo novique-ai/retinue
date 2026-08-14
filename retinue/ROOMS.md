@@ -82,7 +82,7 @@ convention: no `RETINUE_ROOMS_API_KEY` → localhost-only):
 | `GET/POST /rooms` | list / create (`{name, members[], lead?, max_agent_turns?, workspace?, ide_path?}`) — `workspace` is `sandbox` (default) or `ide`. List is sidebar-ordered and includes `archived` |
 | `GET/PATCH/DELETE /rooms/{id}` | inspect / edit (`{name?, members?, lead?, archived?, max_agent_turns?, workspace?, ide_path?}`) / remove. Archive hides without wiping the transcript. |
 | `GET /rooms/{id}/routines` | routines whose `source_room` is this room |
-| `GET/PUT /rooms/{id}/itinerary` | living outline for the room (`{title, summary, items:[{id,text,status}]`). Lead owns it; the user can edit it in the right pane. |
+| `GET/PUT /rooms/{id}/itinerary` | living outline. The **lead** authors it (fenced `itinerary` block in their reply). The user can view/edit the right pane. |
 | `GET/PUT /sidebar` | room order + team separators + agent order (`{rooms[], items:[{kind:team,id,label}|{kind:agent,slug}]}`) |
 | `POST /rooms/{id}/messages` | user speaks (`{text, from?}`) → 202, cycle runs async |
 | `POST /rooms/{id}/attachments` | raw file body + `filename=` query → `{path:/workspace/uploads/…}` (composer `+`) |

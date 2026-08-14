@@ -11,7 +11,7 @@ import os
 import re
 import time
 import uuid
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 STATUSES = ("todo", "doing", "done")
 _MAX_ITEMS = 40
@@ -115,30 +115,78 @@ def save(
     return meta
 
 
+_FENCE_RE = re.compile(r"```(?:itinerary|itin)\s*\n(.*?)```", re.IGNORECASE | re.DOTALL)
+_ITEM_RE = re.compile(
+    r"^[-*]\s*(?:\[(?P<mark>done|doing|todo|x|~|\s*)\]\s*)?(?P<text>.+)$",
+    re.IGNORECASE,
+)
+
+
+def parse_fence(text: str) -> Optional[Dict[str, Any]]:
+    """Pull a lead-authored `` ```itinerary `` block out of a reply."""
+    match = _FENCE_RE.search(text or "")
+    if not match:
+        return None
+    title = ""
+    summary = ""
+    items: List[Dict[str, str]] = []
+    for raw in match.group(1).splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        low = line.lower()
+        if low.startswith("title:"):
+            title = line.split(":", 1)[1].strip()
+            continue
+        if low.startswith("where we are:") or low.startswith("where:"):
+            summary = line.split(":", 1)[1].strip()
+            continue
+        item_match = _ITEM_RE.match(line)
+        if not item_match:
+            continue
+        mark = (item_match.group("mark") or "").strip().lower()
+        if mark in ("done", "x"):
+            status = "done"
+        elif mark in ("doing", "~"):
+            status = "doing"
+        else:
+            status = "todo"
+        body = (item_match.group("text") or "").strip()
+        if body:
+            items.append({"text": body, "status": status})
+    if not title and not summary and not items:
+        return None
+    return {"title": title, "summary": summary, "items": items}
+
+
 def briefing_lines(plan: Dict[str, Any] | None, *, is_lead: bool) -> List[str]:
+    if is_lead:
+        lines = [
+            "You own this room's itinerary. You write it — do not wait for the "
+            "user to open a pane. On the first turn of a project, and whenever "
+            "the plan changes, include a fenced block in your reply:",
+            "```itinerary",
+            "title: short name",
+            "where: one or two sentences on current progress",
+            "- [doing] the active step",
+            "- [todo] next step",
+            "- [done] finished step",
+            "```",
+        ]
+    else:
+        lines = []
     if not plan:
-        return []
+        return lines
     items = plan.get("items") or []
     summary = str(plan.get("summary") or "").strip()
     title = str(plan.get("title") or "").strip()
     if not items and not summary and not title:
-        if is_lead:
-            return [
-                "You are this room's lead. Keep a short itinerary of the work "
-                "current (the user also edits it in the Itinerary pane). "
-                "It is empty right now."
-            ]
-        return []
-    lines = ["Room itinerary (living outline, not the transcript):"]
+        return lines
+    lines.append("Current itinerary (update the fence if this is wrong):")
     if title:
         lines.append(f"Title: {title}")
     if summary:
         lines.append(f"Where we are: {summary}")
     for item in items:
         lines.append(f"- [{item.get('status') or 'todo'}] {item.get('text')}")
-    if is_lead:
-        lines.append(
-            "You own this itinerary. Keep it current as work moves — "
-            "the user also edits it in the right-hand Itinerary pane."
-        )
     return lines
