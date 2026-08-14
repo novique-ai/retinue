@@ -27,6 +27,7 @@ import {
   setApiKey,
   SidebarItem,
   SidebarLayout,
+  SidebarTeam,
   VoiceStatus,
   WorkspaceStatus,
 } from "./api";
@@ -201,6 +202,25 @@ async function startMic(): Promise<{ stop: () => Promise<Blob> }> {
 const SPEAK_KEY = "retinue.speakReplies";
 const ARCHIVED_KEY = "retinue.showArchived";
 const DRAG_MIME = "application/x-retinue";
+
+function teamSlug(label: string): string {
+  return (
+    (label || "team")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 24) || "team"
+  );
+}
+
+function nextTeamId(label: string, items: SidebarItem[], keep?: string): string {
+  const slug = teamSlug(label);
+  const taken = new Set(
+    items.filter((i): i is SidebarTeam => i.kind === "team" && i.id !== keep).map((i) => i.id),
+  );
+  if (!taken.has(slug)) return slug;
+  return `${slug}-${Math.random().toString(16).slice(2, 6)}`;
+}
 
 function itemKey(item: SidebarItem): string {
   return item.kind === "team" ? `team:${item.id}` : `agent:${item.slug}`;
@@ -940,9 +960,11 @@ function ItineraryPane({
   const [draftItem, setDraftItem] = useState("");
   const [note, setNote] = useState("");
   const saveTimer = useRef<number | null>(null);
+  const dirtyRef = useRef(false);
 
   const persist = useCallback(
     async (next: Itinerary) => {
+      dirtyRef.current = true;
       setPlan(next);
       if (saveTimer.current) window.clearTimeout(saveTimer.current);
       saveTimer.current = window.setTimeout(() => {
@@ -953,7 +975,10 @@ function ItineraryPane({
             items: next.items,
             updated_by: "user",
           })
-          .then((saved) => setPlan(saved))
+          .then((saved) => {
+            dirtyRef.current = false;
+            setPlan(saved);
+          })
           .catch((e) => setNote(String(e)));
       }, 280);
     },
@@ -962,16 +987,22 @@ function ItineraryPane({
 
   useEffect(() => {
     let cancelled = false;
-    api
-      .getItinerary(roomId)
-      .then((got) => {
-        if (!cancelled) setPlan(got);
-      })
-      .catch((e) => {
-        if (!cancelled) setNote(String(e));
-      });
+    const load = () => {
+      if (dirtyRef.current) return;
+      api
+        .getItinerary(roomId)
+        .then((got) => {
+          if (!cancelled && !dirtyRef.current) setPlan(got);
+        })
+        .catch((e) => {
+          if (!cancelled) setNote(String(e));
+        });
+    };
+    load();
+    const tick = window.setInterval(load, 2000);
     return () => {
       cancelled = true;
+      window.clearInterval(tick);
       if (saveTimer.current) window.clearTimeout(saveTimer.current);
     };
   }, [roomId]);
@@ -1902,11 +1933,11 @@ export default function App() {
   };
 
   const addTeam = () => {
-    const label = (window.prompt("Team name", "Cloud staff") || "").trim();
+    const label = (window.prompt("Team name", "Development") || "").trim();
     if (!label) return;
     void persistLayout({
       ...layout,
-      items: [...layout.items, { kind: "team", id: `team-${Date.now()}`, label }],
+      items: [...layout.items, { kind: "team", id: nextTeamId(label, layout.items), label }],
     });
   };
 
@@ -1916,7 +1947,9 @@ export default function App() {
     void persistLayout({
       ...layout,
       items: layout.items.map((item) =>
-        item.kind === "team" && item.id === id ? { ...item, label } : item,
+        item.kind === "team" && item.id === id
+          ? { ...item, id: nextTeamId(label, layout.items, id), label }
+          : item,
       ),
     });
   };

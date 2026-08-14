@@ -14,12 +14,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- The room **lead** writes the itinerary (fenced `itinerary` block in
+  their reply). The right pane is the user’s view and can still edit.
+  The lead is briefed to author the outline — they do not wait for the
+  pane. Refs #37.
 - Pulsing orange ring on a working member’s icon (welcome cast, sidebar
   faces, in-room thinking row). Uses `GET /agents` `busy`, already
   polled every 2s. Solid ring when `prefers-reduced-motion`. Closes #22.
 
 ### Fixed
 
+- Sidebar **Rename** remints the team id from the new name (so a bar
+  labeled Development is not still `cloud`). New teams get a slug id.
 - A member “thinking” in one room no longer appears after you switch
   rooms. RoomView is keyed by room id so draft, send, and thinking stay
   with that transcript. Closes #47.

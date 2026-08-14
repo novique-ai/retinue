@@ -66,6 +66,26 @@ def test_missing_file_is_empty(tmp_path):
     assert got["room_id"] == "nope"
 
 
+def test_parse_fence_reads_lead_block():
+    text = """Plan is medium. @Dave take the API.
+
+```itinerary
+title: Auth cutover
+where: Dave on the form; Junior next
+- [doing] Dave: login form
+- [todo] Junior: tests
+- [done] Spike
+```
+"""
+    got = itinerary.parse_fence(text)
+    assert got is not None
+    assert got["title"] == "Auth cutover"
+    assert "Dave on the form" in got["summary"]
+    assert [i["status"] for i in got["items"]] == ["doing", "todo", "done"]
+    assert got["items"][0]["text"].startswith("Dave:")
+    assert itinerary.parse_fence("no fence") is None
+
+
 def test_briefing_includes_itinerary_for_lead():
     room = _room()
     plan = {
@@ -77,17 +97,17 @@ def test_briefing_includes_itinerary_for_lead():
         ],
     }
     text = engine.room_briefing(room, "sally", ["You"], itinerary=plan)
-    assert "itinerary" in text.lower()
+    assert "```itinerary" in text
     assert "[done] X thread" in text
     assert "[doing] FB/IG" in text
     assert "Waiting on FB/IG." in text
-    assert "keep it current" in text.lower()
+    assert "you write it" in text.lower()
 
 
 def test_briefing_without_itinerary_unchanged():
     room = _room()
     text = engine.room_briefing(room, "editor", ["You"])
-    assert "itinerary" not in text.lower()
+    assert "```itinerary" not in text
 
 
 @pytest.fixture
@@ -143,6 +163,29 @@ def test_http_get_put_itinerary(httpd):
     status, again = _call(server, "GET", "/rooms/r-plan/itinerary")
     assert again["summary"] == "Halfway."
     assert again["items"][0]["text"] == "Post X"
+
+
+@pytest.mark.asyncio
+async def test_lead_notify_saves_itinerary_fence(httpd):
+    from concurrent.futures import Future
+
+    from .adapter import _PendingTurn
+
+    _server, adapter, home = httpd
+    fut: Future = Future()
+    with adapter._pending_lock:
+        adapter._pending[("r-plan", "sally")] = _PendingTurn(
+            task_id="t1", room_id="r-plan", member="sally", future=fut
+        )
+    await adapter.send(
+        "r-plan",
+        "On it.\n\n```itinerary\ntitle: Ship\nwhere: scoping\n- [doing] Spike\n```\n",
+        metadata={"notify": True, "thread_id": "sally"},
+    )
+    got = itinerary.load(str(home), "r-plan")
+    assert got["title"] == "Ship"
+    assert got["items"][0]["text"] == "Spike"
+    assert got["updated_by"] == "sally"
 
 
 def test_http_itinerary_unknown_room(httpd):

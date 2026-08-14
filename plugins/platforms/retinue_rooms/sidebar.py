@@ -24,9 +24,49 @@ def _empty() -> Dict[str, Any]:
     return {"rooms": [], "items": []}
 
 
-def new_team_id(label: str) -> str:
-    slug = _TEAM_SLUG_RE.sub("-", (label or "team").lower()).strip("-")[:24] or "team"
+def slugify_team(label: str) -> str:
+    return _TEAM_SLUG_RE.sub("-", (label or "team").lower()).strip("-")[:24] or "team"
+
+
+def new_team_id(label: str, existing: Optional[Iterable[str]] = None) -> str:
+    """Stable id from the label when free; otherwise ``slug-xxxx``."""
+    slug = slugify_team(label)
+    taken = {str(x) for x in (existing or []) if x}
+    if slug not in taken:
+        return slug
     return f"{slug}-{uuid.uuid4().hex[:4]}"
+
+
+def rename_team(layout: Dict[str, Any], old_id: str, new_label: str) -> Dict[str, Any]:
+    """Change a separator's label and remint its id from that label.
+
+    Membership is positional (nearest preceding team), so agents stay
+    grouped. The id must follow the label so later features do not keep
+    a stale key like ``cloud`` under a bar named Development.
+    """
+    cleaned = normalize(layout)
+    label = (new_label or "").strip()
+    if not label:
+        raise ValueError("team name is required")
+    found = False
+    others = []
+    for item in cleaned.get("items") or []:
+        if item.get("kind") == "team":
+            if item.get("id") == old_id:
+                found = True
+            else:
+                others.append(str(item.get("id") or ""))
+    if not found:
+        raise KeyError(old_id)
+    new_id = new_team_id(label, others)
+    items = []
+    for item in cleaned["items"]:
+        if item.get("kind") == "team" and item.get("id") == old_id:
+            items.append({"kind": "team", "id": new_id, "label": label})
+        else:
+            items.append(item)
+    cleaned["items"] = items
+    return cleaned
 
 
 def layout_path(home_dir: str) -> str:

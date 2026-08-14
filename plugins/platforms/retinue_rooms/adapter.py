@@ -346,6 +346,26 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             return
         if not pending.future.done():
             pending.future.set_result((ok, text))
+        if ok and text:
+            self._capture_lead_itinerary(room_id, member or pending.member, text)
+
+    def _capture_lead_itinerary(self, room_id: str, member: Optional[str], text: str) -> None:
+        """The lead writes the outline; the pane is the user's view of it."""
+        room = self.store.get(room_id)
+        if room is None or not member:
+            return
+        lead = room.lead or room.default_responder()
+        if member != lead:
+            return
+        parsed = itinerary.parse_fence(text)
+        if not parsed:
+            return
+        try:
+            itinerary.save(
+                self._home_dir(), room_id, parsed, updated_by=member
+            )
+        except Exception:
+            logger.debug("Retinue rooms: lead itinerary save failed", exc_info=True)
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         return None

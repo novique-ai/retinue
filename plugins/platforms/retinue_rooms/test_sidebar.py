@@ -300,7 +300,7 @@ def test_sidebar_save_load_roundtrip(tmp_path):
     assert kinds[2][0] == "team" and kinds[2][1] == "Local bench"
     assert kinds[3] == ("agent", "scout")
     # Generated id for a team that arrived without one.
-    assert saved["items"][2]["id"].startswith("local-bench-")
+    assert saved["items"][2]["id"] == "local-bench"
     assert sidebar.load(str(tmp_path)) == saved
 
 
@@ -377,6 +377,36 @@ def test_put_sidebar_orders_rooms_and_agents(tmp_path, monkeypatch):
     layout = adapter.get_sidebar()
     assert layout["rooms"] == ["lab", "ops"]
     assert layout["items"][0]["label"] == "Cloud staff"
+
+
+def test_rename_team_remints_id_from_label():
+    layout = {
+        "rooms": [],
+        "items": [
+            {"kind": "team", "id": "cloud", "label": "Cloud staff"},
+            {"kind": "agent", "slug": "mangus"},
+            {"kind": "agent", "slug": "dave"},
+            {"kind": "team", "id": "local", "label": "Local bench"},
+            {"kind": "agent", "slug": "janitor"},
+        ],
+    }
+    got = sidebar.rename_team(layout, "cloud", "Development")
+    teams = [i for i in got["items"] if i["kind"] == "team"]
+    assert teams[0]["label"] == "Development"
+    assert teams[0]["id"] == "development"
+    assert [i["slug"] for i in got["items"] if i["kind"] == "agent"] == [
+        "mangus",
+        "dave",
+        "janitor",
+    ]
+    assert sidebar.team_for_agents(got["items"])["mangus"] == "development"
+    assert sidebar.team_for_agents(got["items"])["janitor"] == "local"
+    again = sidebar.rename_team(got, "development", "Development")
+    assert again["items"][0]["id"] == "development"
+    with pytest.raises(KeyError):
+        sidebar.rename_team(got, "nope", "X")
+    with pytest.raises(ValueError):
+        sidebar.rename_team(got, "development", "  ")
 
 
 def test_http_patch_delete_and_sidebar(tmp_path, monkeypatch):
