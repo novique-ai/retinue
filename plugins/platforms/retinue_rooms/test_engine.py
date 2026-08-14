@@ -261,9 +261,20 @@ def test_format_lines_attribution():
 def test_briefing_names_room_and_members():
     room = _room(lead="scout")
     text = engine.room_briefing(room, "scout", ["Mark"])
-    assert '"scout"' in text and '"Test"' in text
-    assert "editor" in text and "critic" in text
+    assert "You are scout" in text and '"Test"' in text
+    assert "@editor" in text and "@critic" in text
     assert "Mark" in text
+    assert "Then stop" in text
+    assert "say so briefly" not in text
+
+
+def test_briefing_roster_uses_display_handles():
+    room = _room(members=["sheila-graphics-and-visual-produ", "editor"], lead="editor")
+    names = {"sheila-graphics-and-visual-produ": "Sheila", "editor": "Editor"}
+    text = engine.room_briefing(room, "editor", ["Mark"], names)
+    assert "You are Editor" in text
+    assert "@Sheila (`sheila-graphics-and-visual-produ`)" in text
+    assert "@Sheila please make a 16:9 header" in text
 
 
 # ── store ────────────────────────────────────────────────────────────────

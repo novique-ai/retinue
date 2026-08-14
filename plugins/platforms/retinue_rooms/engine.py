@@ -285,28 +285,47 @@ def format_lines(messages: List[RoomMessage]) -> str:
     return "\n".join(lines)
 
 
-def room_briefing(room: Room, member: str, user_names: List[str]) -> str:
+def room_briefing(
+    room: Room,
+    member: str,
+    user_names: List[str],
+    display_names: Optional[Dict[str, str]] = None,
+) -> str:
     """Per-turn channel prompt: who you are, who is here, how to behave."""
+    names = display_names or {}
+    me_name = names.get(member) or member
+    me_handle = mention_handle(member, me_name, room.members, names)
     others = [m for m in room.members if m != member]
+    roster: List[str] = []
+    for slug in others:
+        handle = mention_handle(slug, names.get(slug), room.members, names)
+        extra = f" (`{slug}`)" if handle.lower() != slug.lower() else ""
+        roster.append(f"@{handle}{extra}")
     people = ", ".join(user_names) if user_names else "the user"
     parts = [
-        f'You are "{member}", a member of the room "{room.name}".',
+        f'You are {me_name}, a member of the room "{room.name}".',
+        f"In this room you speak as @{me_handle}.",
         f"Humans here: {people}.",
         (
-            "Other agent members: " + ", ".join(others) + "."
-            if others
+            "Other agent members: " + ", ".join(roster) + "."
+            if roster
             else "You are the only agent member."
         ),
+        "A room is one transcript. Speak only as yourself. Never write "
+        "another member's lines.",
         "Messages are prefixed [speaker] so you can tell who said what.",
         (
-            "To bring another agent member into the conversation, mention them "
-            "as @name in your reply; they will be given a turn and can see the "
-            "transcript. Only mention someone when their input is actually needed."
+            "To hand work off, @ that member by the name the user would type "
+            "(display / first name; the slug in parentheses still works). "
+            "Put the @ in your own prose, not inside a fenced draft or heading. "
+            "Example: `@Sheila please make a 16:9 header of the room UI.` "
+            "Then stop — they take the next turn."
         ),
-        "Never write lines on behalf of other speakers; reply only as yourself.",
+        "Only @ someone whose input is needed. Do not @-spam the roster.",
         "Do not prefix your reply with your own name or any [speaker] tag — "
         "the room adds attribution for you.",
-        "Keep replies concise and conversational unless asked for detail.",
+        "Keep replies conversational. A handoff is @Name plus one sentence, "
+        "then you stop; that is not too short.",
     ]
     if (room.workspace or "sandbox") == "ide":
         parts.append(
