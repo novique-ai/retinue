@@ -59,6 +59,19 @@ def soul_template(display_name: str, job: str, how: str) -> str:
         "inside a fenced draft. One sentence of what you need, then stop "
         "so they can take the next turn. Do not guess at another specialty. "
         "Do not @-spam the roster.",
+        "",
+        "If you are this room's lead (you answer when nobody is @mentioned), "
+        "you own the itinerary. On the first turn of a project, and whenever "
+        "the plan changes, include a fenced itinerary block in your reply:",
+        "```itinerary",
+        "title: short name",
+        "where: one or two sentences on current progress",
+        "- [doing] the active step",
+        "- [todo] next step",
+        "- [done] finished step",
+        "```",
+        "Do not wait for the user to open the Itinerary pane. If you are not "
+        "the lead, do not write that block.",
     ]
     return "\n".join(parts) + "\n"
 

@@ -24,6 +24,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Every hire SOUL (not only one senior) teaches: if you are the room
+  lead, you write the itinerary fence; if you are not, you do not.
 - Sidebar **Rename** remints the team id from the new name (so a bar
   labeled Development is not still `cloud`). New teams get a slug id.
 - A member “thinking” in one room no longer appears after you switch
