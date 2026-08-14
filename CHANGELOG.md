@@ -34,6 +34,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- In-product provider reauth when a cloud grant dies. `GET /health`
+  and `GET /agents` expose `ok` / `relogin_required` / `missing`; the
+  rooms UI shows a banner and a **Reauth** control that runs Hermes
+  device-code login against this workspace. Success evicts cached
+  agents and drops profile-local xAI token copies so they inherit the
+  workspace grant. No gateway restart. Refs #18.
 - IDE-attached rooms (`workspace=sandbox|ide`). Same podman/docker
   runtime; IDE rooms bind-mount `ide_path` / `RETINUE_IDE_ROOT` at
   `/workspace`. Loud UI confirm. Per-room container keys so sandbox

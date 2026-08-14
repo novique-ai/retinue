@@ -40,7 +40,7 @@ from gateway.platforms.base import (
     SendResult,
 )
 
-from . import engine, hire, ide, routines, sidebar, voice, workspace
+from . import auth, engine, hire, ide, routines, sidebar, voice, workspace
 from .engine import KIND_AGENT, KIND_SYSTEM, KIND_USER, Room, RoomMessage
 from .store import RoomStore
 
@@ -443,6 +443,7 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             slug = str(agent.get("slug") or "")
             agent["team"] = team_of.get(slug)
             agent["busy"] = slug in busy
+        auth.annotate_agents(self._home_dir(), agents)
         agents.sort(key=lambda a: (order.get(str(a.get("slug") or ""), 10_000), str(a.get("slug") or "")))
         return agents
 
@@ -523,6 +524,23 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         ]
         sidebar.save(self._home_dir(), layout)
         return {"deleted": removed, **dropped}
+
+    def start_provider_reauth(self, provider: str) -> Dict[str, Any]:
+        """Begin Hermes device-code login against this workspace HERMES_HOME."""
+
+        def _after(done_provider: str) -> None:
+            evicted = auth.finish_reauth_success(
+                self._home_dir(), done_provider, runner=self._live_runner()
+            )
+            with auth._sessions_lock:
+                for sess in auth._sessions.values():
+                    if (
+                        sess.get("provider") == auth.normalize_provider(done_provider)
+                        and sess.get("status") == "approved"
+                    ):
+                        sess["evicted"] = evicted
+
+        return auth.start_reauth(provider, on_success=_after)
 
     def hire_agent(
         self, name: str, job: str, how: str, model: Optional[str] = None
@@ -945,13 +963,21 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
         "voice",
         "tts",
         "sidebar",
+        "auth",
     )
 
     def do_GET(self):
         parsed = urlparse(self.path)
         parts = [p for p in parsed.path.split("/") if p]
         if parts == ["health"]:
-            return self._json(200, {"ok": True, "rooms": len(self.server.adapter.store.list_rooms())})
+            adapter = self.server.adapter
+            return self._json(
+                200,
+                auth.health_payload(
+                    adapter._home_dir(),
+                    len(adapter.store.list_rooms()),
+                ),
+            )
         if not parts or parts[0] not in self._API_PREFIXES:
             if self._serve_static(parsed.path):
                 return
@@ -981,6 +1007,21 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
             return self._json(200, voice.status())
         if parts == ["sidebar"]:
             return self._json(200, adapter.get_sidebar())
+        if parts == ["auth"] or (len(parts) == 2 and parts[0] == "auth" and parts[1] == "reauth"):
+            query = parse_qs(parsed.query)
+            session_id = (query.get("session") or [""])[0].strip()
+            if session_id:
+                sess = auth.get_session(session_id)
+                if sess is None:
+                    return self._json(404, {"error": "no such reauth session"})
+                return self._json(200, sess)
+            return self._json(
+                200,
+                {
+                    "providers": auth.workspace_provider_status(adapter._home_dir()),
+                    "session": auth.active_pending("xai-oauth"),
+                },
+            )
         if parts == ["rooms"]:
             return self._json(200, {"rooms": adapter.list_rooms_public()})
         if len(parts) == 2 and parts[0] == "rooms":
@@ -1124,6 +1165,16 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
         body = self._read_body()
         if body is None:
             return self._json(400, {"error": "invalid or oversized JSON body"})
+        if parts == ["auth", "reauth"] or parts == ["auth"]:
+            try:
+                payload = adapter.start_provider_reauth(
+                    str(body.get("provider") or "xai-oauth")
+                )
+            except ValueError as e:
+                return self._json(400, {"error": str(e)})
+            except Exception as e:
+                return self._json(502, {"error": str(e)})
+            return self._json(202, payload)
         if parts == ["agents"]:
             try:
                 payload = adapter.hire_agent(
