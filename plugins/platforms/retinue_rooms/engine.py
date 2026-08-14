@@ -398,9 +398,18 @@ FALLBACK_MEDIA = "I'm sorry, I cannot find that image at the moment."
 FALLBACK_GENERIC = "I'm sorry — I couldn't complete that just now."
 
 
+_MAKE_WORDS = ("make", "create", "draw", "generate", "paint", "render", "design")
+_FIND_WORDS = ("show", "again", "find", "previous", "last", "where is")
+
+
 def looks_like_media_request(text: str) -> bool:
+    """True for a recall/show ask, not a request to make a new picture."""
     blob = (text or "").lower()
-    return any(word in blob for word in _MEDIA_WORDS)
+    if not any(word in blob for word in _MEDIA_WORDS):
+        return False
+    if any(word in blob for word in _MAKE_WORDS):
+        return False
+    return any(word in blob for word in _FIND_WORDS)
 
 
 def fallback_reply(trigger_text: str) -> str:

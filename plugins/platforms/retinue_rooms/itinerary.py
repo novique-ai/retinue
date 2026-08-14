@@ -36,14 +36,20 @@ def _path(home_dir: str, room_id: str) -> str:
     return os.path.join(home_dir, "retinue_rooms", f"{room_id}.itinerary.json")
 
 
-def _clip(value: Any, limit: int) -> str:
-    return str(value or "").strip()[:limit]
+def _clip(value: Any, limit: int, *, strip: bool = False) -> str:
+    """Truncate to *limit*. Do not strip trailing spaces unless asked —
+    the itinerary pane saves on every keystroke, so stripping a trailing
+    space makes it impossible to type the next word."""
+    text = str(value or "")
+    if strip:
+        text = text.strip()
+    return text[:limit]
 
 
 def _normalize_item(raw: Any) -> Dict[str, str] | None:
     if not isinstance(raw, dict):
         return None
-    text = _clip(raw.get("text"), _MAX_TEXT)
+    text = _clip(raw.get("text"), _MAX_TEXT, strip=True)
     if not text:
         return None
     status = str(raw.get("status") or "todo").strip().lower()
