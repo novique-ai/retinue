@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 import os
 from contextlib import contextmanager
-from typing import Dict, Iterator, Optional
+from typing import Any, Dict, Iterator, List, Optional
 
 from .engine import Room
 
@@ -73,6 +73,52 @@ def overlay_env(room: Room) -> Dict[str, str]:
         # Clear a gateway-global mount so sandbox rooms stay isolated.
         env["TERMINAL_DOCKER_VOLUMES"] = "[]"
     return env
+
+
+def _under_root(path: str, root: str) -> bool:
+    real = os.path.realpath(path)
+    root_real = os.path.realpath(root)
+    return real == root_real or real.startswith(root_real + os.sep)
+
+
+def list_folders(raw: Optional[str] = None) -> Dict[str, Any]:
+    """Immediate subdirectories of *raw* (or RETINUE_IDE_ROOT).
+
+    Browse is scoped to the configured IDE root when one is set, so the
+    picker cannot walk the rest of the host. The create/patch path field
+    still accepts any existing absolute directory.
+    """
+    root = configured_ide_root()
+    requested = (raw or "").strip() or (root or "")
+    if not requested:
+        raise ValueError("pick a folder or set RETINUE_IDE_ROOT")
+    path = os.path.abspath(os.path.expanduser(requested))
+    if root and not _under_root(path, root):
+        raise ValueError("folder must be under the configured IDE root")
+    if not os.path.isdir(path):
+        raise ValueError(f"not a directory: {path}")
+    folders: List[Dict[str, str]] = []
+    try:
+        names = sorted(os.listdir(path), key=str.lower)
+    except OSError as e:
+        raise ValueError(f"cannot list {path}: {e}") from e
+    for name in names:
+        if name.startswith("."):
+            continue
+        full = os.path.join(path, name)
+        if os.path.isdir(full):
+            folders.append({"name": name, "path": full})
+    parent = os.path.dirname(path)
+    if parent == path or (root and not _under_root(parent, root)):
+        parent_out: Optional[str] = None
+    else:
+        parent_out = parent
+    return {
+        "path": path,
+        "parent": parent_out,
+        "root": root,
+        "folders": folders,
+    }
 
 
 def apply_workspace_fields(

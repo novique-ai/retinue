@@ -403,6 +403,30 @@ body {
   font-weight: 600;
 }
 
+.ide-browse {
+  margin-top: 8px;
+}
+
+.ide-browse-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.ide-browse-path {
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ide-browse-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
 .mode-badge {
   display: inline-block;
   margin-left: 6px;
