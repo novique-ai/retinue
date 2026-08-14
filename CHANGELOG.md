@@ -21,6 +21,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `@Sheila` and `@slug` now address the same member. Composer chips and
   an `@` picker insert the display / first name; the scheduled member is
   still the slug. Ambiguous prefixes do not steal a turn. Closes #8.
+- Hire SOUL and the per-turn room briefing teach members to `@`call a
+  teammate by display name, then stop, instead of "say so briefly."
+  Existing profiles get the rule from the briefing. Closes #21.
 
 ### Added
 

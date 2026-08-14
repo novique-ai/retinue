@@ -721,7 +721,9 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         user_names = sorted(
             {m.speaker for m in self.store.read_since(room.id, 0) if m.kind == KIND_USER}
         ) or [_DEFAULT_USER_NAME]
-        briefing = engine.room_briefing(room, member, user_names)
+        briefing = engine.room_briefing(
+            room, member, user_names, self._display_names(room)
+        )
 
         speaker_display = (
             f"{trigger.speaker} (agent)" if trigger.kind == KIND_AGENT else trigger.speaker

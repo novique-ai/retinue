@@ -23,6 +23,13 @@ def test_soul_template_contains_all_three_fields():
     assert "check sources; be terse" in soul
 
 
+def test_soul_template_teaches_at_handoff():
+    soul = hire.soul_template("Sheila", "make images", "")
+    assert "say so briefly" not in soul
+    assert "@ them by the name the user would type" in soul
+    assert "then stop" in soul
+
+
 def test_soul_template_pins_identity_against_engine_bleed():
     """Agents were introducing themselves with the engine's identity
     ("Claude Code" phrasing) instead of their persona — the SOUL must pin
