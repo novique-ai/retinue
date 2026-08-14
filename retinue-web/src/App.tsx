@@ -36,21 +36,25 @@ function Avatar({
   src,
   label,
   size = 28,
+  working = false,
 }: {
   src: string;
   label?: string;
   size?: number;
+  working?: boolean;
 }) {
+  const title = working && label ? `${label} is working` : label;
   return (
-    <img
-      className="avatar"
-      src={src}
-      alt={label ?? ""}
-      title={label}
-      width={size}
-      height={size}
-      draggable={false}
-    />
+    <span className={working ? "avatar-wrap working" : "avatar-wrap"} title={title}>
+      <img
+        className="avatar"
+        src={src}
+        alt={title ?? ""}
+        width={size}
+        height={size}
+        draggable={false}
+      />
+    </span>
   );
 }
 
@@ -595,7 +599,12 @@ function RoomView({
           <div className="room-members">
             {room.members.map((m) => (
               <span key={m} className="member-chip">
-                <Avatar src={agentIcon(m)} label={handleOf(m)} size={24} />
+                <Avatar
+                  src={agentIcon(m)}
+                  label={handleOf(m)}
+                  size={24}
+                  working={!!agents.find((a) => a.slug === m)?.busy}
+                />
                 <span className="chip" style={{ color: chipColor(m) }}>
                   @{handleOf(m)}
                   {room.lead === m ? " ★" : ""}
@@ -692,7 +701,12 @@ function RoomView({
         ))}
         {thinking[0] && (
           <div key={thinking[0]} className="msg-row">
-            <Avatar src={agentIcon(thinking[0])} label={handleOf(thinking[0])} size={32} />
+            <Avatar
+              src={agentIcon(thinking[0])}
+              label={handleOf(thinking[0])}
+              size={32}
+              working
+            />
             <div className="bubble thinking">
               <span className="chip" style={{ color: chipColor(thinking[0]) }}>
                 {handleOf(thinking[0])}
@@ -2030,7 +2044,13 @@ export default function App() {
                   )}
                   <span className="nav-sub nav-faces">
                     {r.members.map((m) => (
-                      <Avatar key={m} src={agentIcon(m)} label={m} size={18} />
+                      <Avatar
+                        key={m}
+                        src={agentIcon(m)}
+                        label={m}
+                        size={18}
+                        working={!!agentsBySlug[m]?.busy}
+                      />
                     ))}
                   </span>
                 </button>
@@ -2134,7 +2154,12 @@ export default function App() {
                   ⋮⋮
                 </span>
                 <div className={`agent-item${needsReauth(a.auth_status) ? " needs-auth" : ""}`}>
-                  <Avatar src={agentIcon(a.slug)} label={a.display_name || a.slug} size={32} />
+                  <Avatar
+                    src={agentIcon(a.slug)}
+                    label={a.display_name || a.slug}
+                    size={32}
+                    working={!!a.busy}
+                  />
                   <div className="agent-copy">
                     <span className="chip" style={{ color: chipColor(a.slug) }}>
                       @{a.slug}
@@ -2299,7 +2324,12 @@ export default function App() {
               </div>
               {visibleCast.map((a) => (
                 <div key={a.slug} className="cast-member">
-                  <Avatar src={agentIcon(a.slug)} label={a.display_name || a.slug} size={72} />
+                  <Avatar
+                    src={agentIcon(a.slug)}
+                    label={a.display_name || a.slug}
+                    size={72}
+                    working={!!a.busy}
+                  />
                   <span>@{a.slug}</span>
                 </div>
               ))}

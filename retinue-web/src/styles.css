@@ -128,13 +128,53 @@ body {
   background: #f3efe6;
 }
 
+.avatar-wrap {
+  display: inline-flex;
+  flex: none;
+  border-radius: 50%;
+  vertical-align: middle;
+  line-height: 0;
+  position: relative;
+}
+
 .avatar {
   display: inline-block;
   border-radius: 50%;
   object-fit: cover;
   background: #f3efe6;
   flex: none;
-  vertical-align: middle;
+}
+
+.avatar-wrap.working {
+  box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px #e07a2f;
+}
+
+.avatar-wrap.working::after {
+  content: "";
+  position: absolute;
+  inset: -5px;
+  border-radius: 50%;
+  border: 2px solid #e07a2f;
+  pointer-events: none;
+  animation: work-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes work-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.08);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .avatar-wrap.working::after {
+    animation: none;
+  }
 }
 
 .section {
