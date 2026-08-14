@@ -16,6 +16,7 @@ import {
   getApiKey,
   workspaceFileUrl,
   ModelPreset,
+  Principal,
   ReauthSession,
   RoomMeta,
   RoomMsg,
@@ -1673,14 +1674,18 @@ function ReauthPanel({
 function SettingsPanel({
   onReauth,
   onDone,
+  onPrincipal,
 }: {
   onReauth: (provider: string) => void;
   onDone: () => void;
+  onPrincipal?: (p: Principal) => void;
 }) {
   const [accounts, setAccounts] = useState<Array<ProviderAuth & { login?: string }>>([]);
   const [voice, setVoice] = useState<VoiceStatus | null>(null);
   const [workspace, setWorkspace] = useState<WorkspaceStatus | null>(null);
   const [models, setModels] = useState<ModelPreset[]>([]);
+  const [youName, setYouName] = useState("");
+  const [youAbout, setYouAbout] = useState("");
   const [claudeKey, setClaudeKey] = useState("");
   const [note, setNote] = useState("");
 
@@ -1692,6 +1697,13 @@ function SettingsPanel({
     api.voiceStatus().then(setVoice).catch(() => setVoice(null));
     api.workspace().then(setWorkspace).catch(() => setWorkspace(null));
     api.listModels().then((r) => setModels(r.models)).catch(() => setModels([]));
+    api
+      .getPrincipal()
+      .then((p) => {
+        setYouName(p.display_name || "");
+        setYouAbout(p.about || "");
+      })
+      .catch(() => {});
   }, []);
   useEffect(() => {
     reload();
@@ -1700,7 +1712,45 @@ function SettingsPanel({
   return (
     <div className="panel settings-panel">
       <h3>Settings</h3>
-      <p className="note">Cloud logins, local workspace, and voice. Hired agents inherit the workspace grant.</p>
+      <p className="note">
+        You, cloud logins, local workspace, and voice. Hired agents inherit the workspace grant.
+      </p>
+      <label>
+        Your name
+        <input
+          value={youName}
+          onChange={(e) => setYouName(e.target.value)}
+          placeholder="Clayton"
+        />
+      </label>
+      <label>
+        About you
+        <textarea
+          value={youAbout}
+          onChange={(e) => setYouAbout(e.target.value)}
+          rows={3}
+          placeholder="How retainers should address you, what you care about."
+        />
+      </label>
+      <p className="note">This is you, not a hire. Retainers will use this name. You do not take turns.</p>
+      <button
+        className="mini"
+        disabled={!youName.trim()}
+        onClick={async () => {
+          try {
+            const saved = await api.savePrincipal({
+              display_name: youName.trim(),
+              about: youAbout,
+            });
+            onPrincipal?.(saved);
+            setNote("Saved your name for this workspace.");
+          } catch (e) {
+            setNote(String(e));
+          }
+        }}
+      >
+        Save you
+      </button>
       {accounts.map((acct) => (
         <div key={acct.id} className="settings-row">
           <div>
@@ -1827,7 +1877,9 @@ export default function App() {
     () => localStorage.getItem(ARCHIVED_KEY) === "1",
   );
   const [dropHint, setDropHint] = useState<DropHint>(null);
-  const [userName] = useState(() => localStorage.getItem("retinue.userName") ?? "You");
+  const [userName, setUserName] = useState(
+    () => localStorage.getItem("retinue.userName") ?? "You",
+  );
   const [reauthProvider, setReauthProvider] = useState("xai-oauth");
 
   const refresh = useCallback(async () => {
@@ -1859,6 +1911,21 @@ export default function App() {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  useEffect(() => {
+    api
+      .getPrincipal()
+      .then((p) => {
+        if (!p.display_name) return;
+        setUserName(p.display_name);
+        try {
+          localStorage.setItem("retinue.userName", p.display_name);
+        } catch {
+          /* ignore */
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     const t = window.setInterval(() => {
@@ -2364,8 +2431,8 @@ export default function App() {
             </p>
             <div className="retinue-cast">
               <div className="cast-member principal">
-                <Avatar src={YOU_SRC} label="You" size={72} />
-                <span>You</span>
+                <Avatar src={YOU_SRC} label={userName} size={72} />
+                <span>{userName}</span>
               </div>
               {visibleCast.map((a) => (
                 <div key={a.slug} className="cast-member">
@@ -2467,6 +2534,14 @@ export default function App() {
                 onReauth={(provider) => {
                   setReauthProvider(provider);
                   setModal("reauth");
+                }}
+                onPrincipal={(p) => {
+                  setUserName(p.display_name);
+                  try {
+                    localStorage.setItem("retinue.userName", p.display_name);
+                  } catch {
+                    /* ignore */
+                  }
                 }}
                 onDone={() => {
                   setModal(null);

@@ -384,6 +384,19 @@ def test_briefing_names_room_and_members():
     assert "never stay silent" in text
 
 
+def test_briefing_includes_principal_about():
+    room = _room(lead="scout")
+    text = engine.room_briefing(
+        room,
+        "scout",
+        ["Clayton"],
+        principal_about="Call me Clayton. I run this workspace.",
+    )
+    assert "Humans here: Clayton." in text
+    assert "About Clayton: Call me Clayton. I run this workspace." in text
+    assert "does not take agent turns" in text
+
+
 def test_briefing_lists_room_artifacts():
     room = _room(lead="scout")
     text = engine.room_briefing(

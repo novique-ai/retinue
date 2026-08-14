@@ -40,7 +40,7 @@ from gateway.platforms.base import (
     SendResult,
 )
 
-from . import attachments, auth, engine, hire, ide, itinerary, keepalive, routines, sidebar, voice, workspace
+from . import attachments, auth, engine, hire, ide, itinerary, keepalive, principal, routines, sidebar, voice, workspace
 from .engine import KIND_AGENT, KIND_SYSTEM, KIND_USER, Room, RoomMessage
 from .store import RoomStore
 
@@ -695,8 +695,9 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             raise ValueError("empty message")
         if self._loop is None:
             raise RuntimeError("gateway loop not ready")
+        speaker = principal.speaker_name(self._home_dir(), from_name)
         message = self.store.append(
-            room_id, RoomMessage(seq=0, ts=0, kind=KIND_USER, speaker=from_name, text=text)
+            room_id, RoomMessage(seq=0, ts=0, kind=KIND_USER, speaker=speaker, text=text)
         )
         planned = engine.plan_user_turns(room, text, self._display_names(room))
         fut = asyncio.run_coroutine_threadsafe(self._run_cycle(room_id, message), self._loop)
@@ -840,9 +841,15 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         trigger = delta[-1]
         context_block = engine.format_lines(delta[:-1]) if len(delta) > 1 else None
 
-        user_names = sorted(
-            {m.speaker for m in self.store.read_since(room.id, 0) if m.kind == KIND_USER}
-        ) or [_DEFAULT_USER_NAME]
+        me = principal.load(self._home_dir())
+        speakers = {
+            m.speaker for m in self.store.read_since(room.id, 0) if m.kind == KIND_USER
+        }
+        if me.get("display_name") and me["display_name"] not in {"You", "User"}:
+            speakers.discard("You")
+            speakers.discard("User")
+            speakers.add(str(me["display_name"]))
+        user_names = sorted(speakers) or [str(me.get("display_name") or _DEFAULT_USER_NAME)]
         briefing = engine.room_briefing(
             room,
             member,
@@ -853,6 +860,7 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
                 item["path"]
                 for item in attachments.list_uploads(self._home_dir(), room.id)
             ],
+            principal_about=str(me.get("about") or "") or None,
         )
 
         speaker_display = (
@@ -1061,6 +1069,7 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
         "tts",
         "sidebar",
         "auth",
+        "principal",
     )
 
     def do_GET(self):
@@ -1098,6 +1107,8 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
             if meta is None:
                 return self._json(404, {"error": "no such routine"})
             return self._json(200, meta)
+        if parts == ["principal"]:
+            return self._json(200, principal.load(adapter._home_dir()))
         if parts == ["workspace"]:
             return self._json(200, workspace.workspace_status())
         if parts == ["voice"]:
@@ -1423,6 +1434,11 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
         body = self._read_body()
         if body is None:
             return self._json(400, {"error": "invalid or oversized JSON body"})
+        if parts == ["principal"]:
+            try:
+                return self._json(200, principal.save(self.server.adapter._home_dir(), body))
+            except ValueError as e:
+                return self._json(400, {"error": str(e)})
         if parts == ["sidebar"]:
             try:
                 return self._json(200, self.server.adapter.put_sidebar(body))
