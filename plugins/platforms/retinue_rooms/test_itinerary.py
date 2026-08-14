@@ -33,8 +33,8 @@ def test_save_round_trip_and_normalize(tmp_path):
         home,
         "r-plan",
         {
-            "title": "  Ship I1  ",
-            "summary": "X and LI posted; FB/IG next.",
+            "title": "Ship I1",
+            "summary": "Lucy made a really bad ",
             "items": [
                 {"text": "Blog live", "status": "done"},
                 {"id": "keep-me", "text": "FB/IG walkthrough", "status": "DOING"},
@@ -46,7 +46,7 @@ def test_save_round_trip_and_normalize(tmp_path):
     )
     got = itinerary.load(home, "r-plan")
     assert got["title"] == "Ship I1"
-    assert got["summary"].startswith("X and LI")
+    assert got["summary"] == "Lucy made a really bad "
     assert [i["text"] for i in got["items"]] == [
         "Blog live",
         "FB/IG walkthrough",
@@ -58,6 +58,18 @@ def test_save_round_trip_and_normalize(tmp_path):
     assert got["items"][2]["status"] == "todo"
     assert got["updated_by"] == "user"
     assert got["updated_at"] > 0
+
+
+def test_summary_keeps_trailing_space_so_the_next_word_can_be_typed(tmp_path):
+    """The pane saves on each keystroke. strip() ate the space after the
+    fifth word and the field could not grow."""
+    itinerary.save(
+        str(tmp_path),
+        "r-plan",
+        {"title": "", "summary": "Lucy made a really bad ", "items": []},
+        updated_by="user",
+    )
+    assert itinerary.load(str(tmp_path), "r-plan")["summary"] == "Lucy made a really bad "
 
 
 def test_missing_file_is_empty(tmp_path):

@@ -412,6 +412,7 @@ def test_briefing_lists_room_artifacts():
 def test_fallback_reply_is_spoken_not_a_crash():
     assert engine.fallback_reply("@Sheila show me that image again") == engine.FALLBACK_MEDIA
     assert engine.fallback_reply("what is the status") == engine.FALLBACK_GENERIC
+    assert engine.fallback_reply("Make me an image of Herby the Lovebug") == engine.FALLBACK_GENERIC
     assert "crash" not in engine.fallback_reply("picture please").lower()
 
 

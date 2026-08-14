@@ -984,16 +984,24 @@ function ItineraryPane({
       setPlan(next);
       if (saveTimer.current) window.clearTimeout(saveTimer.current);
       saveTimer.current = window.setTimeout(() => {
+        const snapshot = next;
         void api
           .putItinerary(roomId, {
-            title: next.title,
-            summary: next.summary,
-            items: next.items,
+            title: snapshot.title,
+            summary: snapshot.summary,
+            items: snapshot.items,
             updated_by: "user",
           })
           .then((saved) => {
-            dirtyRef.current = false;
-            setPlan(saved);
+            setPlan((cur) => {
+              if (!cur) return saved;
+              const same =
+                cur.title === snapshot.title &&
+                cur.summary === snapshot.summary &&
+                JSON.stringify(cur.items) === JSON.stringify(snapshot.items);
+              dirtyRef.current = !same;
+              return same ? saved : cur;
+            });
           })
           .catch((e) => setNote(String(e)));
       }, 280);
