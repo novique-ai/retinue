@@ -11,9 +11,11 @@ import {
   AgentPatch,
   api,
   AuthRequiredError,
+  AuthStatus,
   getApiKey,
   workspaceFileUrl,
   ModelPreset,
+  ReauthSession,
   RoomMeta,
   RoomMsg,
   RoomWorkspace,
@@ -1189,6 +1191,98 @@ function EditAgentPanel({
   );
 }
 
+function providerLabel(id: string | null | undefined): string {
+  if (!id) return "provider";
+  if (id === "xai-oauth" || id === "xai") return "xAI";
+  return id;
+}
+
+function needsReauth(status?: AuthStatus): boolean {
+  return status === "relogin_required" || status === "missing";
+}
+
+function ReauthPanel({
+  provider,
+  onDone,
+}: {
+  provider: string;
+  onDone: (ok: boolean) => void;
+}) {
+  const [session, setSession] = useState<ReauthSession | null>(null);
+  const [error, setError] = useState("");
+  const [starting, setStarting] = useState(true);
+
+  const start = useCallback(async () => {
+    setStarting(true);
+    setError("");
+    try {
+      setSession(await api.startReauth(provider));
+    } catch (e) {
+      setError(String(e));
+      setSession(null);
+    } finally {
+      setStarting(false);
+    }
+  }, [provider]);
+
+  useEffect(() => {
+    void start();
+  }, [start]);
+
+  useEffect(() => {
+    if (!session || session.status !== "pending") return;
+    const wait = Math.max(2, session.poll_interval || 3) * 1000;
+    const t = window.setInterval(() => {
+      api
+        .reauthSession(session.session_id)
+        .then((next) => {
+          setSession(next);
+          if (next.status === "approved") onDone(true);
+        })
+        .catch((e) => setError(String(e)));
+    }, wait);
+    return () => window.clearInterval(t);
+  }, [session, onDone]);
+
+  const url = session?.verification_url || session?.verification_uri || "";
+  return (
+    <div className="panel">
+      <h3>Sign in with {providerLabel(provider)}</h3>
+      <p className="note">
+        This workspace needs its own {providerLabel(provider)} grant. Approve the
+        device code in the browser — the gateway does not restart.
+      </p>
+      {starting && <p className="note">Starting sign-in…</p>}
+      {session?.user_code && (
+        <>
+          <p className="reauth-code">{session.user_code}</p>
+          {url && (
+            <p>
+              <a href={url} target="_blank" rel="noreferrer">
+                Open {url.replace(/^https?:\/\//, "").split("/")[0]} to approve
+              </a>
+            </p>
+          )}
+          <p className="note">
+            Waiting for approval
+            {session.expires_in != null ? ` · ${session.expires_in}s left` : ""}.
+          </p>
+        </>
+      )}
+      {(error || session?.status === "error" || session?.status === "expired") && (
+        <p className="auth-error">{error || session?.error || "Sign-in failed."}</p>
+      )}
+      {session?.status === "approved" && <p className="note">Signed in. Updating agents…</p>}
+      <div className="panel-actions">
+        <button onClick={() => onDone(false)}>Cancel</button>
+        <button className="primary" onClick={() => void start()} disabled={starting}>
+          {session?.status === "pending" ? "Restart" : "Sign in"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function KeyPanel({ onDone }: { onDone: () => void }) {
   const [key, setKey] = useState(getApiKey());
   return (
@@ -1216,7 +1310,7 @@ function KeyPanel({ onDone }: { onDone: () => void }) {
 
 // ── shell ────────────────────────────────────────────────────────────────
 
-type Modal = "hire" | "room" | "key" | "edit-room" | "edit-agent" | null;
+type Modal = "hire" | "room" | "key" | "edit-room" | "edit-agent" | "reauth" | null;
 type DragPayload = { list: "rooms" | "items"; id: string };
 type DropHint = { list: "rooms" | "items"; id: string; place: "before" | "after" } | null;
 
@@ -1236,6 +1330,7 @@ export default function App() {
   );
   const [dropHint, setDropHint] = useState<DropHint>(null);
   const [userName] = useState(() => localStorage.getItem("retinue.userName") ?? "You");
+  const [reauthProvider, setReauthProvider] = useState("xai-oauth");
 
   const refresh = useCallback(async () => {
     try {
@@ -1426,8 +1521,27 @@ export default function App() {
     void persistLayout({ ...layout, items: relocate(layout.items, from, insertAt) });
   };
 
+  const broken = agents.filter((a) => !a.archived && needsReauth(a.auth_status));
+  const openReauth = (provider = "xai-oauth") => {
+    setReauthProvider(provider || "xai-oauth");
+    setModal("reauth");
+  };
+
   return (
-    <div className="shell">
+    <div className="app-root">
+      {broken.length > 0 && (
+        <div className="auth-banner" role="status">
+          <span>
+            {providerLabel(broken[0].auth_provider)} sign-in required
+            {broken.length > 1 ? ` · ${broken.length} agents` : ` · @${broken[0].slug}`}.
+            Local members still work.
+          </span>
+          <button className="primary" onClick={() => openReauth(broken[0].auth_provider || "xai-oauth")}>
+            Reauth
+          </button>
+        </div>
+      )}
+      <div className="shell">
       <aside className="sidebar">
         <div className="brand">
           <img className="brand-logo" src={LOGO_SRC} alt="" />
@@ -1575,7 +1689,7 @@ export default function App() {
                 >
                   ⋮⋮
                 </span>
-                <div className="agent-item">
+                <div className={`agent-item${needsReauth(a.auth_status) ? " needs-auth" : ""}`}>
                   <Avatar src={agentIcon(a.slug)} label={a.display_name || a.slug} size={32} />
                   <div className="agent-copy">
                     <span className="chip" style={{ color: chipColor(a.slug) }}>
@@ -1594,6 +1708,7 @@ export default function App() {
                         : a.turn_timeout
                           ? ` · cloud · ${Math.round(a.turn_timeout / 60)}m`
                           : ""}
+                      {needsReauth(a.auth_status) ? " · reauth needed" : ""}
                     </span>
                     {models.length > 0 && (
                       <select
@@ -1628,6 +1743,14 @@ export default function App() {
                 </div>
                 <RowMenu
                   actions={[
+                    ...(needsReauth(a.auth_status)
+                      ? [
+                          {
+                            label: `Reauth ${providerLabel(a.auth_provider)}`,
+                            onClick: () => openReauth(a.auth_provider || "xai-oauth"),
+                          },
+                        ]
+                      : []),
                     {
                       label: "Edit",
                       onClick: () => {
@@ -1810,9 +1933,19 @@ export default function App() {
                 }}
               />
             )}
+            {modal === "reauth" && (
+              <ReauthPanel
+                provider={reauthProvider}
+                onDone={(ok) => {
+                  setModal(null);
+                  if (ok) void refresh();
+                }}
+              />
+            )}
           </div>
         </div>
       )}
+      </div>
     </div>
   );
 }

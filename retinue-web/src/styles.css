@@ -26,9 +26,53 @@ body {
   font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
 }
 
+.app-root {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
 .shell {
   display: flex;
-  height: 100%;
+  flex: 1;
+  min-height: 0;
+}
+
+.auth-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex: none;
+  padding: 8px 16px;
+  background: #3a2430;
+  border-bottom: 1px solid #f7768e66;
+  color: var(--text);
+  font-size: 13.5px;
+}
+
+.auth-banner .primary {
+  flex: none;
+  padding: 6px 14px;
+}
+
+.auth-error {
+  color: #f7768e;
+  font-size: 13px;
+}
+
+.reauth-code {
+  font: 22px/1.2 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  letter-spacing: 0.12em;
+  padding: 10px 12px;
+  background: var(--bg-input);
+  border-radius: 10px;
+  text-align: center;
+}
+
+.agent-item.needs-auth {
+  outline: 1px solid #f7768e66;
+  border-radius: 8px;
 }
 
 /* ── sidebar ─────────────────────────────────────────────── */

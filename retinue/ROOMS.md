@@ -59,7 +59,10 @@ convention: no `RETINUE_ROOMS_API_KEY` → localhost-only):
 
 | Route | Purpose |
 |---|---|
-| `GET /health` | liveness (unauthenticated) |
+| `GET /health` | liveness (unauthenticated) plus `auth.providers[]` (`ok` / `relogin_required` / `missing`) |
+| `GET /auth` | workspace provider auth + in-flight reauth session |
+| `POST /auth/reauth` | start Hermes device-code login (`{provider?}`, default `xai-oauth`) → `{user_code, verification_url}` |
+| `GET /auth/reauth?session=` | poll that login (`pending` / `approved` / `error` / `expired`) |
 | `GET /models` | workspace model presets a hire can choose from (versioned; an unversioned cloud id is hidden once versioned files exist) |
 | `GET/POST /agents` | roster / hire (`{name, job, how, model?}` — `model` names a preset) |
 | `GET/PATCH /agents/{slug}` | inspect / edit (`{name?, job?, how?, model?, archived?}`) — SOUL rewrite in place; `model` still switches the preset. No restart. |

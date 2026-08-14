@@ -19,6 +19,34 @@ export interface RoomMsg {
   text: string;
 }
 
+export type AuthStatus = "ok" | "relogin_required" | "missing" | "not_required";
+
+export interface ProviderAuth {
+  id: string;
+  status: AuthStatus;
+  error?: string | null;
+}
+
+export interface HealthInfo {
+  ok: boolean;
+  rooms: number;
+  auth?: { providers: ProviderAuth[] };
+}
+
+export interface ReauthSession {
+  session_id: string;
+  provider: string;
+  status: "pending" | "approved" | "error" | "expired";
+  flow?: string;
+  user_code?: string;
+  verification_url?: string;
+  verification_uri?: string;
+  expires_in?: number;
+  poll_interval?: number;
+  error?: string;
+  evicted?: number;
+}
+
 export interface AgentMeta {
   display_name: string;
   slug: string;
@@ -34,6 +62,9 @@ export interface AgentMeta {
   archived?: boolean;
   team?: string | null;
   busy?: boolean;
+  auth_status?: AuthStatus;
+  auth_provider?: string | null;
+  auth_error?: string | null;
 }
 
 export interface SidebarTeam {
@@ -212,6 +243,13 @@ function watchTranscript(
 }
 
 export const api = {
+  health: () => req<HealthInfo>("GET", "/health"),
+  authStatus: () =>
+    req<{ providers: ProviderAuth[]; session: ReauthSession | null }>("GET", "/auth"),
+  startReauth: (provider = "xai-oauth") =>
+    req<ReauthSession>("POST", "/auth/reauth", { provider }),
+  reauthSession: (sessionId: string) =>
+    req<ReauthSession>("GET", `/auth/reauth?session=${encodeURIComponent(sessionId)}`),
   listRooms: () => req<{ rooms: RoomMeta[] }>("GET", "/rooms"),
   createRoom: (
     name: string,
