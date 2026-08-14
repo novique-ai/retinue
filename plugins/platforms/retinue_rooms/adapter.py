@@ -254,12 +254,14 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Resolve the pending turn for this room. Only sends carrying the
-        gateway's ``notify`` final-reply marker count; progress/preview sends
-        must not satisfy a turn."""
+        """Resolve a pending turn, or land a Hermes cron origin delivery.
+
+        Only sends carrying the gateway's ``notify`` final-reply marker
+        satisfy a mention-turn. Progress/preview sends stay silent.
+        Cron ``deliver=origin`` calls this with ``job_id`` and no pending
+        turn — those must append to the transcript (issue #36).
+        """
         message_id = str(int(time.time() * 1000))
-        if not (metadata or {}).get("notify"):
-            return SendResult(success=True, message_id=message_id)
         meta = metadata or {}
         member = (
             meta.get("retinue_member")
@@ -267,7 +269,33 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             or _turn_member.get()
             or _member_from_scope()
         )
-        self._resolve_pending(chat_id, ok=True, text=content or "", member=member)
+        if meta.get("notify"):
+            self._resolve_pending(chat_id, ok=True, text=content or "", member=member)
+            return SendResult(success=True, message_id=message_id)
+        if meta.get("job_id"):
+            return self._append_unsolicited_agent(chat_id, content or "", member, message_id)
+        return SendResult(success=True, message_id=message_id)
+
+    def _append_unsolicited_agent(
+        self,
+        room_id: str,
+        text: str,
+        member: Optional[str],
+        message_id: str,
+    ) -> SendResult:
+        """Persist a cron/origin reply that is not a mention-turn capture."""
+        if self.store.get(room_id) is None:
+            return SendResult(success=False, message_id=message_id, error="no such room")
+        body = (text or "").strip()
+        if not body:
+            return SendResult(success=True, message_id=message_id)
+        speaker = (member or "").strip()
+        if not speaker or speaker == "default":
+            speaker = "cron"
+        self.store.append(
+            room_id,
+            RoomMessage(seq=0, ts=0, kind=KIND_AGENT, speaker=speaker, text=body),
+        )
         return SendResult(success=True, message_id=message_id)
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:

@@ -228,16 +228,17 @@ def test_reauth_start_poll_and_success_evicts(tmp_path, monkeypatch):
         assert "device_code" not in payload
         sid = payload["session_id"]
 
-        # Poller is a daemon thread; wait for approve + shadow clear.
+        # Poller is a daemon thread; wait for approve + shadow clear + evict.
         sess = {}
         shadow: dict = {}
-        for _ in range(50):
+        for _ in range(80):
             st, sess = call("GET", f"/auth/reauth?session={sid}")
             shadow = json.loads((tmp_path / "profiles" / "sally" / "auth.json").read_text(encoding="utf-8"))
             if (
                 st == 200
                 and sess.get("status") == "approved"
                 and "xai-oauth" not in (shadow.get("providers") or {})
+                and any("sally" in key for key in evicted)
             ):
                 break
             __import__("time").sleep(0.02)

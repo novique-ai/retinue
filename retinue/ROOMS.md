@@ -40,6 +40,11 @@ user ──HTTP──▶ RetinueRoomsAdapter ──MessageEvent(profile=member)�
   workspace `auth.json` (context-local `HERMES_HOME`, never a profile copy).
   Same lifetime-aware skew as on-turn refresh. Terminal `invalid_grant` stays
   on the existing Reauth banner. Disable with `RETINUE_XAI_KEEPALIVE_SECONDS=0`.
+- **Hermes cron → room**: a member can schedule a one-shot with the inherited
+  `cronjob` tool (`deliver=origin`). The multiplex ticker fires that
+  profile's cron store. The rooms adapter appends the reply to the
+  transcript as the member (`thread_id`). It does not start a new mention
+  cycle. Progress sends without `job_id` stay off the transcript.
 
 ## Turn-taking (v1)
 
