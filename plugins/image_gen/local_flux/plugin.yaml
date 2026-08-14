@@ -1,0 +1,6 @@
+name: local_flux
+version: 1.0.0
+description: "Self-hosted image generation over an OpenAI-compatible /v1/images/generations endpoint (FLUX, SDXL, diffusers, LocalAI), with an optional exclusive GPU handoff that unloads the chat model for the duration of the call."
+author: Novique
+kind: backend
+requires_env: []
