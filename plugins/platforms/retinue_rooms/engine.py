@@ -466,8 +466,10 @@ def room_briefing(
         "then you stop; that is not too short.",
         "Work you make belongs in this room. Write files under /workspace "
         "and include the /workspace/... path in your reply so it appears "
-        "on the transcript. If you cannot find a piece the user asks for, "
-        "say so in one sentence — never stay silent and never crash out.",
+        "on the transcript. Files the human attached with + live at "
+        "/workspace/uploads/ — you can open them. If you cannot find a "
+        "piece the user asks for, say so in one sentence — never stay "
+        "silent and never crash out.",
     ]
     if principal_about:
         who = people.split(",")[0].strip() if people else "the human"

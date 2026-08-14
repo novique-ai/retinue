@@ -382,6 +382,7 @@ def test_briefing_names_room_and_members():
     assert "Then stop" in text
     assert "say so briefly" not in text
     assert "never stay silent" in text
+    assert "/workspace/uploads/" in text
 
 
 def test_briefing_includes_principal_about():

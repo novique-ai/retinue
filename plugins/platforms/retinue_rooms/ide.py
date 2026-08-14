@@ -57,8 +57,10 @@ def container_key(room_id: str, workspace: str) -> str:
     return f"retinue-{mode}-{rid}"
 
 
-def overlay_env(room: Room) -> Dict[str, str]:
+def overlay_env(room: Room, home_dir: Optional[str] = None) -> Dict[str, str]:
     """Env the terminal backend must see for this room's container."""
+    from . import attachments
+
     mode = parse_workspace(room.workspace)
     env = {
         "TERMINAL_ENV": "docker",
@@ -66,12 +68,15 @@ def overlay_env(room: Room) -> Dict[str, str]:
         "TERMINAL_CWD": CONTAINER_MOUNT,
         "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE": "0",
     }
+    volumes: List[str] = []
     if mode == WORKSPACE_IDE:
         path = resolve_ide_path(room.ide_path)
-        env["TERMINAL_DOCKER_VOLUMES"] = json.dumps([f"{path}:{CONTAINER_MOUNT}:rw"])
-    else:
-        # Clear a gateway-global mount so sandbox rooms stay isolated.
-        env["TERMINAL_DOCKER_VOLUMES"] = "[]"
+        volumes.append(f"{path}:{CONTAINER_MOUNT}:rw")
+    if home_dir:
+        uploads = attachments._dir(home_dir, room.id)
+        os.makedirs(uploads, exist_ok=True)
+        volumes.append(f"{uploads}:{CONTAINER_MOUNT}/uploads:ro")
+    env["TERMINAL_DOCKER_VOLUMES"] = json.dumps(volumes)
     return env
 
 
@@ -136,9 +141,11 @@ def apply_workspace_fields(
 
 
 @contextmanager
-def apply_room_workspace(room: Room) -> Iterator[Dict[str, str]]:
+def apply_room_workspace(
+    room: Room, home_dir: Optional[str] = None
+) -> Iterator[Dict[str, str]]:
     """Overlay process env for one room cycle. Caller must serialize (asyncio lock)."""
-    overlay = overlay_env(room)
+    overlay = overlay_env(room, home_dir)
     saved = {key: os.environ.get(key) for key in overlay}
     os.environ.update(overlay)
     try:
