@@ -29,6 +29,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   hand off. Closes #20.
 - Model dropdown greys out while that member is mid-turn. A `PATCH`
   that would evict them returns 409. Closes #28.
+- Workspace files named in a reply appear in the room. Images render
+  inline; other `/workspace` paths become download links. Closes #19.
 
 ### Added
 

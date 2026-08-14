@@ -118,6 +118,13 @@ export function setApiKey(key: string) {
   localStorage.setItem(KEY_STORAGE, key);
 }
 
+export function workspaceFileUrl(roomId: string, path: string): string {
+  const q = new URLSearchParams({ path });
+  const key = getApiKey();
+  if (key) q.set("access_token", key);
+  return `/rooms/${encodeURIComponent(roomId)}/files?${q.toString()}`;
+}
+
 async function req<T>(
   method: string,
   path: string,

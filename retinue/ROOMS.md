@@ -70,6 +70,7 @@ convention: no `RETINUE_ROOMS_API_KEY` → localhost-only):
 | `POST /rooms/{id}/messages` | user speaks (`{text, from?}`) → 202, cycle runs async |
 | `GET /rooms/{id}/transcript?since=N&wait=S` | poll (optionally long-poll) the transcript — CLI / fallback |
 | `GET /rooms/{id}/stream?since=N` | SSE transcript (`event: messages`); `access_token` query accepted |
+| `GET /rooms/{id}/files?path=` | Bytes of a `/workspace/…` file from that room's computer (images inline in the UI) |
 | `GET/POST /routines` | list / save a demonstration (`{name, room, since?, until?}`) |
 | `GET/DELETE /routines/{slug}` | inspect / remove |
 | `POST /routines/{slug}/run` | replay the prompts into `{room}` (waits each cycle) |
@@ -196,4 +197,6 @@ No token-streaming into the room (finals only — the
 adapter declares no message editing, so the gateway skips the stream consumer); approvals
 degrade to the gateway's text fallback inside the member's turn; mention
 token is the slug, the unique display / first name, or a unique alias prefix
-(ambiguous prefixes do not steal a turn); transcript is plain text (media later).
+(ambiguous prefixes do not steal a turn); `/workspace` paths in a reply
+are served by `GET /rooms/{id}/files` and shown inline (images) or as
+downloads.
