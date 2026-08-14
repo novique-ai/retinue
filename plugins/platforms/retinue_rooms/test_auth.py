@@ -101,9 +101,9 @@ def test_clear_profile_xai_shadows_leaves_root(tmp_path):
     hire.scaffold_profile(str(tmp_path), "Sally", "writer", "draft")
     _write(tmp_path / "profiles" / "sally" / "auth.json", _xai_store(access="", refresh=""))
     assert auth.clear_profile_xai_shadows(str(tmp_path)) == 1
-    shadow = json.loads((tmp_path / "profiles" / "sally" / "auth.json").read_text())
+    shadow = json.loads((tmp_path / "profiles" / "sally" / "auth.json").read_text(encoding="utf-8"))
     assert "xai-oauth" not in (shadow.get("providers") or {})
-    root = json.loads((tmp_path / "auth.json").read_text())
+    root = json.loads((tmp_path / "auth.json").read_text(encoding="utf-8"))
     assert root["providers"]["xai-oauth"]["tokens"]["refresh_token"] == "rootref"
 
 
@@ -223,7 +223,7 @@ def test_reauth_start_poll_and_success_evicts(tmp_path, monkeypatch):
         shadow: dict = {}
         for _ in range(50):
             st, sess = call("GET", f"/auth/reauth?session={sid}")
-            shadow = json.loads((tmp_path / "profiles" / "sally" / "auth.json").read_text())
+            shadow = json.loads((tmp_path / "profiles" / "sally" / "auth.json").read_text(encoding="utf-8"))
             if (
                 st == 200
                 and sess.get("status") == "approved"
