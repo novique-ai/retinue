@@ -12,6 +12,7 @@ import {
   api,
   AuthRequiredError,
   getApiKey,
+  workspaceFileUrl,
   ModelPreset,
   RoomMeta,
   RoomMsg,
@@ -297,16 +298,58 @@ function MentionBody({
   return <>{parts}</>;
 }
 
+const WORKSPACE_FILE = /\/workspace\/[A-Za-z0-9._+/-]+/g;
+const IMAGE_EXT = /\.(png|jpe?g|gif|webp|svg)$/i;
+
+function workspacePaths(text: string): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const match of text.matchAll(WORKSPACE_FILE)) {
+    if (!seen.has(match[0])) {
+      seen.add(match[0]);
+      out.push(match[0]);
+    }
+  }
+  return out;
+}
+
+function WorkspaceStrip({ roomId, text }: { roomId: string; text: string }) {
+  const paths = workspacePaths(text);
+  if (!paths.length) return null;
+  return (
+    <div className="workspace-strip">
+      {paths.map((path) => {
+        const href = workspaceFileUrl(roomId, path);
+        if (IMAGE_EXT.test(path)) {
+          return (
+            <a key={path} className="workspace-image" href={href} target="_blank" rel="noreferrer">
+              <img src={href} alt={path} />
+              <span className="nav-sub">{path}</span>
+            </a>
+          );
+        }
+        return (
+          <a key={path} className="workspace-file" href={href} target="_blank" rel="noreferrer">
+            {path}
+          </a>
+        );
+      })}
+    </div>
+  );
+}
+
 function MessageRow({
   msg,
   userName,
   members,
   handleOf,
+  roomId,
 }: {
   msg: RoomMsg;
   userName: string;
   members: string[];
   handleOf: (slug: string) => string;
+  roomId: string;
 }) {
   if (msg.kind === "system") {
     return <div className="msg-system">— {msg.text} —</div>;
@@ -328,6 +371,7 @@ function MessageRow({
         <div className="msg-text">
           <MentionBody text={msg.text} members={members} handleOf={handleOf} />
         </div>
+        <WorkspaceStrip roomId={roomId} text={msg.text} />
       </div>
     </div>
   );
@@ -554,6 +598,7 @@ function RoomView({
             userName={userName}
             members={room.members}
             handleOf={handleOf}
+            roomId={room.id}
           />
         ))}
         {thinking[0] && (

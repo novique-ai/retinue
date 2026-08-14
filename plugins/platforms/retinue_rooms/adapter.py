@@ -1004,6 +1004,17 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
             query = parse_qs(parsed.query)
             since = int((query.get("since") or ["0"])[0] or 0)
             return self._sse_transcript(parts[1], since)
+        if len(parts) == 3 and parts[0] == "rooms" and parts[2] == "files":
+            room = adapter.store.get(parts[1])
+            if room is None:
+                return self._json(404, {"error": "no such room"})
+            query = parse_qs(parsed.query)
+            raw = (query.get("path") or [""])[0] or ""
+            try:
+                data, ctype = workspace.read_workspace_file(room, raw)
+            except workspace.WorkspaceFileError as e:
+                return self._json(e.status, {"error": str(e)})
+            return self._bytes(200, data, ctype)
         return self._json(404, {"error": "not found"})
 
     def _sse_transcript(self, room_id: str, since: int) -> None:
