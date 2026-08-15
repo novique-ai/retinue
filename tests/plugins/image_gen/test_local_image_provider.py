@@ -1,4 +1,4 @@
-"""Tests for the bundled local_flux image_gen plugin.
+"""Tests for the bundled local_image image_gen plugin.
 
 The HTTP path is the same OpenAI-compatible shape ``deepinfra`` already
 covers, so these tests pin the part that is new and dangerous: the
@@ -16,7 +16,7 @@ import time
 
 import pytest
 
-import plugins.image_gen.local_flux as local_flux
+import plugins.image_gen.local_image as local_image
 
 
 # 1×1 transparent PNG — valid bytes for save_b64_image()
@@ -36,14 +36,14 @@ def _isolation(tmp_path, monkeypatch):
     """Keep saved images and the GPU lock inside tmp_path."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     for var in (
-        "LOCAL_FLUX_ENDPOINT",
-        "LOCAL_FLUX_MODEL",
-        "LOCAL_FLUX_QUALITY",
-        "LOCAL_FLUX_READY_URL",
-        "LOCAL_FLUX_LOCK_PATH",
+        "LOCAL_IMAGE_ENDPOINT",
+        "LOCAL_IMAGE_MODEL",
+        "LOCAL_IMAGE_QUALITY",
+        "LOCAL_IMAGE_READY_URL",
+        "LOCAL_IMAGE_LOCK_PATH",
     ):
         monkeypatch.delenv(var, raising=False)
-    monkeypatch.setenv("LOCAL_FLUX_LOCK_PATH", str(tmp_path / "gpu.lock"))
+    monkeypatch.setenv("LOCAL_IMAGE_LOCK_PATH", str(tmp_path / "gpu.lock"))
     yield
 
 
@@ -82,10 +82,10 @@ class _Recorder:
 
 
 def _install(monkeypatch, tmp_path, *, recorder, ready=False, post=None, config=None):
-    monkeypatch.setattr(local_flux, "_load_config", lambda: config or _config(tmp_path))
-    monkeypatch.setattr(local_flux, "_run", recorder)
-    monkeypatch.setattr(local_flux, "_is_ready", lambda url, timeout: ready)
-    monkeypatch.setattr(local_flux, "RELEASE_RETRY_DELAY", 0.0)
+    monkeypatch.setattr(local_image, "_load_config", lambda: config or _config(tmp_path))
+    monkeypatch.setattr(local_image, "_run", recorder)
+    monkeypatch.setattr(local_image, "_is_ready", lambda url, timeout: ready)
+    monkeypatch.setattr(local_image, "RELEASE_RETRY_DELAY", 0.0)
     if post is not None:
         import requests
 
@@ -123,7 +123,7 @@ def test_release_runs_even_when_generation_fails(monkeypatch, tmp_path):
     rec = _Recorder()
     _install(monkeypatch, tmp_path, recorder=rec, post=_boom_post)
 
-    result = local_flux.LocalFluxImageGenProvider().generate("a cat")
+    result = local_image.LocalImageGenProvider().generate("a cat")
 
     assert result["success"] is False
     assert result["error_type"] == "api_error"
@@ -134,13 +134,13 @@ def test_release_runs_after_a_successful_generation(monkeypatch, tmp_path):
     rec = _Recorder()
     _install(monkeypatch, tmp_path, recorder=rec, post=_ok_post)
 
-    result = local_flux.LocalFluxImageGenProvider().generate("a cat")
+    result = local_image.LocalImageGenProvider().generate("a cat")
 
     assert result["success"] is True
     assert rec.kinds == ["acquire", "release"]
-    assert result["provider"] == "local_flux"
+    assert result["provider"] == "local_image"
     assert result["quality"] == "high"
-    assert result["size"] == local_flux.DEFAULT_SIZES["landscape"]
+    assert result["size"] == local_image.DEFAULT_SIZES["landscape"]
     assert "warning" not in result
 
 
@@ -154,7 +154,7 @@ def test_already_serving_skips_both_commands(monkeypatch, tmp_path):
     rec = _Recorder()
     _install(monkeypatch, tmp_path, recorder=rec, ready=True, post=_ok_post)
 
-    result = local_flux.LocalFluxImageGenProvider().generate("a cat")
+    result = local_image.LocalImageGenProvider().generate("a cat")
 
     assert result["success"] is True
     assert rec.calls == [], "must not acquire or release a GPU that was already serving"
@@ -170,7 +170,7 @@ def test_acquire_refusal_is_surfaced_and_not_retried(monkeypatch, tmp_path):
     rec = _Recorder(acquire=(3, "REFUSED: protected window 'nightly' is active"))
     _install(monkeypatch, tmp_path, recorder=rec, post=_ok_post)
 
-    result = local_flux.LocalFluxImageGenProvider().generate("a cat")
+    result = local_image.LocalImageGenProvider().generate("a cat")
 
     assert result["success"] is False
     assert result["error_type"] == "handoff_refused"
@@ -188,7 +188,7 @@ def test_release_retried_once_then_warns(monkeypatch, tmp_path):
     rec = _Recorder(release=(1, "ssh: connect to host gpu-host port 22: timed out"))
     _install(monkeypatch, tmp_path, recorder=rec, post=_ok_post)
 
-    result = local_flux.LocalFluxImageGenProvider().generate("a cat")
+    result = local_image.LocalImageGenProvider().generate("a cat")
 
     assert result["success"] is True, "the image was produced; the warning rides along"
     assert rec.kinds == ["acquire", "release", "release"], "release gets exactly one retry"
@@ -207,7 +207,7 @@ def test_release_retry_that_succeeds_leaves_no_warning(monkeypatch, tmp_path):
     rec = _Flaky()
     _install(monkeypatch, tmp_path, recorder=rec, post=_ok_post)
 
-    result = local_flux.LocalFluxImageGenProvider().generate("a cat")
+    result = local_image.LocalImageGenProvider().generate("a cat")
 
     assert result["success"] is True
     assert "warning" not in result
@@ -238,7 +238,7 @@ def test_lock_serialises_concurrent_handoffs(monkeypatch, tmp_path):
     rec = _Recorder()
     _install(monkeypatch, tmp_path, recorder=rec, post=_counting_post)
 
-    provider = local_flux.LocalFluxImageGenProvider()
+    provider = local_image.LocalImageGenProvider()
     results = []
     threads = [
         threading.Thread(target=lambda: results.append(provider.generate("a cat")))
@@ -260,8 +260,8 @@ def test_gpu_busy_is_reported_when_the_lock_cannot_be_taken(monkeypatch, tmp_pat
     rec = _Recorder()
     _install(monkeypatch, tmp_path, recorder=rec, post=_ok_post, config=cfg)
 
-    provider = local_flux.LocalFluxImageGenProvider()
-    held = local_flux._GpuLock(cfg["handoff"]["lock_path"], 5.0)
+    provider = local_image.LocalImageGenProvider()
+    held = local_image._GpuLock(cfg["handoff"]["lock_path"], 5.0)
     held.__enter__()
     try:
         result = provider.generate("a cat")
@@ -285,12 +285,12 @@ def test_is_available_requires_explicit_config(monkeypatch):
     registry's single-available-provider fallback silently route a user's
     images at a server they never configured.
     """
-    provider = local_flux.LocalFluxImageGenProvider()
+    provider = local_image.LocalImageGenProvider()
 
-    monkeypatch.setattr(local_flux, "_load_config", dict)
+    monkeypatch.setattr(local_image, "_load_config", dict)
     assert provider.is_available() is False
 
-    monkeypatch.setattr(local_flux, "_load_config", lambda: {"endpoint": "http://x:8100/v1"})
+    monkeypatch.setattr(local_image, "_load_config", lambda: {"endpoint": "http://x:8100/v1"})
     assert provider.is_available() is True
 
 
@@ -305,7 +305,7 @@ def test_no_handoff_configured_runs_no_commands(monkeypatch, tmp_path):
         config={"endpoint": "http://always-on:8100/v1"},
     )
 
-    result = local_flux.LocalFluxImageGenProvider().generate("a cat")
+    result = local_image.LocalImageGenProvider().generate("a cat")
 
     assert result["success"] is True
     assert rec.calls == []
@@ -315,7 +315,7 @@ def test_rejects_image_to_image(monkeypatch, tmp_path):
     rec = _Recorder()
     _install(monkeypatch, tmp_path, recorder=rec, post=_ok_post)
 
-    result = local_flux.LocalFluxImageGenProvider().generate(
+    result = local_image.LocalImageGenProvider().generate(
         "a cat", image_url="/workspace/uploads/cat.png"
     )
 
@@ -328,7 +328,7 @@ def test_blank_prompt_is_rejected_before_the_gpu(monkeypatch, tmp_path):
     rec = _Recorder()
     _install(monkeypatch, tmp_path, recorder=rec, post=_ok_post)
 
-    result = local_flux.LocalFluxImageGenProvider().generate("   ")
+    result = local_image.LocalImageGenProvider().generate("   ")
 
     assert result["success"] is False
     assert result["error_type"] == "invalid_argument"
@@ -346,14 +346,171 @@ def test_aspect_ratio_selects_size(monkeypatch, tmp_path):
     rec = _Recorder()
     _install(monkeypatch, tmp_path, recorder=rec, ready=True, post=_capture)
 
-    local_flux.LocalFluxImageGenProvider().generate("a cat", aspect_ratio="portrait")
+    local_image.LocalImageGenProvider().generate("a cat", aspect_ratio="portrait")
 
-    assert seen["size"] == local_flux.DEFAULT_SIZES["portrait"]
+    assert seen["size"] == local_image.DEFAULT_SIZES["portrait"]
     assert seen["url"] == "http://gpu-host:8100/v1/images/generations"
 
 
 def test_command_parsing_accepts_string_and_list():
-    assert local_flux._command("/bin/gpu-mode graphics") == ["/bin/gpu-mode", "graphics"]
-    assert local_flux._command(["/bin/gpu-mode", "llm"]) == ["/bin/gpu-mode", "llm"]
-    assert local_flux._command("") is None
-    assert local_flux._command(None) is None
+    assert local_image._command("/bin/gpu-mode graphics") == ["/bin/gpu-mode", "graphics"]
+    assert local_image._command(["/bin/gpu-mode", "llm"]) == ["/bin/gpu-mode", "llm"]
+    assert local_image._command("") is None
+    assert local_image._command(None) is None
+
+
+# ---------------------------------------------------------------------------
+# Two tiers — `upscale` selects the hi-res model
+# ---------------------------------------------------------------------------
+
+
+def _two_tier_config(tmp_path):
+    """Fast tier + a hi-res tier on a second endpoint, no handoff.
+
+    No ``handoff`` block: this mirrors the co-resident deployment, where the
+    image models sit alongside the chat model and nothing has to be unloaded.
+    """
+    return {
+        "endpoint": "http://gpu-host:8102/v1",
+        "sizes": {"square": "1024x1024", "landscape": "1536x1024"},
+        "hi_res": {
+            "endpoint": "http://gpu-host:8101/v1",
+            "sizes": {"square": "2048x2048", "landscape": "2496x1664"},
+        },
+    }
+
+
+def _capturing_post(seen):
+    def _capture(url, json=None, timeout=None):  # noqa: A002
+        seen["url"] = url
+        seen["size"] = json["size"]
+        return _ok_post()
+
+    return _capture
+
+
+def test_default_request_uses_the_fast_tier(monkeypatch, tmp_path):
+    """No upscale flag means the fast model — the common path stays cheap."""
+    seen = {}
+    _install(
+        monkeypatch, tmp_path,
+        recorder=_Recorder(), ready=True,
+        post=_capturing_post(seen), config=_two_tier_config(tmp_path),
+    )
+
+    result = local_image.LocalImageGenProvider().generate("a cat", aspect_ratio="square")
+
+    assert seen["url"] == "http://gpu-host:8102/v1/images/generations"
+    assert seen["size"] == "1024x1024"
+    assert result["upscaled"] is False
+    assert result["tier"] == "fast"
+
+
+def test_upscale_routes_to_the_hi_res_endpoint(monkeypatch, tmp_path):
+    """upscale=true must hit the OTHER endpoint at the OTHER resolution.
+
+    Both halves are asserted: routing to the hi-res port while still sending
+    the fast tier's size would produce a small image from the slow model —
+    the worst of both.
+    """
+    seen = {}
+    _install(
+        monkeypatch, tmp_path,
+        recorder=_Recorder(), ready=True,
+        post=_capturing_post(seen), config=_two_tier_config(tmp_path),
+    )
+
+    result = local_image.LocalImageGenProvider().generate(
+        "a cat", aspect_ratio="square", upscale=True
+    )
+
+    assert seen["url"] == "http://gpu-host:8101/v1/images/generations"
+    assert seen["size"] == "2048x2048"
+    assert result["upscaled"] is True
+    assert result["tier"] == "hi_res"
+
+
+def test_upscale_honours_aspect_ratio_on_the_hi_res_tier(monkeypatch, tmp_path):
+    seen = {}
+    _install(
+        monkeypatch, tmp_path,
+        recorder=_Recorder(), ready=True,
+        post=_capturing_post(seen), config=_two_tier_config(tmp_path),
+    )
+
+    local_image.LocalImageGenProvider().generate(
+        "a cat", aspect_ratio="landscape", upscale=True
+    )
+
+    assert seen["size"] == "2496x1664"
+
+
+def test_upscale_without_a_hi_res_tier_does_not_claim_to_have_upscaled(
+    monkeypatch, tmp_path
+):
+    """The anti-silent-degradation rule.
+
+    With no hi_res configured, upscale=true still returns an image — but it
+    must NOT report upscaled: True, or a caller asking for 2K gets a 1K image
+    labelled as if it were large.
+    """
+    seen = {}
+    config = _two_tier_config(tmp_path)
+    del config["hi_res"]
+    _install(
+        monkeypatch, tmp_path,
+        recorder=_Recorder(), ready=True,
+        post=_capturing_post(seen), config=config,
+    )
+
+    result = local_image.LocalImageGenProvider().generate("a cat", upscale=True)
+
+    assert seen["url"] == "http://gpu-host:8102/v1/images/generations"
+    assert result["success"] is True
+    assert result["upscaled"] is False
+    assert result["tier"] == "fast"
+
+
+def test_hi_res_sizes_fall_back_to_the_fast_tier_map(monkeypatch, tmp_path):
+    """A hi_res block with only an endpoint still resolves every aspect."""
+    seen = {}
+    config = _two_tier_config(tmp_path)
+    config["hi_res"] = {"endpoint": "http://gpu-host:8101/v1"}
+    _install(
+        monkeypatch, tmp_path,
+        recorder=_Recorder(), ready=True,
+        post=_capturing_post(seen), config=config,
+    )
+
+    local_image.LocalImageGenProvider().generate(
+        "a cat", aspect_ratio="square", upscale=True
+    )
+
+    assert seen["url"] == "http://gpu-host:8101/v1/images/generations"
+    assert seen["size"] == "1024x1024"
+
+
+def test_capabilities_advertise_the_hi_res_tier_only_when_configured(
+    monkeypatch, tmp_path
+):
+    """The agent learns about the tier through capabilities(), so it must
+    appear exactly when the tier is real."""
+    config = _two_tier_config(tmp_path)
+    monkeypatch.setattr(local_image, "_load_config", lambda: config)
+    caps = local_image.LocalImageGenProvider().capabilities()
+    assert caps.get("supports_upscale") is True
+    assert "2048x2048" in caps.get("upscale_note", "")
+
+    no_tier = _two_tier_config(tmp_path)
+    del no_tier["hi_res"]
+    monkeypatch.setattr(local_image, "_load_config", lambda: no_tier)
+    caps = local_image.LocalImageGenProvider().capabilities()
+    assert "supports_upscale" not in caps
+
+
+def test_hi_res_tier_ignores_an_empty_endpoint(monkeypatch, tmp_path):
+    """A hi_res block present but blank is not a tier — treat it as absent."""
+    config = _two_tier_config(tmp_path)
+    config["hi_res"] = {"endpoint": "   "}
+    monkeypatch.setattr(local_image, "_load_config", lambda: config)
+    assert local_image._hi_res_tier(config) is None

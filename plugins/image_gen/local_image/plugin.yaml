@@ -1,0 +1,6 @@
+name: local_image
+version: 1.0.0
+description: "Self-hosted image generation over one or two OpenAI-compatible /v1/images/generations endpoints (diffusers, LocalAI, SDXL, any local server), with an optional hi-res tier and an optional exclusive GPU handoff for single-GPU hosts."
+author: Novique
+kind: backend
+requires_env: []

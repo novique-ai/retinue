@@ -1,36 +1,56 @@
-"""Self-hosted image generation backend, with an exclusive GPU handoff.
+"""Self-hosted image generation backend, with an optional hi-res tier.
 
 Talks to any OpenAI-compatible ``/v1/images/generations`` endpoint you run
-yourself — a diffusers server, LocalAI, vLLM, a FLUX or SDXL box. The request
-path is the same one :mod:`plugins.image_gen.deepinfra` uses; what is new here
-is the **handoff**.
+yourself — a diffusers server, LocalAI, vLLM, an SDXL box. The request path is
+the same one :mod:`plugins.image_gen.deepinfra` uses. What is specific to
+running on your own hardware is the two features below.
 
-The handoff
------------
-One accelerator usually cannot hold a chat model and a diffusion model at the
-same time. Generating an image on your own hardware therefore means unloading
-the chat model, loading the diffusion model, generating, and putting the chat
-model back. That sequence — not the HTTP call — is the hard part, and it is
-what this provider manages.
+Two tiers
+---------
+Fast local models and high-resolution local models are usually *different
+models*, not one model with a quality knob. So this provider takes an optional
+second endpoint and routes to it when the caller asks for the high-resolution
+pass via the standard ``upscale`` kwarg::
+
+    image_gen:
+      provider: local_image
+      local_image:
+        endpoint: http://gpu-host:8102/v1     # fast tier — the default
+        sizes:
+          square: 1024x1024
+        hi_res:
+          endpoint: http://gpu-host:8101/v1   # native high-resolution model
+          sizes:
+            square: 2048x2048
+
+``upscale`` is deliberately reused rather than inventing a parameter: it is
+already in the shared ``image_generate`` schema, already forwarded to
+providers, and already means "I want the high-resolution result". Here it
+selects the model that renders natively at that resolution instead of running
+a post-pass. Omit ``hi_res`` and ``upscale`` is a no-op, as it is for every
+other provider without an upscaler.
+
+The optional handoff
+--------------------
+If the image model and the chat model *can* be co-resident on the accelerator,
+none of this is needed — point ``endpoint`` at an always-on server and stop
+reading. The handoff exists for the single-GPU case, where generating means
+unloading the chat model, loading the diffusion model, generating, and putting
+the chat model back.
 
 You supply the commands; this plugin only decides *when* to run them::
 
-    image_gen:
-      provider: local_flux
-      local_flux:
-        endpoint: http://gpu-host:8100/v1
-        quality: high
         handoff:
           acquire: /path/to/gpu-mode graphics
           release: /path/to/gpu-mode llm
           ready_url: http://gpu-host:8100/health
 
-Omit ``handoff`` entirely and this is a plain client for an always-on image
-server.
+Omit ``handoff`` entirely — the normal case for a co-resident server — and
+this is a plain HTTP client.
 
-Four rules make it safe to hand to an agent that is *itself* running on the
-chat model it has to displace (which works — no inference happens while a tool
-call is in flight):
+Four rules make the handoff safe to give to an agent that is *itself* running
+on the chat model it has to displace (which works — no inference happens while
+a tool call is in flight):
 
 1. **Release always runs.** It is in a ``finally``, so a failed generation, a
    timeout, or an exception still puts the chat model back. A stranded GPU is
@@ -71,7 +91,7 @@ from agent.image_gen_provider import (
 logger = logging.getLogger(__name__)
 
 
-PROVIDER_NAME = "local_flux"
+PROVIDER_NAME = "local_image"
 
 DEFAULT_ENDPOINT = "http://127.0.0.1:8100/v1"
 
@@ -105,7 +125,7 @@ RELEASE_RETRY_DELAY = 5.0
 
 
 def _load_config() -> Dict[str, Any]:
-    """Read ``image_gen.local_flux`` from config.yaml (``{}`` on any failure)."""
+    """Read ``image_gen.local_image`` from config.yaml (``{}`` on any failure)."""
     try:
         from hermes_cli.config import load_config
 
@@ -141,18 +161,59 @@ def _float_setting(cfg: Dict[str, Any], key: str, default: float) -> float:
 
 def _endpoint(cfg: Dict[str, Any]) -> str:
     """Base URL ending in ``/v1``, no trailing slash."""
-    return _str_setting(cfg, "endpoint", "LOCAL_FLUX_ENDPOINT", DEFAULT_ENDPOINT).rstrip("/")
+    return _str_setting(cfg, "endpoint", "LOCAL_IMAGE_ENDPOINT", DEFAULT_ENDPOINT).rstrip("/")
 
 
-def _sizes(cfg: Dict[str, Any]) -> Dict[str, str]:
+def _sizes(cfg: Dict[str, Any], defaults: Optional[Dict[str, str]] = None) -> Dict[str, str]:
     """Aspect-ratio to size map, with per-key overrides from config."""
-    sizes = dict(DEFAULT_SIZES)
+    sizes = dict(defaults if defaults is not None else DEFAULT_SIZES)
     override = cfg.get("sizes")
     if isinstance(override, dict):
         for key, value in override.items():
             if key in sizes and isinstance(value, str) and value.strip():
                 sizes[key] = value.strip()
     return sizes
+
+
+class _Tier:
+    """One resolved endpoint and its size map.
+
+    The fast tier is the provider's default. The hi-res tier is a *different
+    model on a different port*, selected by ``upscale`` — see the module
+    docstring for why that kwarg is reused rather than a new one invented.
+    """
+
+    def __init__(self, cfg: Dict[str, Any], *, endpoint: str, sizes: Dict[str, str], name: str) -> None:
+        self.cfg = cfg
+        self.endpoint = endpoint
+        self.sizes = sizes
+        self.name = name
+
+    def size_for(self, aspect: str) -> str:
+        return self.sizes.get(aspect, self.sizes.get("square", DEFAULT_SIZES["square"]))
+
+
+def _fast_tier(cfg: Dict[str, Any]) -> _Tier:
+    return _Tier(cfg, endpoint=_endpoint(cfg), sizes=_sizes(cfg), name="fast")
+
+
+def _hi_res_tier(cfg: Dict[str, Any]) -> Optional[_Tier]:
+    """The hi-res tier, or None when it is not configured.
+
+    Returning None rather than falling back to the fast endpoint is
+    deliberate: an ``upscale=True`` call that quietly returns a 1K image is
+    the silent-degradation failure this tier exists to avoid. Callers report
+    ``upscaled: False`` instead, so the result never overstates itself.
+    """
+    raw = cfg.get("hi_res")
+    if not isinstance(raw, dict):
+        return None
+    endpoint = _str_setting(raw, "endpoint", "LOCAL_IMAGE_HI_RES_ENDPOINT", "").rstrip("/")
+    if not endpoint:
+        return None
+    # Hi-res sizes default to the fast tier's map so a partial config still
+    # resolves every aspect ratio; the point of the tier is the endpoint.
+    return _Tier(raw, endpoint=endpoint, sizes=_sizes(raw, _sizes(cfg)), name="hi_res")
 
 
 def _command(value: Any) -> Optional[List[str]]:
@@ -185,12 +246,12 @@ class _Handoff:
         raw = raw if isinstance(raw, dict) else {}
         self.acquire = _command(raw.get("acquire"))
         self.release = _command(raw.get("release"))
-        self.ready_url = _str_setting(raw, "ready_url", "LOCAL_FLUX_READY_URL", "")
+        self.ready_url = _str_setting(raw, "ready_url", "LOCAL_IMAGE_READY_URL", "")
         self.acquire_timeout = _float_setting(raw, "acquire_timeout", DEFAULT_ACQUIRE_TIMEOUT)
         self.release_timeout = _float_setting(raw, "release_timeout", DEFAULT_RELEASE_TIMEOUT)
         self.lock_timeout = _float_setting(raw, "lock_timeout", DEFAULT_LOCK_TIMEOUT)
         self.ready_timeout = _float_setting(raw, "ready_timeout", DEFAULT_READY_TIMEOUT)
-        self.lock_path = _str_setting(raw, "lock_path", "LOCAL_FLUX_LOCK_PATH", _default_lock_path(endpoint))
+        self.lock_path = _str_setting(raw, "lock_path", "LOCAL_IMAGE_LOCK_PATH", _default_lock_path(endpoint))
 
     @property
     def enabled(self) -> bool:
@@ -342,7 +403,7 @@ def _release(handoff: _Handoff) -> Optional[str]:
 # ---------------------------------------------------------------------------
 
 
-class LocalFluxImageGenProvider(ImageGenProvider):
+class LocalImageGenProvider(ImageGenProvider):
     """Image generation on hardware you own, with an optional GPU handoff."""
 
     @property
@@ -354,7 +415,7 @@ class LocalFluxImageGenProvider(ImageGenProvider):
         return "Local (self-hosted)"
 
     def is_available(self) -> bool:
-        """Available only once ``image_gen.local_flux`` exists in config.
+        """Available only once ``image_gen.local_image`` exists in config.
 
         Deliberately strict: this provider needs no API key, so an
         always-True answer would let the registry's single-available-provider
@@ -365,7 +426,7 @@ class LocalFluxImageGenProvider(ImageGenProvider):
 
     def list_models(self) -> List[Dict[str, Any]]:
         cfg = _load_config()
-        model = _str_setting(cfg, "model", "LOCAL_FLUX_MODEL", "")
+        model = _str_setting(cfg, "model", "LOCAL_IMAGE_MODEL", "")
         endpoint = _endpoint(cfg)
         return [
             {
@@ -378,22 +439,38 @@ class LocalFluxImageGenProvider(ImageGenProvider):
 
     def default_model(self) -> Optional[str]:
         cfg = _load_config()
-        return _str_setting(cfg, "model", "LOCAL_FLUX_MODEL", "") or None
+        return _str_setting(cfg, "model", "LOCAL_IMAGE_MODEL", "") or None
 
     def capabilities(self) -> Dict[str, Any]:
-        """Text-to-image only.
+        """Text-to-image only, plus the hi-res tier when one is configured.
 
         OpenAI-compatible ``/v1/images/generations`` has no portable
         image-to-image shape across self-hosted servers, so editing is
         declined explicitly rather than half-supported.
+
+        ``supports_upscale`` is surfaced so the dynamically-built
+        ``image_generate`` description tells the agent that the high-resolution
+        pass is real here — without it the agent has no way to learn that a
+        second model is a request away.
         """
-        return {"modalities": ["text"], "max_reference_images": 0}
+        cfg = _load_config()
+        caps: Dict[str, Any] = {"modalities": ["text"], "max_reference_images": 0}
+        hi_res = _hi_res_tier(cfg)
+        if hi_res is not None:
+            caps["supports_upscale"] = True
+            caps["upscale_note"] = (
+                f"Set upscale=true for the high-resolution model "
+                f"({hi_res.size_for('square')} native); omit it for the fast model "
+                f"({_fast_tier(cfg).size_for('square')}). They are different models "
+                f"on different endpoints, so the hi-res one is markedly slower."
+            )
+        return caps
 
     def get_setup_schema(self) -> Dict[str, Any]:
         return {
             "name": "Local (self-hosted)",
             "badge": "free",
-            "tag": "Your own FLUX/SDXL server, with optional GPU handoff",
+            "tag": "Your own image server, with an optional hi-res tier",
             "env_vars": [],
         }
 
@@ -427,12 +504,34 @@ class LocalFluxImageGenProvider(ImageGenProvider):
             )
 
         cfg = _load_config()
-        endpoint = _endpoint(cfg)
-        model = _str_setting(cfg, "model", "LOCAL_FLUX_MODEL", "")
-        quality = _str_setting(cfg, "quality", "LOCAL_FLUX_QUALITY", "high")
-        size = _sizes(cfg).get(aspect, DEFAULT_SIZES["square"])
-        generate_timeout = _float_setting(cfg, "timeout", DEFAULT_GENERATE_TIMEOUT)
+
+        # Tier selection. `upscale` is the standard "I want the hi-res result"
+        # kwarg (agent/image_gen_provider.py); here it picks the model that
+        # renders natively at that resolution. When no hi-res tier is
+        # configured we stay on the fast one and report upscaled: False rather
+        # than silently returning a small image as though it were large.
+        want_hi_res = bool(kwargs.get("upscale"))
+        hi_res = _hi_res_tier(cfg) if want_hi_res else None
+        tier = hi_res or _fast_tier(cfg)
+        upscaled = hi_res is not None
+
+        endpoint = tier.endpoint
+        model = _str_setting(tier.cfg, "model", "LOCAL_IMAGE_MODEL", "") or _str_setting(
+            cfg, "model", "LOCAL_IMAGE_MODEL", ""
+        )
+        quality = _str_setting(cfg, "quality", "LOCAL_IMAGE_QUALITY", "high")
+        size = tier.size_for(aspect)
+        generate_timeout = _float_setting(tier.cfg, "timeout", 0.0) or _float_setting(
+            cfg, "timeout", DEFAULT_GENERATE_TIMEOUT
+        )
         handoff = _Handoff(cfg, endpoint)
+
+        if want_hi_res and hi_res is None:
+            logger.info(
+                "image_gen.%s: upscale requested but no hi_res tier is configured — "
+                "serving at the fast tier and reporting upscaled=False",
+                PROVIDER_NAME,
+            )
 
         try:
             with _GpuLock(handoff.lock_path, handoff.lock_timeout, enabled=handoff.enabled):
@@ -445,6 +544,8 @@ class LocalFluxImageGenProvider(ImageGenProvider):
                     size=size,
                     generate_timeout=generate_timeout,
                     handoff=handoff,
+                    tier=tier.name,
+                    upscaled=upscaled,
                 )
         except TimeoutError as exc:
             return error_response(
@@ -476,6 +577,8 @@ class LocalFluxImageGenProvider(ImageGenProvider):
         size: str,
         generate_timeout: float,
         handoff: _Handoff,
+        tier: str = "fast",
+        upscaled: bool = False,
     ) -> Dict[str, Any]:
         """Acquire the GPU if needed, generate, and always give it back."""
         acquired = False
@@ -513,6 +616,8 @@ class LocalFluxImageGenProvider(ImageGenProvider):
                 quality=quality,
                 size=size,
                 timeout=generate_timeout,
+                tier=tier,
+                upscaled=upscaled,
             )
         finally:
             if acquired:
@@ -538,6 +643,8 @@ class LocalFluxImageGenProvider(ImageGenProvider):
         quality: str,
         size: str,
         timeout: float,
+        tier: str = "fast",
+        upscaled: bool = False,
     ) -> Dict[str, Any]:
         """POST to ``/images/generations`` and materialise the result."""
         try:
@@ -562,7 +669,12 @@ class LocalFluxImageGenProvider(ImageGenProvider):
             payload["model"] = model
 
         logger.info(
-            "image_gen.%s: generating %s at %s quality via %s", PROVIDER_NAME, size, quality, url
+            "image_gen.%s: generating %s at %s quality via %s (tier=%s)",
+            PROVIDER_NAME,
+            size,
+            quality,
+            url,
+            tier,
         )
         try:
             # Deliberately no retry layer: a retried request on a busy
@@ -643,10 +755,19 @@ class LocalFluxImageGenProvider(ImageGenProvider):
             prompt=prompt,
             aspect_ratio=aspect,
             provider=PROVIDER_NAME,
-            extra={"size": size, "quality": quality, "endpoint": endpoint},
+            extra={
+                "size": size,
+                "quality": quality,
+                "endpoint": endpoint,
+                "tier": tier,
+                # Contract from agent/image_gen_provider.py: a provider that
+                # honors `upscale` reports it. False here is meaningful — it
+                # tells the caller the hi-res tier did NOT serve this image.
+                "upscaled": upscaled,
+            },
         )
 
 
 def register(ctx) -> None:
-    """Plugin entry point — wire ``LocalFluxImageGenProvider`` into the registry."""
-    ctx.register_image_gen_provider(LocalFluxImageGenProvider())
+    """Plugin entry point — wire ``LocalImageGenProvider`` into the registry."""
+    ctx.register_image_gen_provider(LocalImageGenProvider())
