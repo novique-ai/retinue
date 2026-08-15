@@ -1,0 +1,6 @@
+# Cloud: Anthropic Claude Opus 5 via workspace API key or OAuth.
+# Versioned like the grok presets so the sidebar switcher, which shows the
+# preset name alone, still says which Opus a retainer is on.
+model:
+  default: claude-opus-5
+  provider: anthropic

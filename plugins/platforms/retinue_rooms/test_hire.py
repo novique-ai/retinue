@@ -513,3 +513,30 @@ def test_connect_rescan_picks_up_disk_profiles(tmp_path, monkeypatch):
     adapter.gateway_runner = _FakeRunner()
     adapter._rescan_disk_profiles()
     assert "janitor" in adapter.gateway_runner.pairing_stores
+
+
+def test_bundled_claude_opus_preset_is_seeded_and_listed(tmp_path):
+    """Opus is a shipped cloud preset, so a workspace that has never seen one
+    gets it on the next seed and the hire dropdown can offer it by name."""
+    written = hire.ensure_bundled_cloud_presets(str(tmp_path))
+    assert "claude-opus-5" in written
+
+    presets = {p["name"]: p for p in hire.list_model_presets(str(tmp_path))}
+    opus = presets["claude-opus-5"]
+    assert opus["provider"] == "anthropic"
+    assert opus["model"] == "claude-opus-5"
+    assert opus["summary"] == "anthropic · claude-opus-5"
+    # Cloud, not local — it must not inherit the 1800s local turn budget.
+    assert opus["local"] is False
+
+    # A scaffolded hire copies the block verbatim into its own config.
+    meta = hire.scaffold_profile(
+        str(tmp_path), "Senior", "lead the work", "", model_preset="claude-opus-5"
+    )
+    assert meta["model_preset"] == "claude-opus-5"
+    config = (
+        tmp_path / "profiles" / meta["slug"] / "config.yaml"
+    ).read_text(encoding="utf-8")
+    assert "default: claude-opus-5" in config
+    assert "provider: anthropic" in config
+    assert hire.turn_timeout_for(str(tmp_path), meta["slug"]) == hire.cloud_turn_timeout()
