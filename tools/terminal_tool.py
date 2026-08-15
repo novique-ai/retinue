@@ -1380,11 +1380,29 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
     workspace can no longer appear in a new session's container.
     ``delegate_task`` children keep sharing the parent's container via the
     alias registry (``register_container_alias``).
+
+    Carried patch (retinue): shared "workspace computer" mode. When
+    TERMINAL_DOCKER_SHARED_CONTAINER_KEY is set, that key — not ``"default"``
+    — is the cache key. The same env var already decides the container's
+    *identity* at creation time (the ``hermes-profile`` label in
+    tools/environments/docker.py), so collapsing every caller onto one
+    ``"default"`` cache entry meant the environment built for whichever
+    workspace ran first stayed cached and was handed to every later caller,
+    whatever key was live by then. In Retinue that leaked a sandbox room's
+    container into an IDE room's turn — the room flag is the isolation
+    contract, so writes crossed the boundary (novique-ai/retinue#16). Keying
+    the cache by the same string keeps one long-lived container per
+    workspace instead of one per process. Upstream feature request:
+    NousResearch/hermes-agent#84671 — drop this patch when an equivalent
+    knob lands.
     """
     if task_id and _has_isolation_overrides(task_id):
         return task_id
     if task_id and _docker_session_isolation_enabled():
         return _resolve_container_alias(task_id)
+    _shared_key = os.getenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", "").strip()
+    if _shared_key:
+        return _shared_key
     return "default"
 
 

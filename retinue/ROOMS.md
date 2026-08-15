@@ -214,6 +214,18 @@ Each room gets its own `TERMINAL_DOCKER_SHARED_CONTAINER_KEY`
 mount — with an IDE room. The web UI asks for a loud confirm before creating
 or switching a room to `ide`.
 
+That key is also the **environment cache key**, not just the container's
+identity label. Upstream caches one environment per process under `"default"`
+and builds it on first use, so before #16 the container created for whichever
+room spoke first was handed back to every later turn: a member who had worked
+in a sandbox room kept writing into that sandbox container when they next
+spoke in an IDE room, and only a gateway restart cleared it. Keying the cache
+by the room's container string keeps one long-lived container per room
+instead of one per process. Carried patch in `tools/terminal_tool.py`
+(`_resolve_container_task_id`); per-session isolation and RL/benchmark
+overrides still outrank it, and callers with no room overlay still get
+`"default"`.
+
 Default cwd inside the container is `/workspace` (the isolated tree, or the
 mounted host path).
 
