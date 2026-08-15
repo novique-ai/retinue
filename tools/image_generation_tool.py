@@ -1912,6 +1912,11 @@ def _active_image_capabilities() -> Dict[str, Any]:
                     info["modalities"] = list(caps["modalities"])
                 if caps.get("max_reference_images"):
                     info["max_reference_images"] = int(caps["max_reference_images"])
+                if caps.get("supports_upscale"):
+                    info["supports_upscale"] = True
+                    note = caps.get("upscale_note")
+                    if isinstance(note, str) and note.strip():
+                        info["upscale_note"] = note.strip()
                 return info
         except Exception:  # noqa: BLE001
             pass
@@ -1975,6 +1980,17 @@ def _build_dynamic_image_schema() -> Dict[str, Any]:
             "image-to-image / editing; do not pass image_url or "
             "reference_image_urls (they will be rejected). Provide a "
             "text-only prompt."
+        )
+
+    # A backend whose high-resolution pass is a *different model* has to say so
+    # here, or the agent has no way to learn that `upscale` does anything.
+    if info.get("supports_upscale"):
+        parts.append(
+            "- "
+            + (
+                info.get("upscale_note")
+                or "supports a high-resolution pass — pass upscale=true to request it"
+            )
         )
 
     return {"description": "\n".join(parts)}

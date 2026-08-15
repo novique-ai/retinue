@@ -1,0 +1,516 @@
+"""Tests for the bundled local_image image_gen plugin.
+
+The HTTP path is the same OpenAI-compatible shape ``deepinfra`` already
+covers, so these tests pin the part that is new and dangerous: the
+**exclusive GPU handoff**. Getting the handoff wrong does not produce a bad
+image — it takes the host's chat model down for every consumer — so each
+safety rule from the module docstring gets a test that fails when the rule
+is removed.
+"""
+
+from __future__ import annotations
+
+import base64
+import threading
+import time
+
+import pytest
+
+import plugins.image_gen.local_image as local_image
+
+
+# 1×1 transparent PNG — valid bytes for save_b64_image()
+_PNG_HEX = (
+    "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4"
+    "890000000d49444154789c6300010000000500010d0a2db40000000049454e44"
+    "ae426082"
+)
+
+
+def _b64_png() -> str:
+    return base64.b64encode(bytes.fromhex(_PNG_HEX)).decode()
+
+
+@pytest.fixture(autouse=True)
+def _isolation(tmp_path, monkeypatch):
+    """Keep saved images and the GPU lock inside tmp_path."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    for var in (
+        "LOCAL_IMAGE_ENDPOINT",
+        "LOCAL_IMAGE_MODEL",
+        "LOCAL_IMAGE_QUALITY",
+        "LOCAL_IMAGE_READY_URL",
+        "LOCAL_IMAGE_LOCK_PATH",
+    ):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("LOCAL_IMAGE_LOCK_PATH", str(tmp_path / "gpu.lock"))
+    yield
+
+
+def _config(tmp_path, **overrides):
+    """A config with the handoff wired to recorder commands."""
+    cfg = {
+        "endpoint": "http://gpu-host:8100/v1",
+        "quality": "high",
+        "handoff": {
+            "acquire": "/bin/true graphics",
+            "release": "/bin/true llm",
+            "ready_url": "http://gpu-host:8100/health",
+            "lock_path": str(tmp_path / "gpu.lock"),
+        },
+    }
+    cfg.update(overrides)
+    return cfg
+
+
+class _Recorder:
+    """Stands in for ``_run``, logging calls and returning scripted codes."""
+
+    def __init__(self, *, acquire=(0, ""), release=(0, "")):
+        self.calls = []
+        self._acquire = acquire
+        self._release = release
+
+    def __call__(self, cmd, timeout):
+        argv = list(cmd)
+        self.calls.append(argv)
+        return self._release if "llm" in argv else self._acquire
+
+    @property
+    def kinds(self):
+        return ["release" if "llm" in c else "acquire" for c in self.calls]
+
+
+def _install(monkeypatch, tmp_path, *, recorder, ready=False, post=None, config=None):
+    monkeypatch.setattr(local_image, "_load_config", lambda: config or _config(tmp_path))
+    monkeypatch.setattr(local_image, "_run", recorder)
+    monkeypatch.setattr(local_image, "_is_ready", lambda url, timeout: ready)
+    monkeypatch.setattr(local_image, "RELEASE_RETRY_DELAY", 0.0)
+    if post is not None:
+        import requests
+
+        monkeypatch.setattr(requests, "post", post)
+
+
+def _ok_post(*_a, **_kw):
+    class _Resp:
+        status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"data": [{"b64_json": _b64_png()}]}
+
+    return _Resp()
+
+
+def _boom_post(*_a, **_kw):
+    raise RuntimeError("connection reset mid-generation")
+
+
+# ---------------------------------------------------------------------------
+# Rule 1 — release always runs
+# ---------------------------------------------------------------------------
+
+
+def test_release_runs_even_when_generation_fails(monkeypatch, tmp_path):
+    """A failed generation must still hand the GPU back.
+
+    This is the invariant that matters most: without it, one network blip
+    leaves the chat model unloaded for every consumer on the host.
+    """
+    rec = _Recorder()
+    _install(monkeypatch, tmp_path, recorder=rec, post=_boom_post)
+
+    result = local_image.LocalImageGenProvider().generate("a cat")
+
+    assert result["success"] is False
+    assert result["error_type"] == "api_error"
+    assert rec.kinds == ["acquire", "release"], "release must run after a failed generation"
+
+
+def test_release_runs_after_a_successful_generation(monkeypatch, tmp_path):
+    rec = _Recorder()
+    _install(monkeypatch, tmp_path, recorder=rec, post=_ok_post)
+
+    result = local_image.LocalImageGenProvider().generate("a cat")
+
+    assert result["success"] is True
+    assert rec.kinds == ["acquire", "release"]
+    assert result["provider"] == "local_image"
+    assert result["quality"] == "high"
+    assert result["size"] == local_image.DEFAULT_SIZES["landscape"]
+    assert "warning" not in result
+
+
+# ---------------------------------------------------------------------------
+# Rule 2 — only release what we acquired
+# ---------------------------------------------------------------------------
+
+
+def test_already_serving_skips_both_commands(monkeypatch, tmp_path):
+    """If the endpoint is already up we displaced nothing, so leave it be."""
+    rec = _Recorder()
+    _install(monkeypatch, tmp_path, recorder=rec, ready=True, post=_ok_post)
+
+    result = local_image.LocalImageGenProvider().generate("a cat")
+
+    assert result["success"] is True
+    assert rec.calls == [], "must not acquire or release a GPU that was already serving"
+
+
+# ---------------------------------------------------------------------------
+# Rule 3 — a refusal is surfaced, never retried
+# ---------------------------------------------------------------------------
+
+
+def test_acquire_refusal_is_surfaced_and_not_retried(monkeypatch, tmp_path):
+    """A protected window / reservation refusal must stop the call dead."""
+    rec = _Recorder(acquire=(3, "REFUSED: protected window 'nightly' is active"))
+    _install(monkeypatch, tmp_path, recorder=rec, post=_ok_post)
+
+    result = local_image.LocalImageGenProvider().generate("a cat")
+
+    assert result["success"] is False
+    assert result["error_type"] == "handoff_refused"
+    assert "protected window" in result["error"]
+    assert rec.kinds == ["acquire"], "a refusal must not be retried, and must not release"
+
+
+# ---------------------------------------------------------------------------
+# Release retry + warning
+# ---------------------------------------------------------------------------
+
+
+def test_release_retried_once_then_warns(monkeypatch, tmp_path):
+    """Release is worth one retry; a double failure must reach the caller."""
+    rec = _Recorder(release=(1, "ssh: connect to host gpu-host port 22: timed out"))
+    _install(monkeypatch, tmp_path, recorder=rec, post=_ok_post)
+
+    result = local_image.LocalImageGenProvider().generate("a cat")
+
+    assert result["success"] is True, "the image was produced; the warning rides along"
+    assert rec.kinds == ["acquire", "release", "release"], "release gets exactly one retry"
+    assert "NOT switched back" in result["warning"]
+
+
+def test_release_retry_that_succeeds_leaves_no_warning(monkeypatch, tmp_path):
+    codes = iter([(1, "transient"), (0, "")])
+
+    class _Flaky(_Recorder):
+        def __call__(self, cmd, timeout):
+            argv = list(cmd)
+            self.calls.append(argv)
+            return next(codes) if "llm" in argv else (0, "")
+
+    rec = _Flaky()
+    _install(monkeypatch, tmp_path, recorder=rec, post=_ok_post)
+
+    result = local_image.LocalImageGenProvider().generate("a cat")
+
+    assert result["success"] is True
+    assert "warning" not in result
+    assert rec.kinds == ["acquire", "release", "release"]
+
+
+# ---------------------------------------------------------------------------
+# Rule 4 — one handoff at a time
+# ---------------------------------------------------------------------------
+
+
+def test_lock_serialises_concurrent_handoffs(monkeypatch, tmp_path):
+    """Two agents asking at once must not both flip the GPU."""
+    overlap = {"peak": 0, "now": 0}
+    guard = threading.Lock()
+
+    def _counting_post(*_a, **_kw):
+        with guard:
+            overlap["now"] += 1
+            overlap["peak"] = max(overlap["peak"], overlap["now"])
+        try:
+            time.sleep(0.15)
+            return _ok_post()
+        finally:
+            with guard:
+                overlap["now"] -= 1
+
+    rec = _Recorder()
+    _install(monkeypatch, tmp_path, recorder=rec, post=_counting_post)
+
+    provider = local_image.LocalImageGenProvider()
+    results = []
+    threads = [
+        threading.Thread(target=lambda: results.append(provider.generate("a cat")))
+        for _ in range(2)
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+
+    assert len(results) == 2
+    assert all(r["success"] for r in results)
+    assert overlap["peak"] == 1, "the GPU lock must serialise generations"
+
+
+def test_gpu_busy_is_reported_when_the_lock_cannot_be_taken(monkeypatch, tmp_path):
+    cfg = _config(tmp_path)
+    cfg["handoff"]["lock_timeout"] = 0.2
+    rec = _Recorder()
+    _install(monkeypatch, tmp_path, recorder=rec, post=_ok_post, config=cfg)
+
+    provider = local_image.LocalImageGenProvider()
+    held = local_image._GpuLock(cfg["handoff"]["lock_path"], 5.0)
+    held.__enter__()
+    try:
+        result = provider.generate("a cat")
+    finally:
+        held.__exit__()
+
+    assert result["success"] is False
+    assert result["error_type"] == "gpu_busy"
+    assert rec.calls == [], "never touch the GPU without the lock"
+
+
+# ---------------------------------------------------------------------------
+# Availability + surface
+# ---------------------------------------------------------------------------
+
+
+def test_is_available_requires_explicit_config(monkeypatch):
+    """No config section means not available.
+
+    This provider needs no API key, so an unconditional True would let the
+    registry's single-available-provider fallback silently route a user's
+    images at a server they never configured.
+    """
+    provider = local_image.LocalImageGenProvider()
+
+    monkeypatch.setattr(local_image, "_load_config", dict)
+    assert provider.is_available() is False
+
+    monkeypatch.setattr(local_image, "_load_config", lambda: {"endpoint": "http://x:8100/v1"})
+    assert provider.is_available() is True
+
+
+def test_no_handoff_configured_runs_no_commands(monkeypatch, tmp_path):
+    """Pointed at an always-on server, this is a plain HTTP client."""
+    rec = _Recorder()
+    _install(
+        monkeypatch,
+        tmp_path,
+        recorder=rec,
+        post=_ok_post,
+        config={"endpoint": "http://always-on:8100/v1"},
+    )
+
+    result = local_image.LocalImageGenProvider().generate("a cat")
+
+    assert result["success"] is True
+    assert rec.calls == []
+
+
+def test_rejects_image_to_image(monkeypatch, tmp_path):
+    rec = _Recorder()
+    _install(monkeypatch, tmp_path, recorder=rec, post=_ok_post)
+
+    result = local_image.LocalImageGenProvider().generate(
+        "a cat", image_url="/workspace/uploads/cat.png"
+    )
+
+    assert result["success"] is False
+    assert result["error_type"] == "modality_unsupported"
+    assert rec.calls == [], "an unsupported request must not touch the GPU"
+
+
+def test_blank_prompt_is_rejected_before_the_gpu(monkeypatch, tmp_path):
+    rec = _Recorder()
+    _install(monkeypatch, tmp_path, recorder=rec, post=_ok_post)
+
+    result = local_image.LocalImageGenProvider().generate("   ")
+
+    assert result["success"] is False
+    assert result["error_type"] == "invalid_argument"
+    assert rec.calls == []
+
+
+def test_aspect_ratio_selects_size(monkeypatch, tmp_path):
+    seen = {}
+
+    def _capture(url, json=None, timeout=None):  # noqa: A002
+        seen["size"] = json["size"]
+        seen["url"] = url
+        return _ok_post()
+
+    rec = _Recorder()
+    _install(monkeypatch, tmp_path, recorder=rec, ready=True, post=_capture)
+
+    local_image.LocalImageGenProvider().generate("a cat", aspect_ratio="portrait")
+
+    assert seen["size"] == local_image.DEFAULT_SIZES["portrait"]
+    assert seen["url"] == "http://gpu-host:8100/v1/images/generations"
+
+
+def test_command_parsing_accepts_string_and_list():
+    assert local_image._command("/bin/gpu-mode graphics") == ["/bin/gpu-mode", "graphics"]
+    assert local_image._command(["/bin/gpu-mode", "llm"]) == ["/bin/gpu-mode", "llm"]
+    assert local_image._command("") is None
+    assert local_image._command(None) is None
+
+
+# ---------------------------------------------------------------------------
+# Two tiers — `upscale` selects the hi-res model
+# ---------------------------------------------------------------------------
+
+
+def _two_tier_config(tmp_path):
+    """Fast tier + a hi-res tier on a second endpoint, no handoff.
+
+    No ``handoff`` block: this mirrors the co-resident deployment, where the
+    image models sit alongside the chat model and nothing has to be unloaded.
+    """
+    return {
+        "endpoint": "http://gpu-host:8102/v1",
+        "sizes": {"square": "1024x1024", "landscape": "1536x1024"},
+        "hi_res": {
+            "endpoint": "http://gpu-host:8101/v1",
+            "sizes": {"square": "2048x2048", "landscape": "2496x1664"},
+        },
+    }
+
+
+def _capturing_post(seen):
+    def _capture(url, json=None, timeout=None):  # noqa: A002
+        seen["url"] = url
+        seen["size"] = json["size"]
+        return _ok_post()
+
+    return _capture
+
+
+def test_default_request_uses_the_fast_tier(monkeypatch, tmp_path):
+    """No upscale flag means the fast model — the common path stays cheap."""
+    seen = {}
+    _install(
+        monkeypatch, tmp_path,
+        recorder=_Recorder(), ready=True,
+        post=_capturing_post(seen), config=_two_tier_config(tmp_path),
+    )
+
+    result = local_image.LocalImageGenProvider().generate("a cat", aspect_ratio="square")
+
+    assert seen["url"] == "http://gpu-host:8102/v1/images/generations"
+    assert seen["size"] == "1024x1024"
+    assert result["upscaled"] is False
+    assert result["tier"] == "fast"
+
+
+def test_upscale_routes_to_the_hi_res_endpoint(monkeypatch, tmp_path):
+    """upscale=true must hit the OTHER endpoint at the OTHER resolution.
+
+    Both halves are asserted: routing to the hi-res port while still sending
+    the fast tier's size would produce a small image from the slow model —
+    the worst of both.
+    """
+    seen = {}
+    _install(
+        monkeypatch, tmp_path,
+        recorder=_Recorder(), ready=True,
+        post=_capturing_post(seen), config=_two_tier_config(tmp_path),
+    )
+
+    result = local_image.LocalImageGenProvider().generate(
+        "a cat", aspect_ratio="square", upscale=True
+    )
+
+    assert seen["url"] == "http://gpu-host:8101/v1/images/generations"
+    assert seen["size"] == "2048x2048"
+    assert result["upscaled"] is True
+    assert result["tier"] == "hi_res"
+
+
+def test_upscale_honours_aspect_ratio_on_the_hi_res_tier(monkeypatch, tmp_path):
+    seen = {}
+    _install(
+        monkeypatch, tmp_path,
+        recorder=_Recorder(), ready=True,
+        post=_capturing_post(seen), config=_two_tier_config(tmp_path),
+    )
+
+    local_image.LocalImageGenProvider().generate(
+        "a cat", aspect_ratio="landscape", upscale=True
+    )
+
+    assert seen["size"] == "2496x1664"
+
+
+def test_upscale_without_a_hi_res_tier_does_not_claim_to_have_upscaled(
+    monkeypatch, tmp_path
+):
+    """The anti-silent-degradation rule.
+
+    With no hi_res configured, upscale=true still returns an image — but it
+    must NOT report upscaled: True, or a caller asking for 2K gets a 1K image
+    labelled as if it were large.
+    """
+    seen = {}
+    config = _two_tier_config(tmp_path)
+    del config["hi_res"]
+    _install(
+        monkeypatch, tmp_path,
+        recorder=_Recorder(), ready=True,
+        post=_capturing_post(seen), config=config,
+    )
+
+    result = local_image.LocalImageGenProvider().generate("a cat", upscale=True)
+
+    assert seen["url"] == "http://gpu-host:8102/v1/images/generations"
+    assert result["success"] is True
+    assert result["upscaled"] is False
+    assert result["tier"] == "fast"
+
+
+def test_hi_res_sizes_fall_back_to_the_fast_tier_map(monkeypatch, tmp_path):
+    """A hi_res block with only an endpoint still resolves every aspect."""
+    seen = {}
+    config = _two_tier_config(tmp_path)
+    config["hi_res"] = {"endpoint": "http://gpu-host:8101/v1"}
+    _install(
+        monkeypatch, tmp_path,
+        recorder=_Recorder(), ready=True,
+        post=_capturing_post(seen), config=config,
+    )
+
+    local_image.LocalImageGenProvider().generate(
+        "a cat", aspect_ratio="square", upscale=True
+    )
+
+    assert seen["url"] == "http://gpu-host:8101/v1/images/generations"
+    assert seen["size"] == "1024x1024"
+
+
+def test_capabilities_advertise_the_hi_res_tier_only_when_configured(
+    monkeypatch, tmp_path
+):
+    """The agent learns about the tier through capabilities(), so it must
+    appear exactly when the tier is real."""
+    config = _two_tier_config(tmp_path)
+    monkeypatch.setattr(local_image, "_load_config", lambda: config)
+    caps = local_image.LocalImageGenProvider().capabilities()
+    assert caps.get("supports_upscale") is True
+    assert "2048x2048" in caps.get("upscale_note", "")
+
+    no_tier = _two_tier_config(tmp_path)
+    del no_tier["hi_res"]
+    monkeypatch.setattr(local_image, "_load_config", lambda: no_tier)
+    caps = local_image.LocalImageGenProvider().capabilities()
+    assert "supports_upscale" not in caps
+
+
+def test_hi_res_tier_ignores_an_empty_endpoint(monkeypatch, tmp_path):
+    """A hi_res block present but blank is not a tier — treat it as absent."""
+    config = _two_tier_config(tmp_path)
+    config["hi_res"] = {"endpoint": "   "}
+    monkeypatch.setattr(local_image, "_load_config", lambda: config)
+    assert local_image._hi_res_tier(config) is None
