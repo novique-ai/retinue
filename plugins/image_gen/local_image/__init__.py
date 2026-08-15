@@ -338,7 +338,10 @@ class _GpuLock:
             return self
         import fcntl
 
-        self._handle = open(self._path, "a+")  # noqa: SIM115 — released in __exit__
+        # Binary: this handle exists only to give flock a file descriptor —
+        # nothing is ever read from or written to it, so involving a text
+        # codec would be meaningless (and picks up the platform default).
+        self._handle = open(self._path, "ab+")  # noqa: SIM115 — released in __exit__
         deadline = time.monotonic() + self._timeout
         while True:
             try:
