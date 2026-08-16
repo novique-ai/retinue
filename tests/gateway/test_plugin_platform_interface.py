@@ -14,7 +14,12 @@ from unittest.mock import MagicMock
 
 import pytest
 
-PROJECT_ROOT = Path(__file__).parent.parent.resolve()
+# parents[2], not parents[1]: this file is tests/gateway/<name>.py, so two
+# levels up is the repo root. Walking only one level landed on tests/ and made
+# PLATFORMS_DIR point at tests/plugins/platforms, which holds test shims rather
+# than plugins — discovery returned nothing and every parametrised compliance
+# test below silently ran over an empty set.
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 PLATFORMS_DIR = PROJECT_ROOT / "plugins" / "platforms"
 
 
@@ -48,12 +53,33 @@ def clean_registry():
 class _MockPluginContext:
     """Minimal mock of hermes_cli.plugins.PluginContext.
 
-    Only implements register_platform so we can exercise the plugin's
-    register() entrypoint without importing the real plugin system.
+    Implements the parts of the context a platform plugin may touch from
+    ``register()``: ``register_platform`` (what these tests assert on) plus the
+    other registration entrypoints the real context exposes. A plugin that also
+    registers a hook or a CLI subcommand — raft and photon both do — would
+    otherwise die on AttributeError before reaching its ``register_platform``
+    call, which says nothing about the platform contract under test.
+
+    Recorded, not discarded, so a future test can assert on them.
     """
 
     def __init__(self):
         self.registered_names: list[str] = []
+        self.registered_hooks: list[tuple[str, Any]] = []
+        self.registered_cli_commands: list[str] = []
+
+    def register_hook(self, hook_name: str, callback: Any) -> None:
+        self.registered_hooks.append((hook_name, callback))
+
+    def register_cli_command(
+        self,
+        name: str,
+        help: str = "",
+        setup_fn: Any = None,
+        handler_fn: Any = None,
+        description: str = "",
+    ) -> None:
+        self.registered_cli_commands.append(name)
 
     def register_platform(
         self,
