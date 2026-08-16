@@ -911,6 +911,47 @@ select:focus {
   cursor: grabbing;
 }
 
+/* Keyboard-accessible reorder (pairs with drag-handle) */
+.reorder-btns {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  margin-top: 3px;
+}
+
+.reorder-btn {
+  flex: none;
+  width: 16px;
+  height: 13px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text-dim);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 8px;
+  line-height: 1;
+}
+
+.reorder-btn:hover:not(:disabled),
+.nav-row:hover .reorder-btn:not(:disabled),
+.agent-row:hover .reorder-btn:not(:disabled),
+.team-bar:hover .reorder-btn:not(:disabled) {
+  background: var(--bg-input);
+  color: var(--text);
+}
+
+.reorder-btn:disabled {
+  opacity: 0.22;
+  cursor: default;
+}
+
+.reorder-btn:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+
 .nav-row .nav-item {
   flex: 1;
   min-width: 0;

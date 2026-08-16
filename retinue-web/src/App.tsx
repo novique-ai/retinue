@@ -295,6 +295,52 @@ function RowMenu({
   );
 }
 
+/** Keyboard-accessible move-up / move-down for sidebar rows (pairs with drag). */
+function ReorderButtons({
+  what,
+  canUp,
+  canDown,
+  onUp,
+  onDown,
+}: {
+  what: string;
+  canUp: boolean;
+  canDown: boolean;
+  onUp: () => void;
+  onDown: () => void;
+}) {
+  return (
+    <div className="reorder-btns">
+      <button
+        type="button"
+        className="reorder-btn"
+        aria-label={`Move ${what} up`}
+        title={`Move ${what} up`}
+        disabled={!canUp}
+        onClick={(e) => {
+          e.stopPropagation();
+          onUp();
+        }}
+      >
+        ▲
+      </button>
+      <button
+        type="button"
+        className="reorder-btn"
+        aria-label={`Move ${what} down`}
+        title={`Move ${what} down`}
+        disabled={!canDown}
+        onClick={(e) => {
+          e.stopPropagation();
+          onDown();
+        }}
+      >
+        ▼
+      </button>
+    </div>
+  );
+}
+
 // ── message row ──────────────────────────────────────────────────────────
 
 function MentionBody({
@@ -2185,6 +2231,51 @@ export default function App() {
     void persistLayout({ ...layout, items: relocate(layout.items, from, insertAt) });
   };
 
+  // Keyboard reorder steps over what the user can SEE. Archived rooms and
+  // agents keep their slot in the stored layout but render nothing, so
+  // stepping through the stored order would swap a row past a hidden one and
+  // paint no change — a control that looks actionable and does nothing, which
+  // is the failure these buttons exist to remove. Swap with the nearest
+  // VISIBLE neighbour instead, and derive the disabled ends from that same
+  // list so "no neighbour" and "button disabled" can never disagree.
+  const visibleRoomIds = visibleRooms.map((r) => r.id);
+  const visibleItemKeys = layout.items
+    .filter((item) => {
+      if (item.kind === "team") return true;
+      const a = agentsBySlug[item.slug];
+      return !!a && (showArchived || !a.archived);
+    })
+    .map(itemKey);
+
+  /** Swap *id* with its neighbour in *visible*, expressed in stored order. */
+  const stepped = (order: string[], visible: string[], id: string, dir: -1 | 1) => {
+    const target = visible[visible.indexOf(id) + dir];
+    if (!visible.includes(id) || target === undefined) return null;
+    const a = order.indexOf(id);
+    const b = order.indexOf(target);
+    if (a < 0 || b < 0) return null;
+    const next = order.slice();
+    next[a] = target;
+    next[b] = id;
+    return next;
+  };
+
+  const moveRoom = (roomId: string, dir: -1 | 1) => {
+    const next = stepped(layout.rooms, visibleRoomIds, roomId, dir);
+    if (next) void persistLayout({ ...layout, rooms: next });
+  };
+
+  const moveItem = (key: string, dir: -1 | 1) => {
+    const keys = layout.items.map(itemKey);
+    const next = stepped(keys, visibleItemKeys, key, dir);
+    if (!next) return;
+    const byKey = new Map(layout.items.map((item) => [itemKey(item), item]));
+    void persistLayout({
+      ...layout,
+      items: next.map((k) => byKey.get(k)!).filter(Boolean),
+    });
+  };
+
   const broken = agents.filter((a) => !a.archived && needsReauth(a.auth_status));
   const openReauth = (provider = "xai-oauth") => {
     setReauthProvider(provider || "xai-oauth");
@@ -2223,6 +2314,7 @@ export default function App() {
           </div>
           {visibleRooms.map((r) => {
             const hint = dropHint?.list === "rooms" && dropHint.id === r.id ? dropHint.place : "";
+            const roomIdx = visibleRoomIds.indexOf(r.id);
             return (
               <div
                 key={r.id}
@@ -2242,6 +2334,13 @@ export default function App() {
                 >
                   ⋮⋮
                 </span>
+                <ReorderButtons
+                  what={`room ${r.name}`}
+                  canUp={roomIdx > 0}
+                  canDown={roomIdx >= 0 && roomIdx < visibleRoomIds.length - 1}
+                  onUp={() => moveRoom(r.id, -1)}
+                  onDown={() => moveRoom(r.id, 1)}
+                />
                 <button
                   className={current?.id === r.id ? "nav-item active" : "nav-item"}
                   onClick={() => setCurrent(r)}
@@ -2299,6 +2398,7 @@ export default function App() {
             </div>
           </div>
           {layout.items.map((item) => {
+            const visIdx = visibleItemKeys.indexOf(itemKey(item));
             if (item.kind === "team") {
               const hint =
                 dropHint?.list === "items" && dropHint.id === itemKey(item) ? dropHint.place : "";
@@ -2324,6 +2424,13 @@ export default function App() {
                   >
                     ⋮⋮
                   </span>
+                  <ReorderButtons
+                    what={`team ${item.label}`}
+                    canUp={visIdx > 0}
+                    canDown={visIdx >= 0 && visIdx < visibleItemKeys.length - 1}
+                    onUp={() => moveItem(itemKey(item), -1)}
+                    onDown={() => moveItem(itemKey(item), 1)}
+                  />
                   <span className="team-label">{item.label}</span>
                   <RowMenu
                     actions={[
@@ -2364,6 +2471,13 @@ export default function App() {
                 >
                   ⋮⋮
                 </span>
+                <ReorderButtons
+                  what={`agent @${a.slug}`}
+                  canUp={visIdx > 0}
+                  canDown={visIdx >= 0 && visIdx < visibleItemKeys.length - 1}
+                  onUp={() => moveItem(itemKey(item), -1)}
+                  onDown={() => moveItem(itemKey(item), 1)}
+                />
                 <div className={`agent-item${needsReauth(a.auth_status) ? " needs-auth" : ""}`}>
                   <Avatar
                     src={agentIcon(a.slug)}
