@@ -687,13 +687,52 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
 
     @staticmethod
     def web_dist_dir() -> Optional[str]:
-        """retinue-web/dist, when built. Resolved from this file:
-        plugins/platforms/retinue_rooms/adapter.py -> repo root is 3 up."""
+        """Locate the built rooms web UI (``retinue-web/dist``).
+
+        Checked in order, first existing directory wins:
+
+          1. ``RETINUE_ROOMS_WEB_DIST`` env override — an explicit path to
+             any built ``dist/`` directory. Takes precedence over
+             everything else, including a source-tree build, so a
+             contributor or packager can point at an alternate build
+             without moving files.
+          2. The source tree, resolved relative to this file
+             (``plugins/platforms/retinue_rooms/adapter.py`` -> repo root
+             is 3 up -> ``retinue-web/dist``). This is what a git checkout
+             with ``npm run build`` already run gets for free.
+          3. A well-known XDG data prefix:
+             ``$XDG_DATA_HOME/retinue/web-dist`` (default
+             ``~/.local/share/retinue/web-dist`` when ``XDG_DATA_HOME`` is
+             unset, matching the fallback ``hermes_cli/linux_desktop_entry.py``
+             already uses for installed assets). Nothing populates this
+             today — a pip-only install has no source tree to resolve step
+             2 against — but it gives a future packaging step (contributor
+             issue #9; no new packaging format is introduced here) a
+             documented drop location without touching this function's
+             callers.
+
+        Returns ``None`` when none of the three exist; ``_serve_static``
+        then serves a help page instead of the SPA.
+        """
+        override = (os.getenv("RETINUE_ROOMS_WEB_DIST") or "").strip()
+        if override and os.path.isdir(override):
+            return override
+
         repo_root = os.path.dirname(
             os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         )
-        dist = os.path.join(repo_root, "retinue-web", "dist")
-        return dist if os.path.isdir(dist) else None
+        source_tree = os.path.join(repo_root, "retinue-web", "dist")
+        if os.path.isdir(source_tree):
+            return source_tree
+
+        xdg_data_home = (os.getenv("XDG_DATA_HOME") or "").strip()
+        if not xdg_data_home:
+            xdg_data_home = os.path.join(os.path.expanduser("~"), ".local", "share")
+        well_known = os.path.join(xdg_data_home, "retinue", "web-dist")
+        if os.path.isdir(well_known):
+            return well_known
+
+        return None
 
     def post_user_message(
         self, room_id: str, text: str, from_name: str, wait: bool = False
@@ -975,6 +1014,41 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
 
 # ── HTTP surface ─────────────────────────────────────────────────────────
 
+# Shown for GET / (and any other non-API path) when web_dist_dir() finds no
+# built SPA at all — as opposed to a single missing asset within an existing
+# dist/, which stays a JSON 404 in _serve_static. Plain self-contained
+# string: no templating engine, no external assets, so it renders even with
+# nothing else running.
+_WEB_UI_NOT_BUILT_HTML = """\
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Retinue rooms UI is not built</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 40rem; margin: 4rem auto;
+         padding: 0 1rem; line-height: 1.5; color: #1a1a1a; }
+  code, pre { background: #f2f2f2; border-radius: 4px; font-size: 0.95em; }
+  code { padding: 0.15rem 0.4rem; }
+  pre { padding: 0.75rem 1rem; overflow-x: auto; }
+  h1 { font-size: 1.3rem; }
+</style>
+</head>
+<body>
+<h1>Retinue rooms UI is not built</h1>
+<p>The gateway is up, but <code>retinue-web/dist/</code> was not found, so there is no
+built single-page app to serve at this path.</p>
+<p>Build it once from a checkout:</p>
+<pre>cd retinue-web &amp;&amp; npm run build</pre>
+<p>Or run the guided setup script from the repo root, which also installs
+dependencies:</p>
+<pre>./scripts/retinue-dev-setup.sh</pre>
+<p>Then reload this page. The API is already running &mdash; see
+<a href="/health">/health</a>.</p>
+</body>
+</html>
+"""
+
 
 class _RoomsServer(ThreadingHTTPServer):
     daemon_threads = True
@@ -1122,6 +1196,14 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
         if not parts or parts[0] not in self._API_PREFIXES:
             if self._serve_static(parsed.path):
                 return
+            if self.server.adapter.web_dist_dir() is None:
+                # No dist/ anywhere (see web_dist_dir's search order) — a
+                # contributor who hasn't run npm run build yet needs a next
+                # step, not a bare JSON error. A dist/ that IS present but
+                # missing this one file (path traversal, corrupt build)
+                # keeps the terse JSON 404 below.
+                body = _WEB_UI_NOT_BUILT_HTML.encode("utf-8")
+                return self._bytes(404, body, "text/html; charset=utf-8")
             return self._json(404, {"error": "not found (web UI not built — see retinue-web)"})
         if not self._authorized():
             return self._json(401, {"error": "unauthorized"})
