@@ -240,6 +240,86 @@ def test_ensure_bundled_cloud_presets_promotes_legacy_grok(tmp_path):
     assert "leave me" in (d / "grok-4.6.yaml").read_text(encoding="utf-8")
 
 
+def test_multiword_family_stem_is_hidden_by_a_versioned_sibling(tmp_path):
+    """``claude-sonnet`` is as generic as ``grok`` once a versioned cut ships.
+
+    The original rule keyed off "the stem contains no hyphen", which only ever
+    described xAI's naming. Anthropic families are themselves hyphenated, so
+    the unversioned stem stayed visible next to its own successor and the hire
+    dropdown offered two entries for one model — the exact ambiguity versioned
+    filenames exist to remove.
+    """
+    d = tmp_path / hire.MODELS_DIRNAME
+    d.mkdir()
+    for stem, model in (
+        ("claude-sonnet", "claude-sonnet-4-5"),
+        ("claude-sonnet-5", "claude-sonnet-5"),
+    ):
+        (d / f"{stem}.yaml").write_text(
+            f"model:\n  default: {model}\n  provider: anthropic\n", encoding="utf-8"
+        )
+
+    assert [p["name"] for p in hire.list_model_presets(str(tmp_path))] == ["claude-sonnet-5"]
+    # the legacy stem still resolves for a hire already pinned to it
+    aliased = [p["name"] for p in hire.list_model_presets(str(tmp_path), include_aliases=True)]
+    assert aliased == ["claude-sonnet", "claude-sonnet-5"]
+
+
+def test_a_variant_suffix_does_not_hide_the_model_it_extends(tmp_path):
+    """Only a *version* suffix marks the shorter stem as superseded.
+
+    ``claude-opus-5-thinking`` names a different model from ``claude-opus-5``;
+    hiding the latter would drop a real choice out of the dropdown. A plain
+    prefix rule cannot tell the two cases apart, so the suffix must parse as a
+    version.
+    """
+    d = tmp_path / hire.MODELS_DIRNAME
+    d.mkdir()
+    for stem in ("claude-opus-5", "claude-opus-5-thinking", "grok-4.5", "grok-4.5-fast"):
+        (d / f"{stem}.yaml").write_text(
+            f"model:\n  default: {stem}\n  provider: anthropic\n", encoding="utf-8"
+        )
+
+    assert [p["name"] for p in hire.list_model_presets(str(tmp_path))] == [
+        "claude-opus-5",
+        "claude-opus-5-thinking",
+        "grok-4.5",
+        "grok-4.5-fast",
+    ]
+
+
+def test_bundled_presets_ship_a_versioned_sonnet_and_no_unversioned_stem(tmp_path):
+    """Mirrors the grok precedent: the bundle carries versioned files only."""
+    written = set(hire.ensure_bundled_cloud_presets(str(tmp_path)))
+    assert "claude-sonnet-5" in written
+    assert "claude-sonnet" not in written
+
+    d = tmp_path / hire.MODELS_DIRNAME
+    assert "claude-sonnet-5" in (d / "claude-sonnet-5.yaml").read_text(encoding="utf-8")
+    assert not (d / "claude-sonnet.yaml").exists()
+
+
+def test_ensure_bundled_leaves_a_legacy_sonnet_pin_alone(tmp_path):
+    """An existing workspace keeps its ``claude-sonnet`` file and its hire.
+
+    ``ensure_bundled_cloud_presets`` never deletes, so dropping the stem from
+    the bundle must not disturb a workspace that already has one — the file
+    stays put, it simply stops being offered once its versioned sibling lands.
+    """
+    d = tmp_path / hire.MODELS_DIRNAME
+    d.mkdir()
+    (d / "claude-sonnet.yaml").write_text(
+        "model:\n  default: claude-sonnet-4-5\n  provider: anthropic\n  # operator pin\n",
+        encoding="utf-8",
+    )
+    hire.ensure_bundled_cloud_presets(str(tmp_path))
+
+    assert "operator pin" in (d / "claude-sonnet.yaml").read_text(encoding="utf-8")
+    listed = [p["name"] for p in hire.list_model_presets(str(tmp_path))]
+    assert "claude-sonnet" not in listed
+    assert "claude-sonnet-5" in listed
+
+
 def test_apply_model_preset_rewrites_only_the_model_block(tmp_path, monkeypatch):
     monkeypatch.delenv("RETINUE_ROOMS_TURN_TIMEOUT", raising=False)
     monkeypatch.delenv("RETINUE_ROOMS_LOCAL_TURN_TIMEOUT", raising=False)

@@ -251,12 +251,26 @@ def _preset_entry(stem: str, block: str) -> Dict[str, Any]:
     }
 
 
+_VERSION_SUFFIX = re.compile(r"^\d+(?:[.\-]\d+)*$")
+
+
 def _is_generic_alias(name: str, names: set[str]) -> bool:
-    """``grok`` is an alias once ``grok-4.5`` / ``grok-4.6`` exist."""
-    if "-" in name:
-        return False
+    """``grok`` is an alias once ``grok-4.5`` / ``grok-4.6`` exist — and so is
+    ``claude-sonnet`` once ``claude-sonnet-5`` does.
+
+    The test is "a sibling extends this stem by a *version*". The suffix has to
+    parse as one: ``claude-opus-5-thinking`` names a different model from
+    ``claude-opus-5`` rather than a newer cut of it, so a plain prefix match
+    would hide a real choice. Family stems are themselves hyphenated outside
+    xAI's naming, which is why this cannot key off "the stem has no hyphen".
+    """
     prefix = name + "-"
-    return any(other.startswith(prefix) for other in names)
+    return any(
+        other != name
+        and other.startswith(prefix)
+        and _VERSION_SUFFIX.match(other[len(prefix):])
+        for other in names
+    )
 
 
 def list_model_presets(
