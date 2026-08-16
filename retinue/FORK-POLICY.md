@@ -22,10 +22,15 @@ reference an upstream issue and be dropped when upstream fixes it. Current list:
 
 | File | Patch | Upstream issue |
 |---|---|---|
-| `agent/prompt_builder.py` | Reword `SKILLS_GUIDANCE` sentence 1 — the stock wording trips an Anthropic content filter for subscription-OAuth tokens, surfacing as a billing-shaped 400 ("out of extra usage") | [NousResearch/hermes-agent#82154](https://github.com/NousResearch/hermes-agent/issues/82154) |
 | `tools/environments/docker.py` | `TERMINAL_DOCKER_SHARED_CONTAINER_KEY` — opt-in workspace key replacing the per-profile container identity, so every room member attaches to one shared "workspace computer" container | [NousResearch/hermes-agent#84671](https://github.com/NousResearch/hermes-agent/issues/84671) |
 | `tools/terminal_tool.py` | Key the `_active_environments` cache by `TERMINAL_DOCKER_SHARED_CONTAINER_KEY` instead of collapsing to `"default"`. Identity already uses that key at creation, so a single `"default"` cache entry handed the first workspace's container to every later turn — a sandbox room's container served an IDE room ([#16](https://github.com/novique-ai/retinue/issues/16)) | [NousResearch/hermes-agent#84671](https://github.com/NousResearch/hermes-agent/issues/84671) |
 | `tools/terminal_tool.py`, `tools/environments/docker.py`, `gateway/platforms/base.py` | Read the workspace key and volume list through `tools/workspace_context.py` (a **new** file, not an upstream edit) instead of `os.getenv`. The values are per-room; carrying them in process env forced the rooms adapter to serialize every cycle behind one lock, so one turn blocked every room for up to the local-model timeout ([#67](https://github.com/novique-ai/retinue/issues/67)). With no overlay bound these read plain `os.environ`, so non-room callers are unchanged | [NousResearch/hermes-agent#84671](https://github.com/NousResearch/hermes-agent/issues/84671) |
+
+### Retired patches
+
+| File | Patch | Retired |
+|---|---|---|
+| `agent/prompt_builder.py` | `SKILLS_GUIDANCE` reword for the Anthropic content filter ([#82154](https://github.com/NousResearch/hermes-agent/issues/82154)) | 2026-08-16 sync — **upstream adopted the same reword** and documented it with a NOTE citing the issue. The regression guard stays (`test_skills_guidance_avoids_the_content_filter_wording`), because the failure it prevents is a remote, billing-shaped HTTP 400 that misleads users into buying quota. It now asserts on the imported `SKILLS_GUIDANCE` constant rather than scanning the file: upstream's explanatory comment quotes the bad phrasing to say what NOT to use, and a guard that fires on a comment is a guard that gets muted. |
 
 Each patch above has a drift guard in
 `plugins/platforms/retinue_rooms/test_carried_patches.py`; an upstream sync that
