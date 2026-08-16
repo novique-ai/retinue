@@ -1050,6 +1050,43 @@ dependencies:</p>
 """
 
 
+# Lazily resolved once; never shells out per /health poll. "unknown" when the
+# process is not a git checkout (pip install), git is missing, or the probe fails.
+_retinue_git_sha: Optional[str] = None
+
+
+def retinue_git_sha() -> str:
+    """Short ``git rev-parse --short HEAD`` for bug reports, or ``"unknown"``."""
+    global _retinue_git_sha
+    if _retinue_git_sha is not None:
+        return _retinue_git_sha
+    sha = "unknown"
+    try:
+        import subprocess
+
+        # plugins/platforms/retinue_rooms/adapter.py → repo root is 3 up.
+        root = os.path.dirname(
+            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        )
+        # Worktrees use a .git *file*; bare checkouts use a directory.
+        if os.path.exists(os.path.join(root, ".git")):
+            proc = subprocess.run(
+                ["git", "rev-parse", "--short", "HEAD"],
+                cwd=root,
+                capture_output=True,
+                text=True,
+                timeout=2,
+                check=False,
+            )
+            text = (proc.stdout or "").strip()
+            if proc.returncode == 0 and text:
+                sha = text
+    except Exception:
+        sha = "unknown"
+    _retinue_git_sha = sha
+    return _retinue_git_sha
+
+
 class _RoomsServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
@@ -1186,13 +1223,12 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
         parts = [p for p in parsed.path.split("/") if p]
         if parts == ["health"]:
             adapter = self.server.adapter
-            return self._json(
-                200,
-                auth.health_payload(
-                    adapter._home_dir(),
-                    len(adapter.store.list_rooms()),
-                ),
+            payload = auth.health_payload(
+                adapter._home_dir(),
+                len(adapter.store.list_rooms()),
             )
+            payload["git_sha"] = retinue_git_sha()
+            return self._json(200, payload)
         if not parts or parts[0] not in self._API_PREFIXES:
             if self._serve_static(parsed.path):
                 return

@@ -143,6 +143,7 @@ def test_health_and_agents_expose_auth(tmp_path, monkeypatch):
         assert resp.status == 200
         assert health["ok"] is True
         assert health["auth"]["providers"][0]["status"] == "relogin_required"
+        assert isinstance(health.get("git_sha"), str) and health["git_sha"]
 
         conn = http.client.HTTPConnection(*httpd.server_address[:2], timeout=3)
         conn.request("GET", "/agents")
@@ -155,6 +156,53 @@ def test_health_and_agents_expose_auth(tmp_path, monkeypatch):
     finally:
         httpd.shutdown()
         httpd.server_close()
+
+
+def test_retinue_git_sha_unknown_without_git(monkeypatch):
+    """Pip installs / missing .git → stable \"unknown\", never empty or crash."""
+    from . import adapter
+
+    monkeypatch.setattr(adapter, "_retinue_git_sha", None)
+    monkeypatch.setattr(os.path, "exists", lambda path: False)
+    assert adapter.retinue_git_sha() == "unknown"
+    # Cached — second call does not re-probe.
+    monkeypatch.setattr(
+        os.path,
+        "exists",
+        lambda path: (_ for _ in ()).throw(AssertionError("should use cache")),
+    )
+    assert adapter.retinue_git_sha() == "unknown"
+
+
+def test_retinue_git_sha_from_git_rev_parse(monkeypatch):
+    from types import SimpleNamespace
+
+    from . import adapter
+
+    monkeypatch.setattr(adapter, "_retinue_git_sha", None)
+    monkeypatch.setattr(os.path, "exists", lambda path: str(path).endswith(".git"))
+
+    def fake_run(*_args, **_kwargs):
+        return SimpleNamespace(returncode=0, stdout="abc1234\n", stderr="")
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    assert adapter.retinue_git_sha() == "abc1234"
+    assert adapter.retinue_git_sha() == "abc1234"  # cache hit
+
+
+def test_retinue_git_sha_git_failure_is_unknown(monkeypatch):
+    from types import SimpleNamespace
+
+    from . import adapter
+
+    monkeypatch.setattr(adapter, "_retinue_git_sha", None)
+    monkeypatch.setattr(os.path, "exists", lambda path: True)
+
+    def fake_run(*_args, **_kwargs):
+        return SimpleNamespace(returncode=128, stdout="", stderr="fatal: not a git repository")
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    assert adapter.retinue_git_sha() == "unknown"
 
 
 def test_reauth_start_poll_and_success_evicts(tmp_path, monkeypatch):

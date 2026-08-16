@@ -2024,6 +2024,7 @@ export default function App() {
     () => localStorage.getItem("retinue.userName") ?? "You",
   );
   const [reauthProvider, setReauthProvider] = useState("xai-oauth");
+  const [gitSha, setGitSha] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -2054,6 +2055,13 @@ export default function App() {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  useEffect(() => {
+    api
+      .health()
+      .then((h) => setGitSha(h.git_sha || "unknown"))
+      .catch(() => setGitSha("unknown"));
+  }, []);
 
   useEffect(() => {
     api
@@ -2618,6 +2626,14 @@ export default function App() {
           <a href="https://github.com/novique-ai/retinue" target="_blank" rel="noreferrer">
             github
           </a>
+          {gitSha && (
+            <>
+              {" · "}
+              <span className="build-id" title="Retinue commit">
+                {gitSha}
+              </span>
+            </>
+          )}
         </footer>
       </aside>
       <main className="main">
@@ -2634,6 +2650,46 @@ export default function App() {
             onArchive={() => void archiveRoom(current)}
             onDelete={() => void deleteRoom(current)}
           />
+        ) : visibleCast.length === 0 ? (
+          <div className="welcome empty-state">
+            <img className="welcome-logo" src={LOGO_SRC} alt="Retinue" />
+            <h1>Hire your first retainer</h1>
+            <p className="note empty-state-copy">
+              Give them a name, a job, and how they should work — that three-field brief is the
+              whole hire.
+            </p>
+            <button className="primary empty-state-cta" onClick={() => setModal("hire")}>
+              Hire an agent
+            </button>
+          </div>
+        ) : visibleRooms.length === 0 ? (
+          <div className="welcome empty-state">
+            <img className="welcome-logo" src={LOGO_SRC} alt="Retinue" />
+            <h1>Open a room</h1>
+            <p className="note empty-state-copy">
+              Put your retainers in a room, pick a lead, and start talking.
+            </p>
+            <div className="retinue-cast">
+              <div className="cast-member principal">
+                <Avatar src={YOU_SRC} label={userName} size={72} />
+                <span>{userName}</span>
+              </div>
+              {visibleCast.map((a) => (
+                <div key={a.slug} className="cast-member">
+                  <Avatar
+                    src={agentIcon(a.slug)}
+                    label={a.display_name || a.slug}
+                    size={72}
+                    working={!!a.busy}
+                  />
+                  <span>@{a.slug}</span>
+                </div>
+              ))}
+            </div>
+            <button className="primary empty-state-cta" onClick={() => setModal("room")}>
+              Create a room
+            </button>
+          </div>
         ) : (
           <div className="welcome">
             <img className="welcome-logo" src={LOGO_SRC} alt="Retinue" />
@@ -2659,9 +2715,6 @@ export default function App() {
                 </div>
               ))}
             </div>
-            {visibleCast.length === 0 && (
-              <p className="note">No retainers hired yet — use + beside Agents.</p>
-            )}
           </div>
         )}
       </main>

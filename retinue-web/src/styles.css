@@ -287,6 +287,14 @@ body {
   color: var(--text-dim);
 }
 
+.foot .build-id {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  opacity: 0.85;
+  user-select: all;
+}
+
 /* ── main / chat ─────────────────────────────────────────── */
 
 .main {
@@ -314,6 +322,18 @@ body {
 .welcome h1 {
   font-size: 34px;
   margin-bottom: 8px;
+}
+
+.welcome.empty-state .empty-state-copy {
+  max-width: 28rem;
+  margin: 0 auto 8px;
+  line-height: 1.45;
+}
+
+.welcome.empty-state .empty-state-cta {
+  margin-top: 22px;
+  font-size: 15px;
+  padding: 11px 22px;
 }
 
 .retinue-cast {
