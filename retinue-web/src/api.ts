@@ -30,6 +30,8 @@ export interface ProviderAuth {
 export interface HealthInfo {
   ok: boolean;
   rooms: number;
+  /** Short Retinue commit SHA from the gateway, or `"unknown"`. */
+  git_sha?: string;
   auth?: { providers: ProviderAuth[] };
 }
 
