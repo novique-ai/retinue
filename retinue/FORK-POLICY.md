@@ -45,6 +45,18 @@ place sends contributors to NousResearch. Those paths are listed in
 `.gitattributes` with `merge=ours` so an upstream sync does not clobber
 them.
 
+`.github/workflows/review-labels.yml` is owned for a different reason than the
+contributor-health files: it is upstream *governance*, not upstream *branding*. It
+requires a maintainer-applied `ci-reviewed` label whenever CI-sensitive files change,
+which an upstream sync does by definition — so every sync PR would block on a label
+only we could apply to our own merge. That is ceremony, not review. Our replacement
+keeps the call interface byte-compatible so `ci.yml` stays pristine and keeps receiving
+upstream improvements, and it still logs which areas tripped the gate.
+
+The sibling `contributor-check.yml` is deliberately NOT owned. Its data is cheap, it
+catches something real, and it does not fire on every sync — the 00c12dac6 sync needed
+exactly one new mapping file across 1399 commits.
+
 Do not expand that list casually — every `merge=ours` file stops
 receiving upstream edits. Product logic still does not belong in
 upstream core files.

@@ -46,3 +46,4 @@ NOTICE merge=ours
 .github/ISSUE_TEMPLATE/setup_help.yml merge=ours
 .github/ISSUE_TEMPLATE/config.yml merge=ours
 .github/workflows/retinue.yml merge=ours
+.github/workflows/review-labels.yml merge=ours
