@@ -34,7 +34,9 @@ def test_skills_guidance_content_filter_patch_present():
 def test_shared_container_key_patch_present():
     """#84671: workspace-computer container identity override."""
     src = _read("tools/environments/docker.py")
-    marker = 'os.getenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY"'
+    # Reads through workspace_context, not os.getenv: the key is carried
+    # per-context so concurrent rooms do not race process env (#67).
+    marker = "workspace_context.shared_container_key()"
     assert marker in src, (
         "shared-container-key carried patch was clobbered (likely by an "
         "upstream sync) — room members would silently fall back to "
@@ -54,7 +56,7 @@ def test_shared_container_key_is_the_env_cache_key_patch_present():
     room's container serves an IDE room's turn.
     """
     src = _read("tools/terminal_tool.py")
-    assert 'os.getenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", "").strip()' in src, (
+    assert "workspace_context.shared_container_key()" in src, (
         "shared-container-key cache patch was clobbered (likely by an "
         "upstream sync) — room turns would collapse back onto one "
         '"default" environment and cross the sandbox/IDE boundary. '
@@ -65,6 +67,50 @@ def test_shared_container_key_is_the_env_cache_key_patch_present():
     resolver = src.split("def _resolve_container_task_id(")[1].split("\ndef ")[0]
     assert "_shared_key" in resolver
     assert resolver.index("_docker_session_isolation_enabled") < resolver.index(
-        "_shared_key = os.getenv"
+        "_shared_key = workspace_context.shared_container_key()"
     )
     assert resolver.rstrip().endswith('return "default"')
+
+
+def test_workspace_values_are_carried_per_context_not_in_process_env():
+    """#67: the carrier is a ContextVar, and the process-wide lock is gone.
+
+    These two facts are one fact. The lock existed only because the container
+    key travelled through os.environ, so a revert of either half silently
+    reintroduces the other's problem: put the key back in process env and
+    concurrent rooms cross containers; keep the ContextVar but re-add the lock
+    and every room blocks on the slowest turn again.
+    """
+    ide_src = _read("plugins/platforms/retinue_rooms/ide.py")
+    assert "workspace_context.workspace(overlay)" in ide_src, (
+        "the per-room workspace overlay is no longer bound to a ContextVar — "
+        "concurrent room cycles will race each other's mounts. "
+        "Reapply per retinue/FORK-POLICY.md."
+    )
+    assert "os.environ.update(overlay)" not in ide_src, (
+        "the room overlay is being written into process env again — that is "
+        "the carrier #67 removed."
+    )
+
+    adapter_src = _read("plugins/platforms/retinue_rooms/adapter.py")
+    assert "_workspace_env_lock" not in adapter_src, (
+        "the process-wide workspace lock is back — one room turn again blocks "
+        "every other room for the length of the turn (up to the local-model "
+        "timeout). See novique-ai/retinue#67."
+    )
+
+
+def test_media_path_translation_reads_the_room_volumes():
+    """#67: media paths must resolve against the ROOM's mounts.
+
+    ``_translate_docker_container_media_path`` maps a container path back to a
+    host path by longest-prefix match over the configured volumes. Volumes are
+    per-room and no longer in process env, so reading os.getenv there would
+    silently fail to resolve an IDE room's /workspace file.
+    """
+    src = _read("gateway/platforms/base.py")
+    assert 'workspace_context.getenv("TERMINAL_DOCKER_VOLUMES"' in src, (
+        "media path translation reverted to process env — an IDE room's "
+        "/workspace attachments will stop resolving to their host path. "
+        "Reapply per retinue/FORK-POLICY.md."
+    )

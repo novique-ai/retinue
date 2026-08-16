@@ -5,9 +5,14 @@ room bind-mounts a host path at ``/workspace``. A ``sandbox`` room gets an
 isolated container and must not inherit that mount.
 
 Per-room ``TERMINAL_DOCKER_SHARED_CONTAINER_KEY`` keeps the two kinds from
-sharing a container. Overlaying that env for a turn cycle is serialized so
-two rooms cannot race ``os.environ`` (members of one room still run in
-parallel — they share one computer).
+sharing a container. That key rides a ContextVar for the cycle
+(``tools/workspace_context.py``), so rooms can run concurrently without
+racing ``os.environ``.
+
+Within a room, turns are sequential by design: ``take_wave()`` returns exactly
+one speaker, and a member's reply is on the transcript before the next member
+starts. (This docstring previously claimed members of one room run in
+parallel; they never have.)
 """
 
 from __future__ import annotations
@@ -16,6 +21,8 @@ import json
 import os
 from contextlib import contextmanager
 from typing import Any, Dict, Iterator, List, Optional
+
+from tools import workspace_context
 
 from .engine import Room
 
@@ -140,19 +147,59 @@ def apply_workspace_fields(
     return room
 
 
+# Of the values overlay_env() produces, only the container key and the volume
+# list differ per room. TERMINAL_CWD and the mount flag are rooms-specific but
+# identical for every room, and other tools read them straight from
+# os.environ (the code-execution tool among them), so they are published
+# process-wide — race-free, because every room publishes the same value.
+#
+# TERMINAL_ENV is deliberately NOT in this list. It is read directly at ~30
+# sites across the engine and selects the terminal backend for the WHOLE
+# process, including any other platform sharing this gateway. Setting it here
+# would silently move a Discord or Telegram agent's shell into a container.
+# Rooms require a docker-backed gateway, so the adapter checks that
+# precondition at connect() (see require_docker_backend) instead of quietly
+# imposing it per cycle.
+INVARIANT_ENV = (
+    "TERMINAL_CWD",
+    "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE",
+)
+
+
+def docker_backend_error() -> Optional[str]:
+    """Why this gateway cannot host room workspaces, or ``None`` if it can.
+
+    Rooms are containerised by definition: every room gets a workspace
+    computer, and an ``ide`` room bind-mounts a host path into it. That needs
+    ``TERMINAL_ENV=docker`` for the process. Reporting the mismatch is
+    strictly better than repairing it — the repair is invisible, process-wide,
+    and lands on platforms that never asked for it.
+    """
+    backend = (os.getenv("TERMINAL_ENV") or "local").strip().lower()
+    if backend == "docker":
+        return None
+    return (
+        f"rooms need a docker-backed gateway, but TERMINAL_ENV is {backend!r}. "
+        "Set TERMINAL_ENV=docker (and TERMINAL_DOCKER_IMAGE) for the gateway "
+        "process — see retinue/ROOMS.md."
+    )
+
+
 @contextmanager
 def apply_room_workspace(
     room: Room, home_dir: Optional[str] = None
 ) -> Iterator[Dict[str, str]]:
-    """Overlay process env for one room cycle. Caller must serialize (asyncio lock)."""
+    """Bind this room's workspace for one cycle.
+
+    Safe to run concurrently with other rooms: the per-room values ride a
+    ContextVar (see tools/workspace_context.py), which is per-asyncio-task and
+    is propagated into the worker threads that dispatch tools, so no caller
+    needs to serialize on a process-wide lock to keep its mounts.
+    """
     overlay = overlay_env(room, home_dir)
-    saved = {key: os.environ.get(key) for key in overlay}
-    os.environ.update(overlay)
-    try:
+    for key in INVARIANT_ENV:
+        value = overlay.get(key)
+        if value is not None and os.environ.get(key) != value:
+            os.environ[key] = value
+    with workspace_context.workspace(overlay):
         yield overlay
-    finally:
-        for key, old in saved.items():
-            if old is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = old

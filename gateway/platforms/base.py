@@ -1485,7 +1485,15 @@ def _parse_docker_volume_mounts() -> List[Tuple[Path, Path]]:
     Named volumes and non-absolute hosts are skipped because they cannot be
     resolved on the gateway host for media delivery.
     """
-    raw = os.getenv("TERMINAL_DOCKER_VOLUMES", "").strip()
+    # Carried patch (retinue): read through workspace_context so a room turn
+    # translates media paths against ITS OWN mounts. The volume list is
+    # per-room and no longer published to process env (#67); without this the
+    # longest-prefix match below would run against whatever the process
+    # happened to hold and an IDE room's /workspace file would fail to resolve
+    # back to its host path.
+    from tools import workspace_context
+
+    raw = workspace_context.getenv("TERMINAL_DOCKER_VOLUMES", "").strip()
     if not raw:
         return []
     try:

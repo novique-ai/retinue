@@ -160,6 +160,10 @@ async def test_adapter_starts_and_stops_keepalive(tmp_path, monkeypatch):
     monkeypatch.setenv("RETINUE_ROOMS_ENABLED", "1")
     monkeypatch.setenv("RETINUE_ROOMS_PORT", "0")
     monkeypatch.setenv("RETINUE_XAI_KEEPALIVE_SECONDS", "0.05")
+    # connect() requires a docker-backed gateway; rooms are containerised by
+    # definition and the adapter checks rather than imposing it (see
+    # ide.docker_backend_error). This test is about keepalive, not backends.
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
     _write(tmp_path / "auth.json", _xai_store())
     _hire_cloud(tmp_path)
 
