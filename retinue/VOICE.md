@@ -1,11 +1,5 @@
-# Voice interaction — alternatives (2026-08-13 look)
+# Voice interaction
 
-> Public note: hold-to-talk has shipped in `retinue-web/`. Some sections
-> below still describe a private-install sidecar (host names, unit drop-ins)
-> and at least one stale "zero voice code" claim. Treat those as historical
-> operator notes, not a supported public layout. A cleanup issue is listed
-> in [docs/contributor-issues.md](../docs/contributor-issues.md).
->
 > Voice backends here are interoperable APIs (including xAI STT/TTS).
 > Retinue is not affiliated with or endorsed by xAI.
 
@@ -13,159 +7,192 @@ A room is a **shared transcript**. Voice for Retinue has to produce that
 transcript and speak from it. Speech-to-speech that bypasses the room bus is a
 different product.
 
-This look is **not** a current-hardware audit. Capture can be a browser mic, a
-conference puck, a phone, or a room array — that is a later input-device choice.
-The decision is the pipeline.
+Capture can be a browser mic, a conference puck, a phone, or a room array —
+that is an input-device choice. The decision is the pipeline.
 
-Operator picked **A for testing, then B for testing** (2026-08-13).
-Shipped plugin-shaped: `GET /voice`, `POST /rooms/{id}/audio`, `POST /tts`,
-hold-to-talk in `retinue-web` (`6f4b79b62`). Live default on c-desktop is
-**Track A** (xAI, `ready: true`).
+## What shipped
 
-**Flip to Track B** (claymore-1 sidecar, Glimmer left on `:8080`):
+Plugin-shaped voice is live in `retinue-web/` and
+`plugins/platforms/retinue_rooms/`. No upstream-core edits.
+
+| Piece | Where | Behavior |
+|---|---|---|
+| Hold-to-talk | `retinue-web/src/App.tsx` | `getUserMedia` + ScriptProcessor → WAV blob; pointer-down records, pointer-up uploads |
+| Speak replies | same | Sequential `POST /tts` + `Audio` playback queue when “Speak replies” is on |
+| Backend status | `GET /voice` | `{ backend, ready, detail, voices }` from `voice.status()` |
+| Audio in | `POST /rooms/{id}/audio` | Raw body + query `from` / `filename` → STT → normal user-message cycle → **202** `{ seq, planned, text }` |
+| TTS out | `POST /tts` | JSON `{ text, speaker }` (or `voice`) → `audio/wav` or `audio/mpeg` bytes |
+
+Web client: `api.voiceStatus()`, `api.sendAudio()`, `api.speak()` in
+`retinue-web/src/api.ts`. Room UI shows a “Hold to talk” button, a backend
+label (`xai` / `openai`, plus “not ready” when applicable), and a short
+“Heard: …” note after transcription.
+
+Default backend is **Track A** (`RETINUE_VOICE_BACKEND` unset → `xai`).
+`ready` is true when xAI credentials resolve, or when the OpenAI-compatible
+base URL is set for Track B.
+
+## Product shape (locked)
+
+```
+mic ──▶ STT ──▶ room user line (same path as typed text) ──▶ turn engine
+                                                              │
+member final text ──▶ TTS ──▶ browser playback (queued)
+```
+
+- User speech becomes a normal room user line. `@mentions`, lead routing,
+  budgets, and SSE stay as they are.
+- Each retainer can have its own voice id (see `STAFF_VOICES` /
+  `RETINUE_VOICE_MAP` in `voice.py`). The web client queues playback so a
+  later speaker does not talk over an earlier one.
+- Voice I/O does not change turn budgets.
+- Configure Retinue voice via process env (below). Do not patch
+  `tools/transcription_tools.py` for rooms.
+
+**Not shipped (still true):** the rooms adapter does **not** implement the
+gateway streaming-TTS seam (`supports_streaming_tts` / `write_streaming_tts`).
+Playback is whole-utterance `POST /tts` after the agent message is on the
+transcript.
+
+## Backends (only these)
+
+Implemented in `plugins/platforms/retinue_rooms/voice.py`.
+`RETINUE_VOICE_BACKEND` selects one of:
+
+| Value | Role | Credentials / URL |
+|---|---|---|
+| `xai` (default) | Track A — xAI `POST {base}/stt` and `POST {base}/tts` | `XAI_API_KEY` if set, else Hermes xAI OAuth (`tools.xai_http.resolve_xai_http_credentials`). Optional `XAI_BASE_URL` (default `https://api.x.ai/v1`). |
+| `openai` | Track B — OpenAI-compatible local/remote | Requires `RETINUE_VOICE_BASE_URL` (e.g. `http://127.0.0.1:8104/v1`). Optional `RETINUE_VOICE_API_KEY` (default `not-needed`). |
+
+Aliases that map to `openai`: `local`, `sidecar` (case-insensitive).
+
+Optional knobs (all read from env in `voice.py`):
+
+| Env | Purpose |
+|---|---|
+| `RETINUE_VOICE_MAP` | Comma list `slug:voice_id` overrides (e.g. `scout:helix,admin:eve`) |
+| `RETINUE_VOICE_STT_MODEL` | OpenAI-compatible STT model name (default `whisper-1`) |
+| `RETINUE_VOICE_TTS_MODEL` | OpenAI-compatible TTS model name (default `tts-1`) |
+
+Built-in staff → voice map (overridable): `admin`→`eve`, `envoy`→`rigel`,
+`janitor`→`lux`, `scout`→`ursa`, `editor`→`leo`, `scribe`→`celeste`.
+
+### Flip to Track B (generic example)
+
+Point the rooms process at any OpenAI-compatible STT/TTS base URL:
 
 ```bash
-# on c-desktop
-mkdir -p ~/.config/systemd/user/retinue-gateway.service.d
-cat > ~/.config/systemd/user/retinue-gateway.service.d/voice.conf <<'EOF'
-[Service]
-Environment=RETINUE_VOICE_BACKEND=openai
-Environment=RETINUE_VOICE_BASE_URL=http://10.44.0.13:8104/v1
-EOF
-systemctl --user daemon-reload
-systemctl --user restart retinue-gateway.service
+export RETINUE_VOICE_BACKEND=openai
+export RETINUE_VOICE_BASE_URL=http://127.0.0.1:8104/v1
+# restart the process that serves the rooms HTTP API
 ```
 
-Remove `voice.conf` and restart to return to A. Sidecar is a test `nohup`
-on claymore-1 (`python3 /srv/evo-data/local-llm/voice/voice_sidecar.py
---host 10.44.0.13 --port 8104`). whisper-cli loads per request (VRAM stays
-~23 GiB on Glimmer). PID file: `/srv/evo-data/local-llm/voice/sidecar.pid`.
+Unset `RETINUE_VOICE_BACKEND` / `RETINUE_VOICE_BASE_URL` (or set backend back
+to `xai`) to return to Track A.
 
-## What already exists (reference only)
+### Optional local sidecar (Track B helper)
 
-| Surface | What it is | Why it is not the Retinue path |
-|---|---|---|
-| Hermes `/voice` + Discord live voice | Upstream CLI/TUI + Discord channel listen/speak | Different home (`~/.hermes`), 1:1 or Discord, not rooms |
-| Hermes Desktop voice | c-desktop composer STT/TTS | Jeeves/Desktop, not `HERMES_HOME=~/.retinue` |
-| clay-blade `local-ai` | Kokoro `:8102` (CPU) + Speaches `faster-whisper-base` `:8103` (CPU) + Qwen2-VL `:8101` | Wired for Desktop; whisper-**base** quality; 2070 is 8 GB and already holds vision |
-| Hermes STT providers | `local`, `openai`, `groq`, `mistral`, **`xai`**, `elevenlabs` | Built-in. Rooms adapter does not call them. |
-| Hermes streaming TTS | `elevenlabs`, `gemini`, `openai`, **`xai`** WebSocket | Gateway seam exists (`supports_streaming_tts`). Rooms adapter does not opt in. |
-| `retinue-web/` | Text composer + SSE transcript | **Zero** voice code (`MediaRecorder` / `getUserMedia` / playback). |
+`plugins/platforms/retinue_rooms/voice_sidecar.py` is a **test** HTTP server
+that exposes OpenAI-shaped routes for a local install:
 
-Verified live 2026-08-13: clay-blade `local-ai.service` still serving Kokoro + whisper-base. Last Kokoro generation in the journal is 2026-08-11 (Jeeves/Desktop), not Retinue.
+- `POST /v1/audio/transcriptions` (multipart `file=`) — `whisper-cli`
+- `POST /v1/audio/speech` — Piper if configured, else `espeak-ng` / `espeak`
+- `GET /health` (and `/v1/health`)
 
-## Live capacity on claymore-1
+Run example (paths and binaries are yours; defaults bind loopback):
 
-Verified 2026-08-13 on the box, not from docs:
-
-- Glimmer 30B Vulkan llama-server on `:8080` (`muse-glimmer-30B-kquant-dynamic` + DFlash + mmproj, ctx 65536). Router aliases `local/auto` etc. still point here.
-- Unified GPU pool: **96.0 GiB** total, **23.1 GiB** used → **~73 GiB free**.
-- Linux `MemAvailable` ~17 GiB is the leftover *system* slice after the GPU claim — do not read that as "the box is full."
-- Do **not** evict `local/auto` to free space. There is room for a **second** process.
-
-`whisper.cpp` with Vulkan is known to run on gfx1151 (Strix Halo). A speech sidecar does not have to fight Glimmer for the same llama-server.
-
-## Product shape (locked for any track)
-
-```
-mic ──▶ STT ──▶ POST /rooms/{id}/messages {text} ──▶ existing turn engine
-                                                      │
-member final (or streamed sentence) ──▶ TTS ──▶ speaker / browser playback
+```bash
+export RETINUE_VOICE_WHISPER=/path/to/whisper-cli
+export RETINUE_VOICE_WHISPER_MODEL=/path/to/ggml-large-v3-turbo.bin
+# optional: RETINUE_VOICE_PIPER + RETINUE_VOICE_PIPER_MODEL
+python3 plugins/platforms/retinue_rooms/voice_sidecar.py --host 127.0.0.1 --port 8104
 ```
 
-- User speech becomes a normal room user line. `@mentions`, lead routing, budgets, SSE stay as they are.
-- Each retainer can have its own voice. Sequential turns still need a playback queue (mention order), so a later speaker is not talking over the earlier one.
-- Local members still get the 1800s budget; cloud stays 300s. Voice I/O does not change those.
-- Plugin-shaped only: `retinue-web/` + `plugins/platforms/retinue_rooms/`. No upstream-core edits. Configure `~/.retinue` `stt:` / `tts:` — do not patch `tools/transcription_tools.py`.
+Sidecar env defaults: `RETINUE_VOICE_SIDECAR_HOST=127.0.0.1`,
+`RETINUE_VOICE_SIDECAR_PORT=8104`. Then set
+`RETINUE_VOICE_BACKEND=openai` and
+`RETINUE_VOICE_BASE_URL=http://127.0.0.1:8104/v1` on the rooms process.
 
-## Tracks
+## Related surfaces (not the Retinue rooms path)
 
-### A — xAI Voice as the mouth/ear (recommended first slice)
+| Surface | Why it is not rooms voice |
+|---|---|
+| Hermes CLI `/voice`, Discord live voice | Different home and session model; not room transcript |
+| Hermes Desktop STT/TTS | Desktop composer, not `retinue-web` rooms |
+| Hermes STT providers (`local`, `openai`, `groq`, `mistral`, `xai`, …) | Built-in; rooms adapter uses `voice.py`, not those tools |
+| Hermes streaming TTS (`elevenlabs`, `gemini`, `openai`, `xai` WS) | Gateway seam exists; rooms adapter does not opt in |
 
-Use the APIs already in the Hermes tree and already authenticated for this workspace (`xai-oauth`).
+## Tracks (design choices)
 
-| Piece | Endpoint | Official price (docs 2026-07-28) |
-|---|---|---|
-| STT | `POST /v1/stt` or streaming WS | $0.10 / hour batch, $0.20 / hour streaming |
-| TTS | `POST /v1/tts` or `wss://api.x.ai/v1/tts` | $15.00 / 1M chars |
-| Custom voices | `POST /v1/custom-voices` (≤120s clip) | one `voice_id` per retainer |
-| Built-in voices | `eve`, `leo`, `rex`, `rigel`, `ursa`, … | enough to distinguish 6 staff without cloning |
+### A — xAI STT/TTS (default shipped path)
 
-Hermes already streams xAI TTS (`docs/streaming-tts.md`). Built-in STT provider name is `xai`.
+Use xAI batch STT/TTS with credentials already usable for Hermes xAI.
+Per-member voice ids from `STAFF_VOICES` / `RETINUE_VOICE_MAP`.
+Hold-to-talk and speak-replies are implemented as above.
 
-**First slice:** retinue-web hold-to-talk → `POST /rooms/{id}/audio` (or transcribe in the adapter and reuse `POST /messages`) → `stt.provider: xai` → existing cycle. Play each member's notify text with a mapped `voice_id`. Opt the rooms adapter into the gateway streaming-TTS seam so replies start speaking at the first sentence.
+**Why first:** evaluates voice-in-rooms UX without standing up local speech
+hardware. Cost is usage-based on the provider (check current xAI pricing;
+do not treat historical numbers in old notes as authoritative).
 
-**Why first:** judges whether voice-in-rooms is even desirable, in days, at pocket cost, without touching claymore-1. Quality will be good enough to evaluate the UX (barge-in, who is speaking, playback vs transcript).
+### B — OpenAI-compatible sidecar (local / offline)
 
-**Cost sanity:** an hour of talking is cents of STT. A 2k-char retainer reply is a fraction of a cent of TTS.
+A **second process**, not a swap of the chat model server. Expose
+`/v1/audio/transcriptions` + `/v1/audio/speech` (or the same paths under a
+base that already includes `/v1`). Point
+`RETINUE_VOICE_BACKEND=openai` + `RETINUE_VOICE_BASE_URL=…` at it.
 
-### B — Second model on claymore-1 (use the headroom)
+Typical local stack for the shipped sidecar: `whisper-cli` + Piper or
+espeak. Larger or streaming ASR/TTS stacks are operator choice as long as
+the HTTP shape matches.
 
-A **sidecar**, not a swap. Glimmer stays on `:8080`. Speech gets its own process and port.
+**Do not** put speech on the same llama-server process that serves chat
+completion for local members if that process is already contended.
 
-| Role | Candidate | Fit next to Glimmer |
-|---|---|---|
-| STT | `whisper.cpp` Vulkan `large-v3-turbo` (~6 GB) or `large-v3` (~10 GB) | Proven on gfx1151. Best local accuracy/latency tradeoff. |
-| STT (alt) | Kyutai delayed-stream / Vox-class streaming ASR | Only if PTT feels too slow and we need partials. |
-| TTS | Kyutai Pocket TTS (~100M, CPU-capable) or Kokoro-class | Tiny. Do not spend 16 GB of GPU on TTS. |
-| TTS (quality) | A larger open TTS later (Qwen3-TTS / Voxtral-class) | Only after the room UX is proven. 16 GB VRAM is affordable here; still a second process. |
+### C — Shared desktop-class local speech stack
 
-Expose OpenAI-compatible `/v1/audio/transcriptions` + `/v1/audio/speech` on the tailnet. Point `~/.retinue` `stt.provider: openai` / `tts.provider: openai` at that base URL (same pattern as clay-blade `:8102`/`:8103`).
-
-**Do not** put speech on the Glimmer llama-server. Two locals in one room cycle already share that server.
-
-**Do not** start ollama for this.
-
-### C — Upgrade the existing clay-blade `local-ai`
-
-Same topology as Desktop: Speaches + Kokoro on clay-blade. Upgrade STT from `faster-whisper-base` to `large-v3-turbo`. Keep TTS Kokoro.
-
-**Only if** we want one shared voice backend for Jeeves *and* Retinue. The 2070 cannot also host a 10 GB Whisper next to Qwen2-VL. Turbo on CPU is the honest upgrade; GPU Whisper means parking vision.
-
-This is the incremental ops path, not the product path. Whisper-base is why Desktop voice still feels thin.
+Reuse an existing OpenAI-compatible Speaches/Kokoro-style stack on a
+workstation GPU/CPU host, upgraded from tiny Whisper if quality is thin.
+Same Track B env pointing at that base URL. Incremental ops path, not a
+separate rooms protocol.
 
 ### D — Cloud speech-to-speech as the brain (reject for v1)
 
-Vendor realtime speech-to-speech APIs (xAI, OpenAI, Gemini). Full-duplex, tool use, sub-second.
+Vendor realtime speech-to-speech APIs want to **be** the agent. Retinue’s
+agents are hired staff with their own models, SOULs, tools, and long local
+turns. Putting a vendor S2S model in front as the thinker collapses the
+roster into one voice agent.
 
-These APIs want to **be** the agent. Retinue's agents are hired staff with their own models, SOULs, tools, and 1800s local turns. Putting a vendor speech-to-speech model in front as the thinker collapses the roster into one voice agent.
+Allowed later as a **thin I/O shim** (audio in/out only, text still hits
+the room bus) — Track A already covers that shape with less magic. Do not
+start here.
 
-Allowed later as a **thin I/O shim** (audio in/out only, text still hits the room bus) — at that point Track A already covers it with less magic. Do not start here.
+### E — Discord live voice / Desktop-only / phone
 
-### E — Discord live voice / Hermes Desktop / phone
+Fine for 1:1 Hermes. Wrong face for the public room UI. Phone/SIP products
+are a different surface.
 
-Discord `/voice channel` and Desktop voice already work for 1:1 Hermes. They are the wrong face: Retinue's public product is the room UI. Phone/SIP (Retell, Twilio) is AnswerCrew, not this.
+## Capture layer
 
-## Capture layer (after a track is picked)
-
-Not decided by current headset inventory:
-
-- Browser `MediaRecorder` + hold-to-talk in `retinue-web` (default; no new hardware).
-- Always-on + VAD / wake word in the browser or a small local daemon.
-- Dedicated array / puck / phone-as-mic pointing at the same STT URL.
+- **Shipped:** browser mic + hold-to-talk in `retinue-web` (no new hardware).
+- **Later:** always-on + VAD / wake word; dedicated array / puck / phone-as-mic
+  pointing at the same STT path.
 
 Always-on is a UX increment on top of PTT, not a reason to pick D.
 
 ## Recommendation
 
-1. **Lock the product shape** (transcript-preserving PTT). 
-2. **Ship Track A** as the first room-voice slice — xAI STT/TTS, per-member voices, rooms adapter opts into streaming TTS, `retinue-web` hold-to-talk + playback queue.
-3. **Stand Track B up if A feels right and we want local/offline** — whisper.cpp Vulkan + a tiny TTS on claymore-1, Glimmer untouched. claymore-1 has the room.
-4. **Leave C** as a Desktop quality fix, not a Retinue milestone.
-5. **Do not do D or E** for v1.
-
-## Implementation sketch (only after the operator names a track)
-
-Plugin-shaped:
-
-- `retinue-web/`: hold-to-talk button, `MediaRecorder`, play returned / streamed audio, per-member voice tint in the roster.
-- `plugins/platforms/retinue_rooms/`: `POST /rooms/{id}/audio` → STT → existing message cycle; implement `supports_streaming_tts` / `write_streaming_tts`; map `slug → voice_id`.
-- `~/.retinue` config only for `stt:` / `tts:`. No core forks.
-
-Verify: rooms pytest still green; a live room on c-desktop `:8643` shows the spoken line in the transcript and plays the retainer reply.
+1. **Keep the product shape** (transcript-preserving PTT).
+2. **Use Track A** for the first room-voice experience when xAI credentials
+   are available.
+3. **Stand Track B up** when local/offline speech is required — OpenAI-compatible
+   sidecar + the env vars above.
+4. **Leave C** as a quality/ops choice for shared local stacks.
+5. **Do not do D or E** for v1 rooms product.
 
 ## Out of scope
 
-- `infra-dfc1` (noVNC). Still operator-gated.
-- Replacing Glimmer, lowering the 1800s local budget, or putting two speech models on the one llama-server.
-- Re-doing P0–P4 v1 or `infra-ivl9.1`.
+- Streaming TTS into the rooms adapter (gateway seam exists; rooms still
+  uses request/response `POST /tts`).
+- Replacing the local chat model server, or co-loading large speech models
+  onto a fully loaded inference process without spare capacity.
+- Speech-to-speech “brain” products that bypass the room transcript.
