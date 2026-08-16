@@ -24,6 +24,7 @@ reference an upstream issue and be dropped when upstream fixes it. Current list:
 |---|---|---|
 | `agent/prompt_builder.py` | Reword `SKILLS_GUIDANCE` sentence 1 — the stock wording trips an Anthropic content filter for subscription-OAuth tokens, surfacing as a billing-shaped 400 ("out of extra usage") | [NousResearch/hermes-agent#82154](https://github.com/NousResearch/hermes-agent/issues/82154) |
 | `tools/environments/docker.py` | `TERMINAL_DOCKER_SHARED_CONTAINER_KEY` — opt-in workspace key replacing the per-profile container identity, so every room member attaches to one shared "workspace computer" container | [NousResearch/hermes-agent#84671](https://github.com/NousResearch/hermes-agent/issues/84671) |
+| `tools/terminal_tool.py` | Key the `_active_environments` cache by `TERMINAL_DOCKER_SHARED_CONTAINER_KEY` instead of collapsing to `"default"`. Identity already uses that key at creation, so a single `"default"` cache entry handed the first workspace's container to every later turn — a sandbox room's container served an IDE room ([#16](https://github.com/novique-ai/retinue/issues/16)) | [NousResearch/hermes-agent#84671](https://github.com/NousResearch/hermes-agent/issues/84671) |
 
 ## Owned upstream paths
 

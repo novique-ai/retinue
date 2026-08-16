@@ -43,3 +43,28 @@ def test_shared_container_key_patch_present():
     # The override must feed the same variable used for BOTH create-labels
     # and the reuse probe — guard the exact composition.
     assert "_sanitize_label_value(_shared_key or _get_active_profile_name())" in src
+
+
+def test_shared_container_key_is_the_env_cache_key_patch_present():
+    """#84671 / retinue#16: container identity and env cache must agree.
+
+    Identity is keyed by TERMINAL_DOCKER_SHARED_CONTAINER_KEY at creation
+    time; if the cache still collapses to "default", the environment built
+    for the first workspace is reused for every later one and a sandbox
+    room's container serves an IDE room's turn.
+    """
+    src = _read("tools/terminal_tool.py")
+    assert 'os.getenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", "").strip()' in src, (
+        "shared-container-key cache patch was clobbered (likely by an "
+        "upstream sync) — room turns would collapse back onto one "
+        '"default" environment and cross the sandbox/IDE boundary. '
+        "Reapply per retinue/FORK-POLICY.md."
+    )
+    # Must sit in the cache-key resolver, after the isolation branches, so
+    # per-session isolation still wins and the CLI still lands on "default".
+    resolver = src.split("def _resolve_container_task_id(")[1].split("\ndef ")[0]
+    assert "_shared_key" in resolver
+    assert resolver.index("_docker_session_isolation_enabled") < resolver.index(
+        "_shared_key = os.getenv"
+    )
+    assert resolver.rstrip().endswith('return "default"')

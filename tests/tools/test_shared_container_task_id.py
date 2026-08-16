@@ -21,8 +21,14 @@ from tools import terminal_tool
 
 
 @pytest.fixture(autouse=True)
-def _clean_overrides():
-    """Ensure no stray overrides from other tests leak in."""
+def _clean_overrides(monkeypatch):
+    """Ensure no stray overrides from other tests leak in.
+
+    The workspace-computer key is cleared too: it is a cache key of its own
+    (see the shared-workspace tests below), so a leaked value would quietly
+    turn every "collapses to default" assertion into a different claim.
+    """
+    monkeypatch.delenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", raising=False)
     before = dict(terminal_tool._task_env_overrides)
     terminal_tool._task_env_overrides.clear()
     yield
@@ -65,5 +71,46 @@ def test_env_type_override_keeps_own_id():
             terminal_tool._resolve_container_task_id("bench-env")
             == "bench-env"
         )
+    finally:
+        terminal_tool.clear_task_env_overrides("bench-env")
+
+
+# ── shared workspace computer (TERMINAL_DOCKER_SHARED_CONTAINER_KEY) ──────
+#
+# The key names a container shared by every profile in one workspace, and it
+# already decides container identity at creation time (the hermes-profile
+# label). The cache must agree: collapsing these callers to "default" handed
+# the first workspace's environment to every later one.
+
+
+def test_shared_container_key_becomes_the_cache_key(monkeypatch):
+    monkeypatch.setenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", "retinue-ide-r-1")
+    assert terminal_tool._resolve_container_task_id(None) == "retinue-ide-r-1"
+    assert terminal_tool._resolve_container_task_id("") == "retinue-ide-r-1"
+    # Subagents still share their parent's workspace container.
+    assert terminal_tool._resolve_container_task_id("sub-7") == "retinue-ide-r-1"
+
+
+def test_distinct_workspaces_get_distinct_cache_keys(monkeypatch):
+    monkeypatch.setenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", "retinue-sandbox-r-1")
+    sandbox = terminal_tool._resolve_container_task_id(None)
+    monkeypatch.setenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", "retinue-ide-r-2")
+    ide = terminal_tool._resolve_container_task_id(None)
+    assert sandbox != ide
+
+
+def test_blank_shared_container_key_still_collapses_to_default(monkeypatch):
+    monkeypatch.setenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", "   ")
+    assert terminal_tool._resolve_container_task_id(None) == "default"
+
+
+def test_isolation_override_outranks_the_shared_container_key(monkeypatch):
+    """An RL/benchmark rollout asked for its own sandbox — it still gets one."""
+    monkeypatch.setenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", "retinue-ide-r-1")
+    terminal_tool.register_task_env_overrides(
+        "bench-env", {"env_type": "sandbox", "cwd": "/work"}
+    )
+    try:
+        assert terminal_tool._resolve_container_task_id("bench-env") == "bench-env"
     finally:
         terminal_tool.clear_task_env_overrides("bench-env")

@@ -315,3 +315,54 @@ def test_podman_ide_mount_is_isolated_from_sandbox(tmp_path):
         assert missing.returncode != 0
     finally:
         run([runtime, "rm", "-f", name_ide, name_sand], timeout=30)
+
+
+# ── #16: the env cache must be keyed by the room's container, not "default" ──
+
+
+def _cache_key_during(room, monkeypatch, tmp_path):
+    """The env-cache key terminal_tool resolves while *room*'s turn is live."""
+    from tools import terminal_tool
+
+    monkeypatch.setattr(terminal_tool, "_terminal_config_bridge_attempted", True)
+    with ide.apply_room_workspace(room, str(tmp_path)):
+        # The top-level agent passes task_id=None for every room turn.
+        return terminal_tool._resolve_container_task_id(None)
+
+
+def test_room_turn_keys_the_env_cache_by_container(monkeypatch, tmp_path):
+    """A sandbox turn and an IDE turn must not resolve to the same cache key.
+
+    They previously both collapsed to "default", so the environment created
+    for whichever room spoke first stayed cached and every later turn — in
+    any room — reused that container. Sandbox writes landed in the IDE
+    bind-mount and vice versa.
+    """
+    ide_root = tmp_path / "code"
+    ide_root.mkdir()
+    sandbox_room = _room(id="r-sand", workspace="sandbox")
+    ide_room = _room(id="r-ide", workspace="ide", ide_path=str(ide_root))
+
+    sandbox_key = _cache_key_during(sandbox_room, monkeypatch, tmp_path)
+    ide_key = _cache_key_during(ide_room, monkeypatch, tmp_path)
+
+    assert sandbox_key == ide.container_key("r-sand", "sandbox")
+    assert ide_key == ide.container_key("r-ide", "ide")
+    assert sandbox_key != ide_key
+
+
+def test_two_sandbox_rooms_do_not_share_one_cached_container(monkeypatch, tmp_path):
+    """Isolation is per room, not merely per workspace mode."""
+    a = _cache_key_during(_room(id="r-a", workspace="sandbox"), monkeypatch, tmp_path)
+    b = _cache_key_during(_room(id="r-b", workspace="sandbox"), monkeypatch, tmp_path)
+    assert a != b
+
+
+def test_cache_key_falls_back_to_default_outside_a_room(monkeypatch):
+    """No room overlay -> unchanged upstream behavior for the CLI/desktop."""
+    from tools import terminal_tool
+
+    monkeypatch.setattr(terminal_tool, "_terminal_config_bridge_attempted", True)
+    monkeypatch.delenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", raising=False)
+    assert terminal_tool._resolve_container_task_id(None) == "default"
+    assert terminal_tool._resolve_container_task_id("some-session") == "default"
