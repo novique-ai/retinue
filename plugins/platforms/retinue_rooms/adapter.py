@@ -130,7 +130,6 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         self._httpd: Optional[ThreadingHTTPServer] = None
         self._server_thread: Optional[threading.Thread] = None
         self._room_locks: Dict[str, asyncio.Lock] = {}
-        self._workspace_env_lock = asyncio.Lock()
         self._pending: Dict[tuple[str, str], _PendingTurn] = {}  # (room, member)
         self._pending_lock = threading.Lock()
         self._xai_keepalive: Optional[keepalive.XaiKeepalive] = None
@@ -177,6 +176,17 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
     # ── lifecycle ────────────────────────────────────────────────────────
 
     async def connect(self, **_kwargs) -> bool:
+        # Rooms are containerised by definition, so a docker-backed gateway is
+        # a precondition, not something to arrange silently. The adapter used
+        # to force TERMINAL_ENV=docker into process env for each cycle, which
+        # also moved every other platform in this gateway onto the container
+        # backend without asking. Refusing to start with a clear reason is the
+        # honest version of that.
+        backend_error = ide.docker_backend_error()
+        if backend_error:
+            logger.error("Retinue rooms: %s", backend_error)
+            self._set_fatal_error("terminal_backend", backend_error, retryable=False)
+            return False
         try:
             self._loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -770,12 +780,16 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         room = self.store.get(room_id)
         if room is None:
             return
-        # One process-wide env overlay. An asyncio lock (not threading.RLock)
-        # so two rooms on the gateway loop cannot interleave mounts.
-        async with self._workspace_env_lock:
-            attachments.sync_uploads_into_room(self._home_dir(), room)
-            with ide.apply_room_workspace(room, self._home_dir()):
-                await self._run_cycle_workspace(room, user_message)
+        # No process-wide lock. The workspace values ride a ContextVar per
+        # cycle, so concurrent rooms cannot interleave each other's mounts and
+        # nothing has to be serialized to keep them apart. This used to hold
+        # one asyncio lock for the WHOLE cycle — every model await included —
+        # so one room blocked every other, and a local-model turn could hold
+        # the gateway for the full 1800s turn timeout (#67). Per-room
+        # serialization still applies, via _room_lock in the caller.
+        attachments.sync_uploads_into_room(self._home_dir(), room)
+        with ide.apply_room_workspace(room, self._home_dir()):
+            await self._run_cycle_workspace(room, user_message)
 
     async def _run_cycle_workspace(self, room: Room, user_message: RoomMessage) -> None:
         room_id = room.id

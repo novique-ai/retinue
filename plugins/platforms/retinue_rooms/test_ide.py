@@ -7,6 +7,8 @@ import os
 
 import pytest
 
+from tools import workspace_context
+
 from . import ide
 from .engine import Room, room_briefing
 from .store import RoomStore
@@ -114,15 +116,32 @@ def test_sandbox_and_ide_use_different_container_keys(tmp_path):
     assert "sandbox" in sand and "ide" in attached
 
 
-def test_apply_room_workspace_restores_env(tmp_path, monkeypatch):
+def test_apply_room_workspace_does_not_leak_the_room_into_process_env(tmp_path, monkeypatch):
+    """The per-room values are scoped to the cycle and never touch os.environ.
+
+    This replaces an older assertion that the cycle *set and restored*
+    os.environ. Save/restore was only ever safe while cycles ran one at a
+    time; the values now ride a ContextVar so rooms can overlap, and the
+    property worth pinning is the stronger one — a room's key and mounts are
+    invisible outside its own scope, so an operator's process-wide setting
+    survives a cycle untouched.
+    """
     monkeypatch.setenv("TERMINAL_DOCKER_VOLUMES", '["/leak:/workspace:rw"]')
-    monkeypatch.setenv("TERMINAL_ENV", "local")
     room = _room(workspace="sandbox")
+
     with ide.apply_room_workspace(room) as overlay:
-        assert os.environ["TERMINAL_DOCKER_VOLUMES"] == "[]"
         assert overlay["TERMINAL_ENV"] == "docker"
+        # in-scope readers see the room
+        assert workspace_context.getenv("TERMINAL_DOCKER_VOLUMES") == "[]"
+        assert workspace_context.shared_container_key() == "retinue-sandbox-r-1"
+        # process env is NOT rewritten with the room's values
+        assert os.environ["TERMINAL_DOCKER_VOLUMES"] == '["/leak:/workspace:rw"]'
+
+    # and nothing survives the scope
+    assert workspace_context.current() is None
+    assert workspace_context.getenv("TERMINAL_DOCKER_VOLUMES") == '["/leak:/workspace:rw"]'
+    assert workspace_context.shared_container_key() == ""
     assert os.environ["TERMINAL_DOCKER_VOLUMES"] == '["/leak:/workspace:rw"]'
-    assert os.environ["TERMINAL_ENV"] == "local"
 
 
 def test_briefing_names_the_workspace_kind(tmp_path):
@@ -372,3 +391,160 @@ def test_cache_key_falls_back_to_default_outside_a_room(monkeypatch):
     monkeypatch.delenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", raising=False)
     assert terminal_tool._resolve_container_task_id(None) == "default"
     assert terminal_tool._resolve_container_task_id("some-session") == "default"
+
+
+# ── cross-room concurrency (#67) ─────────────────────────────────────────
+#
+# The workspace values used to travel through os.environ, which is
+# process-global, so the adapter serialized every cycle behind one lock and a
+# single turn blocked every other room. These tests pin the property that
+# replaced the lock: a cycle's workspace is visible ONLY to that cycle.
+
+
+@pytest.mark.asyncio
+async def test_concurrent_rooms_never_see_each_others_container_key(tmp_path):
+    """Two cycles interleaved on one loop each keep their own key.
+
+    Deliberately forces the interleaving rather than hoping for it: each task
+    binds its workspace, waits for the other to have bound its own, and only
+    then reads back. With a process-global carrier both reads return whichever
+    room bound last, which is the leak this replaced the lock to prevent.
+    """
+    import asyncio
+
+    bound = asyncio.Event()
+    seen: dict[str, str] = {}
+
+    async def cycle(room: Room, tag: str, *, first: bool) -> None:
+        with ide.apply_room_workspace(room, str(tmp_path)):
+            if first:
+                bound.set()
+            else:
+                await bound.wait()
+            await asyncio.sleep(0)  # yield: let the other task run inside its own scope
+            seen[tag] = workspace_context.shared_container_key()
+
+    await asyncio.gather(
+        cycle(_room(id="alpha", workspace="sandbox"), "alpha", first=True),
+        cycle(_room(id="beta", workspace="ide", ide_path=str(tmp_path)), "beta", first=False),
+    )
+
+    assert seen["alpha"] == "retinue-sandbox-alpha"
+    assert seen["beta"] == "retinue-ide-beta"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_rooms_never_see_each_others_volumes(tmp_path):
+    """Same isolation for the mount list, which decides what a room can reach.
+
+    A sandbox room must not inherit an IDE room's host bind — that is the
+    boundary novique-ai/retinue#16 was about, reached here by a second route.
+    """
+    import asyncio
+
+    ide_root = tmp_path / "ide-root"
+    ide_root.mkdir()
+    bound = asyncio.Event()
+    seen: dict[str, str] = {}
+
+    async def cycle(room: Room, tag: str, *, first: bool) -> None:
+        with ide.apply_room_workspace(room, str(tmp_path)):
+            if first:
+                bound.set()
+            else:
+                await bound.wait()
+            await asyncio.sleep(0)
+            seen[tag] = workspace_context.getenv("TERMINAL_DOCKER_VOLUMES", "[]")
+
+    await asyncio.gather(
+        cycle(_room(id="box", workspace="sandbox"), "box", first=True),
+        cycle(_room(id="work", workspace="ide", ide_path=str(ide_root)), "work", first=False),
+    )
+
+    assert str(ide_root) in seen["work"]
+    assert str(ide_root) not in seen["box"], "sandbox room inherited the IDE bind-mount"
+
+
+def test_workspace_key_reaches_a_tool_dispatch_thread(tmp_path):
+    """The container is created in a worker thread, not on the loop.
+
+    Tool dispatch is fanned onto threads via
+    ``tools.thread_context.propagate_context_to_thread``. If the workspace did
+    not ride along, the environment would be built against whatever the
+    process env happened to hold — so this is the load-bearing assumption
+    behind dropping the lock, and it gets its own test.
+    """
+    import threading
+
+    from tools.thread_context import propagate_context_to_thread
+
+    seen: dict[str, str] = {}
+
+    def worker() -> None:
+        seen["key"] = workspace_context.shared_container_key()
+
+    with ide.apply_room_workspace(_room(id="threaded"), str(tmp_path)):
+        t = threading.Thread(target=propagate_context_to_thread(worker))
+        t.start()
+        t.join()
+
+    assert seen["key"] == "retinue-sandbox-threaded"
+
+
+def test_no_overlay_falls_back_to_process_env(monkeypatch, tmp_path):
+    """Callers outside a room are untouched: CLI, desktop, delegate_task.
+
+    The shared-workspace knob is also a documented process-env setting, so it
+    has to keep working with no overlay bound.
+    """
+    monkeypatch.setenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", "set-by-operator")
+    assert workspace_context.shared_container_key() == "set-by-operator"
+
+    with ide.apply_room_workspace(_room(id="scoped"), str(tmp_path)):
+        assert workspace_context.shared_container_key() == "retinue-sandbox-scoped"
+
+    assert workspace_context.shared_container_key() == "set-by-operator"
+
+
+def test_invariant_values_stay_in_process_env(tmp_path):
+    """The non-varying room values still reach tools that read os.environ.
+
+    TERMINAL_CWD and the mount flag are read straight from the environment by
+    other tools (the code-execution tool among them), so they are published
+    process-wide. They are identical for every room, so that is race-free.
+    """
+    with ide.apply_room_workspace(_room(id="envcheck"), str(tmp_path)):
+        for key in ide.INVARIANT_ENV:
+            assert os.environ.get(key), f"{key} must be visible to os.environ readers"
+        assert os.environ["TERMINAL_CWD"] == ide.CONTAINER_MOUNT
+
+
+def test_terminal_env_is_never_written_by_a_cycle(monkeypatch, tmp_path):
+    """A room cycle must not move the whole process onto the docker backend.
+
+    TERMINAL_ENV selects the terminal backend for every platform in the
+    gateway, at ~30 direct read sites. Writing it here would silently put a
+    Discord or Telegram agent's shell in a container. The requirement is
+    checked at connect() instead (see docker_backend_error).
+    """
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    with ide.apply_room_workspace(_room(id="nowrite"), str(tmp_path)) as overlay:
+        assert overlay["TERMINAL_ENV"] == "docker"  # in-scope readers still see intent
+        assert os.environ["TERMINAL_ENV"] == "local", (
+            "a room cycle rewrote the process-wide terminal backend"
+        )
+    assert os.environ["TERMINAL_ENV"] == "local"
+    assert "TERMINAL_ENV" not in ide.INVARIANT_ENV
+
+
+def test_docker_backend_is_a_checked_precondition(monkeypatch):
+    """Rooms report a misconfigured gateway instead of repairing it."""
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+    assert ide.docker_backend_error() is None
+
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    problem = ide.docker_backend_error()
+    assert problem and "TERMINAL_ENV" in problem and "docker" in problem
+
+    monkeypatch.delenv("TERMINAL_ENV", raising=False)
+    assert ide.docker_backend_error(), "an unset backend is the default 'local', not docker"

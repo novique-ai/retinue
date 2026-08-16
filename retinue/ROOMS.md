@@ -62,6 +62,14 @@ user ──HTTP──▶ RetinueRoomsAdapter ──MessageEvent(profile=member)�
    control is later; it is not the default.
 5. Reply capture is per `(room, member)` so two in-flight speakers cannot
    steal each other's notify.
+6. **Rooms run concurrently with each other.** Sequencing is per room, not
+   gateway-wide: a slow turn in one room no longer blocks the others. Each
+   cycle binds its workspace (container key + mounts) to a ContextVar rather
+   than to process env — see `tools/workspace_context.py` — so overlapping
+   cycles cannot see each other's container. Until this landed, the key
+   travelled through `os.environ` and every cycle had to serialize behind one
+   process-wide lock, which meant a single local-model turn could hold the
+   whole gateway for the full turn timeout.
 
 ## Surfaces
 
@@ -178,6 +186,13 @@ TERMINAL_ENV=docker                              # container-backed terminals (p
 TERMINAL_DOCKER_SHARED_CONTAINER_KEY=<workspace> # ONE container for every member
 TERMINAL_DOCKER_IMAGE=docker.io/library/python:3.12-slim   # or your workspace image
 ```
+
+**`TERMINAL_ENV=docker` is a precondition, not a default.** The rooms adapter
+refuses to start without it and says so, rather than setting it for you. It is
+process-wide and read at ~30 sites across the engine, so a room cycle writing
+it would move every other platform sharing the gateway onto the container
+backend without asking. If `connect()` fails with a `terminal_backend` error,
+set it on the gateway process — a systemd unit is the usual place.
 
 Live-verified 2026-08-12 (rootless podman 4.9.3, no docker binary on the host): scout wrote
 `/root/retinue-proof.txt` inside the container; editor — a different profile — read and

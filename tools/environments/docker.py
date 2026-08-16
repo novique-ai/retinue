@@ -9,6 +9,8 @@ import hashlib
 import json
 import logging
 import os
+
+from tools import workspace_context
 import re
 import shlex
 import shutil
@@ -1376,7 +1378,7 @@ class DockerEnvironment(BaseEnvironment):
         # computer for multi-agent rooms; see retinue/ROOMS.md. Upstream
         # feature request: NousResearch/hermes-agent#84671 — drop this patch
         # when an equivalent knob lands.
-        _shared_key = os.getenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", "").strip()
+        _shared_key = workspace_context.shared_container_key()
         profile_name = _sanitize_label_value(_shared_key or _get_active_profile_name())
         task_label = _sanitize_label_value(task_id)
         label_args = [

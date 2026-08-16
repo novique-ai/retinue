@@ -68,6 +68,7 @@ def _redact_terminal_error_text(value: Any) -> str:
 # ---------------------------------------------------------------------------
 from tools.interrupt import is_interrupted, _interrupt_event  # noqa: F401 — re-exported
 from tools.registry import tool_error
+from tools import workspace_context
 from tools.shell_heredoc import strip_inert_heredoc_bodies
 # display_hermes_home imported lazily at call site (stale-module safety during hermes update)
 
@@ -1400,7 +1401,7 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
         return task_id
     if task_id and _docker_session_isolation_enabled():
         return _resolve_container_alias(task_id)
-    _shared_key = os.getenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", "").strip()
+    _shared_key = workspace_context.shared_container_key()
     if _shared_key:
         return _shared_key
     return "default"
@@ -1477,8 +1478,13 @@ def _parse_env_var(name: str, default: str, converter: Any = int, type_label: st
 
     Without this wrapper, a single malformed env var (e.g. TERMINAL_TIMEOUT=5m)
     causes an unhandled ValueError that kills every terminal command.
+
+    Carried patch (retinue): reads through ``workspace_context``, so a caller
+    that bound a per-context workspace overlay (a room cycle) gets its own
+    TERMINAL_DOCKER_VOLUMES without mutating process env. With no overlay in
+    force this is exactly ``os.getenv``.
     """
-    raw = os.getenv(name, default)
+    raw = workspace_context.getenv(name, default)
     try:
         return converter(raw)
     except (ValueError, json.JSONDecodeError):
