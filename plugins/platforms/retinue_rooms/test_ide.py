@@ -48,17 +48,23 @@ def test_resolve_ide_path_falls_back_to_env(tmp_path, monkeypatch):
 
 
 def test_list_folders_under_root(tmp_path, monkeypatch):
-    (tmp_path / "projects").mkdir()
-    (tmp_path / "projects" / "retinue").mkdir()
-    (tmp_path / ".hidden").mkdir()
-    (tmp_path / "notes.txt").write_text("x", encoding="utf-8")
-    monkeypatch.setenv("RETINUE_IDE_ROOT", str(tmp_path))
+    # Own the root outright rather than listing bare tmp_path: this asserts an
+    # EXACT folder listing, and tmp_path is shared with whatever else the
+    # active fixtures put there (the repo-wide hermetic fixture parks a
+    # sandboxed HERMES_HOME beside it). Anchoring to a private subdirectory
+    # keeps the assertion about ide.list_folders instead of about who else
+    # wrote to tmp_path.
+    root = tmp_path / "root"
+    (root / "projects" / "retinue").mkdir(parents=True)
+    (root / ".hidden").mkdir()
+    (root / "notes.txt").write_text("x", encoding="utf-8")
+    monkeypatch.setenv("RETINUE_IDE_ROOT", str(root))
     listing = ide.list_folders(None)
-    assert listing["path"] == str(tmp_path)
+    assert listing["path"] == str(root)
     assert listing["parent"] is None
     assert [f["name"] for f in listing["folders"]] == ["projects"]
-    child = ide.list_folders(str(tmp_path / "projects"))
-    assert child["parent"] == str(tmp_path)
+    child = ide.list_folders(str(root / "projects"))
+    assert child["parent"] == str(root)
     assert [f["name"] for f in child["folders"]] == ["retinue"]
     with pytest.raises(ValueError, match="under the configured IDE root"):
         ide.list_folders("/tmp")
