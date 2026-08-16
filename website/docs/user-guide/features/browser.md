@@ -70,6 +70,8 @@ Browser Use mode uses the [Browser Use CLI 3.0](https://github.com/browser-use/b
 
 The mode is a **driver** that composes with your configured browser backend: it drives your local Chrome, a Nous-subscription cloud browser, Browserbase, Firecrawl, or Browser Use cloud browsers — whichever browser source is selected in `hermes tools` → Browser Automation. The one exception is Camofox, which has no CDP endpoint for the harness to attach to; Camofox setups automatically keep the built-in browser tools.
 
+**Concurrent sessions:** `browser_exec` accepts a `session=<name>` argument that isolates browser work per name on every backend. Each name gets its own harness daemon (its own IPC socket, log, and state), and on cloud backends its own browser — so parallel subagents or simultaneous chats no longer clobber a single shared connection. Omitting `session` uses the shared default daemon, which is fine for one-at-a-time browsing.
+
 To opt out and force the built-in browser tools, use `/browser use off`, or:
 
 ```yaml
@@ -472,10 +474,12 @@ AGENT_BROWSER_ARGS=--no-sandbox
 
 ### Install agent-browser CLI
 
+You don't need to install anything — `agent-browser` resolves automatically via
+`npx agent-browser` on first browser-tool use. To avoid the one-time npx fetch,
+you can install it globally ahead of time (optional):
+
 ```bash
 npm install -g agent-browser
-# Or install locally in the repo:
-npm install
 ```
 
 :::info

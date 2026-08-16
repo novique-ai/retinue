@@ -20,15 +20,29 @@ def _read(rel: str) -> str:
         return f.read()
 
 
-def test_skills_guidance_content_filter_patch_present():
-    """#82154: the stock first sentence trips Anthropic's content filter."""
-    src = _read("agent/prompt_builder.py")
-    assert "5+ tool calls" not in src, (
-        "SKILLS_GUIDANCE carried patch was clobbered (likely by an upstream "
-        "sync) — the stock sentence causes billing-shaped 400s on "
-        "subscription-OAuth tokens. Reapply per retinue/FORK-POLICY.md."
+def test_skills_guidance_avoids_the_content_filter_wording():
+    """#82154: the stock first sentence trips Anthropic's content filter.
+
+    No longer a carried patch — upstream adopted the reword and documented it
+    with a NOTE citing the same issue, so we dropped ours at the 2026-08-16
+    sync. This stays as a regression guard, because the failure it prevents is
+    remote, expensive and misleading: a billing-shaped HTTP 400 ("out of extra
+    usage") on subscription-OAuth tokens, which sends users to buy quota they
+    do not need.
+
+    Asserts on the CONSTANT, not on the file. The previous version scanned
+    prompt_builder.py's whole source for the bad phrasing, which broke the
+    moment upstream's explanatory comment quoted that phrasing to say what NOT
+    to use. A guard that fires on a comment is a guard that gets muted.
+    """
+    from agent.prompt_builder import SKILLS_GUIDANCE
+
+    assert "5+ tool calls" not in SKILLS_GUIDANCE, (
+        "the content-filter wording is back in SKILLS_GUIDANCE — this causes "
+        "billing-shaped 400s on subscription-OAuth tokens. See "
+        "NousResearch/hermes-agent#82154 and retinue/FORK-POLICY.md."
     )
-    assert "record it with skill_manage" in src
+    assert "record it with skill_manage" in SKILLS_GUIDANCE
 
 
 def test_shared_container_key_patch_present():
