@@ -38,11 +38,29 @@ def slugify_name(display_name: str) -> str:
     return slug[:32]
 
 
-def soul_template(display_name: str, job: str, how: str) -> str:
+def _persona_manner_lines(persona: Optional[Dict[str, Any]]) -> List[str]:
+    """Phrases for non-balanced dials. Empty when all-balanced or unset."""
+    from .identity import persona_soul_lines
+
+    return persona_soul_lines(persona)
+
+
+def soul_template(
+    display_name: str,
+    job: str,
+    how: str,
+    persona: Optional[Dict[str, Any]] = None,
+) -> str:
     parts = [f"You are {display_name}.", "", f"Your job: {job.strip()}"]
     how = (how or "").strip()
     if how:
         parts += ["", "How you work:", how]
+    # Non-balanced persona dials only. All-balanced must add nothing —
+    # every existing agent is effectively all-balanced, so the SOUL has
+    # to stay byte-identical to what it is today.
+    manner = _persona_manner_lines(persona)
+    if manner:
+        parts += ["", *manner]
     parts += [
         "",
         f"Identity: your name is {display_name} — that is who you are in "
@@ -486,10 +504,22 @@ def scaffold_profile(
     job: str,
     how: str,
     model_preset: Optional[str] = None,
+    avatar_emoji: Any = None,
+    avatar_color: Any = None,
+    voice: Any = None,
+    persona: Any = None,
 ) -> Dict[str, Any]:
     """Create ``profiles/<slug>/`` under *home_dir*. Raises ValueError on bad
     input (including an unknown *model_preset*), FileExistsError if the
     profile already exists."""
+    from .identity import (
+        normalize_avatar_color,
+        normalize_avatar_emoji,
+        normalize_persona,
+        normalize_voice,
+        persona_is_balanced,
+    )
+
     display_name = (display_name or "").strip()
     job = (job or "").strip()
     model_preset = (model_preset or "").strip() or None
@@ -500,6 +530,13 @@ def scaffold_profile(
     slug = slugify_name(display_name)
     if not slug or slug in _RESERVED:
         raise ValueError(f"cannot derive a usable profile name from {display_name!r}")
+
+    # Validate identity/persona BEFORE creating anything, so a bad colour
+    # leaves no half-made profile behind.
+    emoji = normalize_avatar_emoji(avatar_emoji)
+    color = normalize_avatar_color(avatar_color)
+    voice_id = normalize_voice(voice)
+    persona_obj = normalize_persona(persona)
 
     # Resolve the model BEFORE creating anything, so a bad preset leaves no
     # half-made profile behind.
@@ -514,7 +551,7 @@ def scaffold_profile(
     os.makedirs(profile_dir)
 
     with open(os.path.join(profile_dir, "SOUL.md"), "w", encoding="utf-8") as f:
-        f.write(soul_template(display_name, job, how))
+        f.write(soul_template(display_name, job, how, persona=persona_obj))
 
     with open(os.path.join(profile_dir, "config.yaml"), "w", encoding="utf-8") as f:
         f.write(model_block + "agent:\n  tool_choice: auto\n")
@@ -528,7 +565,7 @@ def scaffold_profile(
             shutil.copy(root_cred, os.path.join(profile_dir, cred))
             os.chmod(os.path.join(profile_dir, cred), mode)
 
-    meta = {
+    meta: Dict[str, Any] = {
         "display_name": display_name,
         "slug": slug,
         "job": job,
@@ -537,9 +574,17 @@ def scaffold_profile(
         "archived": False,
         "created_at": time.time(),
     }
+    if emoji is not None:
+        meta["avatar_emoji"] = emoji
+    if color is not None:
+        meta["avatar_color"] = color
+    if voice_id is not None:
+        meta["voice"] = voice_id
+    if not persona_is_balanced(persona_obj):
+        meta["persona"] = persona_obj
     with open(os.path.join(profile_dir, AGENT_META_FILENAME), "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
-    return meta
+    return enrich_agent(dict(meta))
 
 
 def activate_hired_profile(slug: str, runner: Any = None) -> Dict[str, Any]:
@@ -642,8 +687,42 @@ def list_agents(home_dir: str) -> List[Dict[str, Any]]:
             meta["model_preset"] = inferred
         elif stored:
             meta["model_preset"] = stored
-        agents.append(meta)
+        agents.append(enrich_agent(meta))
     return agents
+
+
+def enrich_agent(meta: Dict[str, Any]) -> Dict[str, Any]:
+    """Add resolved identity / voice / persona. Safe on pre-change profiles."""
+    from . import voice
+    from .identity import normalize_persona, resolve_identity
+
+    slug = str(meta.get("slug") or "")
+    display = str(meta.get("display_name") or slug)
+    emoji = meta.get("avatar_emoji")
+    color = meta.get("avatar_color")
+    stored_voice = meta.get("voice")
+    meta["avatar_emoji"] = (
+        emoji.strip() if isinstance(emoji, str) and emoji.strip() else None
+    )
+    meta["avatar_color"] = (
+        color.strip().lower() if isinstance(color, str) and color.strip() else None
+    )
+    meta["voice"] = (
+        stored_voice.strip()
+        if isinstance(stored_voice, str) and stored_voice.strip()
+        else None
+    )
+    try:
+        meta["persona"] = normalize_persona(meta.get("persona"))
+    except ValueError:
+        from .identity import DEFAULT_PERSONA
+
+        meta["persona"] = dict(DEFAULT_PERSONA)
+    meta["identity"] = resolve_identity(
+        slug, display, meta["avatar_emoji"], meta["avatar_color"]
+    )
+    meta["voice_resolved"] = voice.voice_for(slug, stored=meta["voice"])
+    return meta
 
 
 _SLUG_OK = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
@@ -679,11 +758,30 @@ def _load_meta(profile_dir: str, slug: str) -> Dict[str, Any]:
     return {"display_name": slug, "slug": slug, "job": "", "how": ""}
 
 
+_RESPONSE_ONLY = {
+    "identity",
+    "voice_resolved",
+    "has_soul",
+    "local_llm",
+    "turn_timeout",
+    "model_summary",
+    "team",
+    "busy",
+    "cache_evicted",
+    "online",
+    "activation",
+    "auth_status",
+    "auth_provider",
+    "auth_error",
+}
+
+
 def _write_meta(profile_dir: str, meta: Dict[str, Any]) -> None:
     path = os.path.join(profile_dir, AGENT_META_FILENAME)
+    payload = {k: v for k, v in meta.items() if k not in _RESPONSE_ONLY}
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(meta, f, indent=2)
+        json.dump(payload, f, indent=2)
     os.replace(tmp, path)
 
 
@@ -694,6 +792,9 @@ def _agent_or_raise(home_dir: str, slug: str) -> Dict[str, Any]:
     raise KeyError(slug)
 
 
+_UNSET = object()
+
+
 def update_agent(
     home_dir: str,
     slug: str,
@@ -702,6 +803,10 @@ def update_agent(
     job: Optional[str] = None,
     how: Optional[str] = None,
     archived: Optional[bool] = None,
+    avatar_emoji: Any = _UNSET,
+    avatar_color: Any = _UNSET,
+    voice: Any = _UNSET,
+    persona: Any = _UNSET,
 ) -> Dict[str, Any]:
     """Rewrite SOUL + meta for an existing hire. Slug stays put.
 
@@ -709,10 +814,27 @@ def update_agent(
     bot from the hire-into-room list and the sidebar without deleting
     ``profiles/<slug>/``.
     """
+    from .identity import (
+        normalize_avatar_color,
+        normalize_avatar_emoji,
+        normalize_persona,
+        normalize_voice,
+        persona_is_balanced,
+    )
+
     profile_dir = _profile_dir(home_dir, slug)
     if not os.path.isdir(profile_dir):
         raise KeyError(slug)
-    if display_name is None and job is None and how is None and archived is None:
+    if (
+        display_name is None
+        and job is None
+        and how is None
+        and archived is None
+        and avatar_emoji is _UNSET
+        and avatar_color is _UNSET
+        and voice is _UNSET
+        and persona is _UNSET
+    ):
         raise ValueError("nothing to update")
 
     meta = _load_meta(profile_dir, slug)
@@ -734,10 +856,41 @@ def update_agent(
         persona_changed = True
     if archived is not None:
         meta["archived"] = bool(archived)
+    if avatar_emoji is not _UNSET:
+        emoji = normalize_avatar_emoji(avatar_emoji)
+        if emoji is None:
+            meta.pop("avatar_emoji", None)
+        else:
+            meta["avatar_emoji"] = emoji
+    if avatar_color is not _UNSET:
+        color = normalize_avatar_color(avatar_color)
+        if color is None:
+            meta.pop("avatar_color", None)
+        else:
+            meta["avatar_color"] = color
+    if voice is not _UNSET:
+        voice_id = normalize_voice(voice)
+        if voice_id is None:
+            meta.pop("voice", None)
+        else:
+            meta["voice"] = voice_id
+    if persona is not _UNSET:
+        persona_obj = normalize_persona(persona)
+        if persona_is_balanced(persona_obj):
+            meta.pop("persona", None)
+        else:
+            meta["persona"] = persona_obj
+        persona_changed = True
     meta["slug"] = slug
     meta["updated_at"] = time.time()
 
     if persona_changed:
+        stored_persona = None
+        if meta.get("persona"):
+            try:
+                stored_persona = normalize_persona(meta.get("persona"))
+            except ValueError:
+                stored_persona = None
         soul_path = os.path.join(profile_dir, "SOUL.md")
         with open(soul_path, "w", encoding="utf-8") as f:
             f.write(
@@ -745,6 +898,7 @@ def update_agent(
                     str(meta.get("display_name") or slug),
                     str(meta.get("job") or ""),
                     str(meta.get("how") or ""),
+                    persona=stored_persona,
                 )
             )
     _write_meta(profile_dir, meta)

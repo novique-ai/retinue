@@ -22,7 +22,7 @@ import logging
 import os
 import tempfile
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +40,11 @@ STAFF_VOICES: Dict[str, str] = {
     "scribe": "celeste",
 }
 
-_FALLBACK_VOICES = ("eve", "leo", "rex", "rigel", "ursa", "celeste", "lux", "iris")
+# Available narrator ids for derivation. Collisions are accepted —
+# stability beats distinctness: an agent's voice must not change because
+# somebody else was hired.
+AVAILABLE_VOICES = ("eve", "leo", "rex", "rigel", "ursa", "celeste", "lux", "iris")
+_FALLBACK_VOICES = AVAILABLE_VOICES
 
 
 class VoiceError(ValueError):
@@ -58,16 +62,66 @@ def openai_base_url() -> str:
     return (os.getenv("RETINUE_VOICE_BASE_URL") or "").strip().rstrip("/")
 
 
-def voice_for(speaker: str) -> str:
+def voice_for(
+    speaker: str,
+    *,
+    stored: Optional[str] = None,
+    home_dir: Optional[str] = None,
+) -> str:
+    """Resolve a narrator id.
+
+    Precedence (highest first):
+
+    1. ``RETINUE_VOICE_MAP`` env override
+    2. per-agent stored ``voice`` (``stored=`` or ``retinue-agent.json``)
+    3. ``STAFF_VOICES`` built-in defaults
+    4. ``stable_index(slug)`` over ``AVAILABLE_VOICES``
+
+    Does not infer a voice from the agent's display name.
+    """
+    from .identity import stable_index
+
     slug = (speaker or "").strip().lower()
     override = _voice_map_override()
     if slug in override:
         return override[slug]
+    chosen = stored
+    if chosen is None and home_dir and slug:
+        chosen = _read_stored_voice(slug, home_dir)
+    if isinstance(chosen, str) and chosen.strip():
+        return chosen.strip()
     if slug in STAFF_VOICES:
         return STAFF_VOICES[slug]
     if not slug:
-        return _FALLBACK_VOICES[0]
-    return _FALLBACK_VOICES[sum(ord(c) for c in slug) % len(_FALLBACK_VOICES)]
+        return AVAILABLE_VOICES[0]
+    return AVAILABLE_VOICES[stable_index(slug, len(AVAILABLE_VOICES))]
+
+
+def _read_stored_voice(slug: str, home_dir: str) -> Optional[str]:
+    path = os.path.join(home_dir, "profiles", slug, "retinue-agent.json")
+    try:
+        data = json.loads(open(path, encoding="utf-8").read())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    raw = data.get("voice")
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    return raw.strip()
+
+
+def _hired_slugs(home_dir: str) -> List[str]:
+    profiles = os.path.join(home_dir, "profiles")
+    try:
+        names = os.listdir(profiles)
+    except OSError:
+        return []
+    return [
+        name
+        for name in names
+        if name and os.path.isdir(os.path.join(profiles, name))
+    ]
 
 
 def _voice_map_override() -> Dict[str, str]:
@@ -85,7 +139,7 @@ def _voice_map_override() -> Dict[str, str]:
     return out
 
 
-def status() -> Dict[str, Any]:
+def status(home_dir: Optional[str] = None) -> Dict[str, Any]:
     name = backend_name()
     ready = True
     detail = ""
@@ -103,8 +157,11 @@ def status() -> Dict[str, Any]:
         except Exception as e:
             ready = False
             detail = str(e)
-    voices = dict(STAFF_VOICES)
-    voices.update(_voice_map_override())
+    slugs = set(STAFF_VOICES)
+    slugs.update(_voice_map_override())
+    if home_dir:
+        slugs.update(_hired_slugs(home_dir))
+    voices = {slug: voice_for(slug, home_dir=home_dir) for slug in slugs}
     return {
         "backend": name,
         "ready": ready,
@@ -135,12 +192,12 @@ def transcribe(data: bytes, filename: str = "speech.wav") -> str:
             pass
 
 
-def synthesize(text: str, speaker: str = "") -> bytes:
+def synthesize(text: str, speaker: str = "", home_dir: Optional[str] = None) -> bytes:
     """Return audio bytes (mp3 or wav). Raises VoiceError on failure."""
     spoken = (text or "").strip()
     if not spoken:
         raise VoiceError("empty text")
-    voice = voice_for(speaker)
+    voice = voice_for(speaker, home_dir=home_dir)
     if backend_name() == "openai":
         return _synthesize_openai(spoken, voice)
     return _synthesize_xai(spoken, voice)
@@ -358,6 +415,10 @@ def transcribe_dispatch(data: bytes, filename: str = "speech.wav") -> str:
     return fn(data, filename) if fn is not None else transcribe(data, filename)
 
 
-def synthesize_dispatch(text: str, speaker: str = "") -> bytes:
+def synthesize_dispatch(
+    text: str, speaker: str = "", home_dir: Optional[str] = None
+) -> bytes:
     fn = synthesize_fn
-    return fn(text, speaker) if fn is not None else synthesize(text, speaker)
+    if fn is not None:
+        return fn(text, speaker)
+    return synthesize(text, speaker, home_dir=home_dir)
