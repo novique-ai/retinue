@@ -9,6 +9,15 @@ export interface RoomMeta {
   archived?: boolean;
   workspace?: RoomWorkspace;
   ide_path?: string | null;
+  /** Which project this room is filed under. null = Unfiled. */
+  project_id?: string | null;
+}
+
+/** Projects group rooms (separate from team separators, which group agents). */
+export interface ProjectMeta {
+  id: string;
+  name: string;
+  archived: boolean;
 }
 
 export interface RoomMsg {
@@ -137,6 +146,8 @@ export interface RoomPatch {
   max_agent_turns?: number;
   workspace?: RoomWorkspace;
   ide_path?: string | null;
+  /** Move the room to a project, or null to unfile it. */
+  project_id?: string | null;
 }
 
 export interface AgentPatch {
@@ -349,7 +360,11 @@ export const api = {
     name: string,
     members: string[],
     lead: string | null,
-    extra?: { workspace?: RoomWorkspace; ide_path?: string | null },
+    extra?: {
+      workspace?: RoomWorkspace;
+      ide_path?: string | null;
+      project_id?: string | null;
+    },
   ) => req<RoomMeta>("POST", "/rooms", { name, members, lead, ...extra }),
   patchRoom: (id: string, body: RoomPatch) => req<RoomMeta>("PATCH", `/rooms/${id}`, body),
   deleteRoom: (id: string) => req<{ deleted: string }>("DELETE", `/rooms/${id}`),
@@ -417,6 +432,15 @@ export const api = {
     req<{ deleted: string }>("DELETE", `/agents/${slug}`),
   getSidebar: () => req<SidebarLayout>("GET", "/sidebar"),
   putSidebar: (layout: SidebarLayout) => req<SidebarLayout>("PUT", "/sidebar", layout),
+  listProjects: () => req<{ projects: ProjectMeta[] }>("GET", "/projects"),
+  createProject: (name: string) => req<ProjectMeta>("POST", "/projects", { name }),
+  patchProject: (id: string, body: { name?: string; archived?: boolean }) =>
+    req<ProjectMeta>("PATCH", `/projects/${encodeURIComponent(id)}`, body),
+  deleteProject: (id: string) =>
+    req<{ deleted: string; unfiled_rooms: string[] }>(
+      "DELETE",
+      `/projects/${encodeURIComponent(id)}`,
+    ),
   getItinerary: (roomId: string) =>
     req<Itinerary>("GET", `/rooms/${roomId}/itinerary`),
   putItinerary: (roomId: string, body: Partial<Itinerary> & { updated_by?: string }) =>

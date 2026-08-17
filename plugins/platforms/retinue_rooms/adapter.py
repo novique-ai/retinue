@@ -40,7 +40,7 @@ from gateway.platforms.base import (
     SendResult,
 )
 
-from . import attachments, auth, engine, hire, ide, identity, itinerary, keepalive, principal, routines, sidebar, voice, workspace
+from . import attachments, auth, engine, hire, ide, identity, itinerary, keepalive, principal, projects, routines, sidebar, voice, workspace
 from .engine import KIND_AGENT, KIND_SYSTEM, KIND_USER, Room, RoomMessage
 from .store import RoomStore
 
@@ -401,16 +401,21 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         workspace: Optional[str] = None,
         ide_path: Optional[str] = None,
         shared_mode: Optional[str] = None,
+        project_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         members = [m.strip() for m in members if m and m.strip()]
         if not members:
             raise ValueError("a room needs at least one agent member")
+        project_id = (project_id or "").strip() or None
+        if project_id and not self._project_exists(project_id):
+            raise ValueError(f"no such project: {project_id}")
         room = Room(
             id=engine.new_room_id(name),
             name=name.strip() or "room",
             members=members,
             lead=(lead or "").strip() or None,
             max_agent_turns=max(1, int(max_agent_turns or engine.DEFAULT_MAX_AGENT_TURNS)),
+            project_id=project_id,
         )
         ide.apply_workspace_fields(room, workspace=workspace, ide_path=ide_path, touching_path=True)
         room.shared_mode = ide.parse_shared_mode(shared_mode)
@@ -481,6 +486,13 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             touched = True
         if "shared_mode" in body:
             room.shared_mode = ide.parse_shared_mode(body.get("shared_mode"))
+            touched = True
+        if "project_id" in body:
+            project_id_raw = body.get("project_id")
+            new_project_id = (str(project_id_raw).strip() if project_id_raw is not None else "") or None
+            if new_project_id and not self._project_exists(new_project_id):
+                raise ValueError(f"no such project: {new_project_id}")
+            room.project_id = new_project_id
             touched = True
         if not touched:
             raise ValueError("nothing to update")
@@ -580,6 +592,31 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
     def put_sidebar(self, body: Dict[str, Any]) -> Dict[str, Any]:
         sidebar.save(self._home_dir(), body)
         return self._sidebar_resolved()
+
+    # ── projects ──────────────────────────────────────────────────────────
+
+    def list_projects(self) -> List[Dict[str, Any]]:
+        return projects.list_projects(self._home_dir())
+
+    def _project_exists(self, project_id: str) -> bool:
+        return any(p["id"] == project_id for p in projects.list_projects(self._home_dir()))
+
+    def create_project(self, name: str) -> Dict[str, Any]:
+        return projects.create_project(self._home_dir(), name)
+
+    def patch_project(self, project_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
+        return projects.patch_project(self._home_dir(), project_id, body)
+
+    def delete_project(self, project_id: str) -> Dict[str, Any]:
+        """Remove a project and unfile any of its rooms. Transcripts stay."""
+        if not projects.delete_project(self._home_dir(), project_id):
+            raise KeyError(project_id)
+        unfiled = []
+        for room in self.store.list_rooms():
+            if room.project_id == project_id:
+                self.store.mutate(room.id, lambda r: setattr(r, "project_id", None))
+                unfiled.append(room.id)
+        return {"deleted": project_id, "unfiled_rooms": unfiled}
 
     @staticmethod
     def _home_dir() -> str:
@@ -1345,6 +1382,7 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
         "auth",
         "principal",
         "identity",
+        "projects",
     )
 
     def do_GET(self):
@@ -1405,6 +1443,8 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
             return self._json(200, identity.palette_payload())
         if parts == ["sidebar"]:
             return self._json(200, adapter.get_sidebar())
+        if parts == ["projects"]:
+            return self._json(200, {"projects": adapter.list_projects()})
         if parts == ["auth"] or (len(parts) == 2 and parts[0] == "auth" and parts[1] == "reauth"):
             query = parse_qs(parsed.query)
             session_id = (query.get("session") or [""])[0].strip()
@@ -1649,7 +1689,14 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
                     workspace=body.get("workspace"),
                     ide_path=body.get("ide_path"),
                     shared_mode=body.get("shared_mode"),
+                    project_id=body.get("project_id"),
                 )
+            except ValueError as e:
+                return self._json(400, {"error": str(e)})
+            return self._json(201, payload)
+        if parts == ["projects"]:
+            try:
+                payload = adapter.create_project(str(body.get("name") or ""))
             except ValueError as e:
                 return self._json(400, {"error": str(e)})
             return self._json(201, payload)
@@ -1729,6 +1776,14 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
             except (ValueError, TypeError) as e:
                 return self._json(400, {"error": str(e)})
             return self._json(200, payload)
+        if len(parts) == 2 and parts[0] == "projects":
+            try:
+                payload = adapter.patch_project(parts[1], body)
+            except KeyError:
+                return self._json(404, {"error": "no such project"})
+            except ValueError as e:
+                return self._json(400, {"error": str(e)})
+            return self._json(200, payload)
         return self._json(404, {"error": "not found"})
 
     def do_PUT(self):
@@ -1792,4 +1847,10 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
             if routines.delete_routine(self.server.adapter._home_dir(), parts[1]):
                 return self._json(200, {"deleted": parts[1]})
             return self._json(404, {"error": "no such routine"})
+        if len(parts) == 2 and parts[0] == "projects":
+            try:
+                payload = self.server.adapter.delete_project(parts[1])
+            except KeyError:
+                return self._json(404, {"error": "no such project"})
+            return self._json(200, payload)
         return self._json(404, {"error": "not found"})
