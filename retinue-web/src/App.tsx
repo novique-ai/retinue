@@ -21,6 +21,7 @@ import {
   ModelPreset,
   Persona,
   Principal,
+  ProjectMeta,
   ReauthSession,
   RoomMeta,
   RoomMsg,
@@ -336,6 +337,9 @@ const SPEAK_KEY = "retinue.speakReplies";
 const ARCHIVED_KEY = "retinue.showArchived";
 const DRAG_MIME = "application/x-retinue";
 const SIDEBAR_COLLAPSED_KEY = "retinue.sidebarCollapsed";
+// Persisted as the real project id, or "" for the Unfiled pseudo-project
+// (slugify() never mints an empty id, so "" is unambiguous).
+const SELECTED_PROJECT_KEY = "retinue.selectedProject";
 
 function teamSlug(label: string): string {
   return (
@@ -1957,10 +1961,15 @@ function WorkspacePicker({
 
 function NewRoomPanel({
   agents,
+  projects,
+  projectId,
   ideRoot,
   onDone,
 }: {
   agents: AgentMeta[];
+  /** Project this room inherits — the sidebar's current selection. */
+  projects: ProjectMeta[];
+  projectId: string | null;
   ideRoot?: string | null;
   onDone: (created?: RoomMeta) => void;
 }) {
@@ -1978,6 +1987,9 @@ function NewRoomPanel({
   return (
     <div className="panel">
       <h3>New room</h3>
+      <p className="note">
+        In project: {projectId ? (projects.find((p) => p.id === projectId)?.name ?? "?") : "Unfiled"}
+      </p>
       <label>
         Room name
         <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Ops room" />
@@ -2037,6 +2049,7 @@ function NewRoomPanel({
                 await api.createRoom(name, picked, lead || null, {
                   workspace,
                   ide_path: workspace === "ide" ? idePath.trim() || null : null,
+                  project_id: projectId,
                 }),
               );
             } catch (e) {
@@ -2056,17 +2069,20 @@ function NewRoomPanel({
 function EditRoomPanel({
   room,
   agents,
+  projects,
   ideRoot,
   onDone,
 }: {
   room: RoomMeta;
   agents: AgentMeta[];
+  projects: ProjectMeta[];
   ideRoot?: string | null;
   onDone: (updated?: RoomMeta) => void;
 }) {
   const [name, setName] = useState(room.name);
   const [picked, setPicked] = useState<string[]>(room.members);
   const [lead, setLead] = useState<string>(room.lead ?? "");
+  const [projectId, setProjectId] = useState(room.project_id ?? "");
   const [workspace, setWorkspace] = useState<RoomWorkspace>(room.workspace ?? "sandbox");
   const [idePath, setIdePath] = useState(room.ide_path || ideRoot || "");
   const [ideOk, setIdeOk] = useState((room.workspace ?? "sandbox") === "ide");
@@ -2112,6 +2128,17 @@ function EditRoomPanel({
           </select>
         </label>
       )}
+      <label>
+        Project
+        <select value={projectId} onChange={(e) => setProjectId(e.target.value)}>
+          <option value="">Unfiled</option>
+          {projects.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.name}
+            </option>
+          ))}
+        </select>
+      </label>
       <WorkspacePicker
         value={workspace}
         onChange={setWorkspace}
@@ -2138,6 +2165,7 @@ function EditRoomPanel({
                   lead: lead || null,
                   workspace,
                   ide_path: workspace === "ide" ? idePath.trim() || null : null,
+                  project_id: projectId || null,
                 }),
               );
             } catch (e) {
@@ -2639,6 +2667,16 @@ type DropHint = { list: "rooms" | "items"; id: string; place: "before" | "after"
 
 export default function App() {
   const [rooms, setRooms] = useState<RoomMeta[]>([]);
+  const [projects, setProjects] = useState<ProjectMeta[]>([]);
+  // Distinguishes "haven't fetched projects yet" from "workspace genuinely
+  // has none" — the reconciliation effect below must not treat the former
+  // as proof the stored selection is stale (it would reset every reload).
+  const [projectsLoaded, setProjectsLoaded] = useState(false);
+  // "" means the Unfiled pseudo-project. Sticky across reloads; validated
+  // against the live project list once projects have loaded.
+  const [selectedProjectId, setSelectedProjectId] = useState(
+    () => localStorage.getItem(SELECTED_PROJECT_KEY) ?? "",
+  );
   const [agents, setAgents] = useState<AgentMeta[]>([]);
   const [models, setModels] = useState<ModelPreset[]>([]);
   const [palette, setPalette] = useState<string[]>([]);
@@ -2668,14 +2706,17 @@ export default function App() {
 
   const refresh = useCallback(async () => {
     try {
-      const [r, a, m, rt, ws] = await Promise.all([
+      const [r, p, a, m, rt, ws] = await Promise.all([
         api.listRooms(),
+        api.listProjects(),
         api.listAgents(),
         api.listModels(),
         api.listRoutines(),
         api.workspace(),
       ]);
       setRooms(r.rooms);
+      setProjects(p.projects);
+      setProjectsLoaded(true);
       setAgents(a.agents);
       setModels(m.models);
       setRoutineList(rt.routines);
@@ -2774,7 +2815,32 @@ export default function App() {
     [refresh],
   );
 
-  const visibleRooms = rooms.filter((r) => showArchived || !r.archived);
+  // If the stored selection points at a project that no longer exists
+  // (deleted elsewhere), fall back to Unfiled rather than showing an empty,
+  // unselectable room list. Gated on projectsLoaded: `projects` starts as
+  // `[]` before the first refresh() resolves, and running this check
+  // against that placeholder would wipe a valid sticky selection on every
+  // page load, before the real list ever arrives.
+  useEffect(() => {
+    if (projectsLoaded && selectedProjectId && !projects.some((p) => p.id === selectedProjectId)) {
+      selectProject("");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectsLoaded, projects, selectedProjectId]);
+
+  const selectProject = (id: string) => {
+    setSelectedProjectId(id);
+    try {
+      localStorage.setItem(SELECTED_PROJECT_KEY, id);
+    } catch {
+      /* ignore */
+    }
+  };
+
+  const visibleProjects = projects.filter((p) => showArchived || !p.archived);
+  const visibleRooms = rooms
+    .filter((r) => showArchived || !r.archived)
+    .filter((r) => (r.project_id ?? "") === selectedProjectId);
   const agentsBySlug = Object.fromEntries(agents.map((a) => [a.slug, a]));
   const visibleCast = agents.filter((a) => !a.archived);
 
@@ -2799,6 +2865,55 @@ export default function App() {
     try {
       await api.deleteRoom(room.id);
       if (current?.id === room.id) setCurrent(null);
+      await refresh();
+    } catch (e) {
+      alert(String(e));
+    }
+  };
+
+  const addProject = async () => {
+    const name = (window.prompt("Project name") || "").trim();
+    if (!name) return;
+    try {
+      const created = await api.createProject(name);
+      await refresh();
+      selectProject(created.id);
+    } catch (e) {
+      alert(String(e));
+    }
+  };
+
+  const renameProject = async (project: ProjectMeta) => {
+    const name = (window.prompt("Rename project", project.name) || "").trim();
+    if (!name || name === project.name) return;
+    try {
+      await api.patchProject(project.id, { name });
+      await refresh();
+    } catch (e) {
+      alert(String(e));
+    }
+  };
+
+  const archiveProject = async (project: ProjectMeta) => {
+    try {
+      await api.patchProject(project.id, { archived: !project.archived });
+      await refresh();
+    } catch (e) {
+      alert(String(e));
+    }
+  };
+
+  const deleteProject = async (project: ProjectMeta) => {
+    if (
+      !window.confirm(
+        `Delete project "${project.name}"? Its rooms move to Unfiled — transcripts stay.`,
+      )
+    ) {
+      return;
+    }
+    try {
+      await api.deleteProject(project.id);
+      if (selectedProjectId === project.id) selectProject("");
       await refresh();
     } catch (e) {
       alert(String(e));
@@ -3010,6 +3125,43 @@ export default function App() {
         </div>
         <div className="section">
           <div className="section-head">
+            <span>Projects</span>
+            <button className="mini" onClick={() => void addProject()} title="New project">
+              +
+            </button>
+          </div>
+          <div className="nav-row">
+            <button
+              className={selectedProjectId === "" ? "nav-item active" : "nav-item"}
+              onClick={() => selectProject("")}
+            >
+              Unfiled
+            </button>
+          </div>
+          {visibleProjects.map((p) => (
+            <div key={p.id} className={`nav-row${p.archived ? " archived" : ""}`}>
+              <button
+                className={selectedProjectId === p.id ? "nav-item active" : "nav-item"}
+                onClick={() => selectProject(p.id)}
+              >
+                {p.name}
+                {p.archived ? " (archived)" : ""}
+              </button>
+              <RowMenu
+                actions={[
+                  { label: "Rename", onClick: () => void renameProject(p) },
+                  {
+                    label: p.archived ? "Unarchive" : "Archive",
+                    onClick: () => void archiveProject(p),
+                  },
+                  { label: "Delete", danger: true, onClick: () => void deleteProject(p) },
+                ]}
+              />
+            </div>
+          ))}
+        </div>
+        <div className="section">
+          <div className="section-head">
             <span>Rooms</span>
             <button className="mini" onClick={() => setModal("room")} title="New room">
               +
@@ -3088,7 +3240,15 @@ export default function App() {
               </div>
             );
           })}
-          {visibleRooms.length === 0 && <p className="note pad">No rooms yet.</p>}
+          {visibleRooms.length === 0 && (
+            <p className="note pad">
+              No rooms in{" "}
+              {selectedProjectId
+                ? (projects.find((p) => p.id === selectedProjectId)?.name ?? "this project")
+                : "Unfiled"}
+              .
+            </p>
+          )}
         </div>
         <div className="section">
           <div className="section-head">
@@ -3479,6 +3639,8 @@ export default function App() {
             {modal === "room" && (
               <NewRoomPanel
                 agents={agents}
+                projects={projects}
+                projectId={selectedProjectId || null}
                 ideRoot={workspaceInfo?.ide_root}
                 onDone={(created) => {
                   setModal(null);
@@ -3493,6 +3655,7 @@ export default function App() {
               <EditRoomPanel
                 room={editingRoom}
                 agents={agents}
+                projects={projects}
                 ideRoot={workspaceInfo?.ide_root}
                 onDone={(updated) => {
                   setModal(null);

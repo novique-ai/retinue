@@ -80,6 +80,9 @@ class Room:
     # /shared mount: "rw" (default) or "ro". Absent treated as "rw";
     # unknown values on disk stay read-only.
     shared_mode: Optional[str] = None
+    # Projects group rooms (see projects.py). None = Unfiled. This is the
+    # only membership record — do not also track room ids on the project.
+    project_id: Optional[str] = None
 
     def default_responder(self) -> Optional[str]:
         if self.lead and self.lead in self.members:
@@ -103,6 +106,7 @@ class Room:
             workspace=str(data.get("workspace") or "sandbox"),
             ide_path=(str(data["ide_path"]) if data.get("ide_path") else None),
             shared_mode=(str(data["shared_mode"]) if data.get("shared_mode") else None),
+            project_id=(str(data["project_id"]) if data.get("project_id") else None),
         )
 
 
