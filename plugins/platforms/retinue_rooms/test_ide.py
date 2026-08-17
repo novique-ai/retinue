@@ -138,7 +138,7 @@ def test_overlay_no_shared_when_unset_ide(tmp_path, monkeypatch):
     assert f"{tmp_path}:/workspace:rw" in vols
 
 
-def test_overlay_shared_readonly_by_default(tmp_path, monkeypatch):
+def test_overlay_shared_writable_by_default(tmp_path, monkeypatch):
     shared = tmp_path / "shared"
     shared.mkdir()
     monkeypatch.setenv("RETINUE_SHARED_DIR", str(shared))
@@ -147,10 +147,10 @@ def test_overlay_shared_readonly_by_default(tmp_path, monkeypatch):
     ide_vols = json.loads(
         ide.overlay_env(_room(workspace="ide", ide_path=str(tmp_path)))["TERMINAL_DOCKER_VOLUMES"]
     )
-    assert f"{host}:/shared:ro" in sand_vols
-    assert f"{host}:/shared:ro" in ide_vols
-    assert _shared_specs(sand_vols) == [f"{host}:/shared:ro"]
-    assert _shared_specs(ide_vols) == [f"{host}:/shared:ro"]
+    assert f"{host}:/shared:rw" in sand_vols
+    assert f"{host}:/shared:rw" in ide_vols
+    assert _shared_specs(sand_vols) == [f"{host}:/shared:rw"]
+    assert _shared_specs(ide_vols) == [f"{host}:/shared:rw"]
 
 
 def test_overlay_shared_rw_when_opted_in(tmp_path, monkeypatch):
@@ -164,14 +164,13 @@ def test_overlay_shared_rw_when_opted_in(tmp_path, monkeypatch):
     assert _shared_specs(vols) == [f"{host}:/shared:rw"]
 
 
-def test_overlay_shared_ro_when_explicit_or_absent(tmp_path, monkeypatch):
+def test_overlay_shared_ro_when_explicit(tmp_path, monkeypatch):
     shared = tmp_path / "shared"
     shared.mkdir()
     monkeypatch.setenv("RETINUE_SHARED_DIR", str(shared))
     host = os.path.abspath(str(shared))
     for room in (
         _room(workspace="sandbox", shared_mode="ro"),
-        _room(workspace="sandbox"),
         _room(workspace="ide", ide_path=str(tmp_path), shared_mode="ro"),
     ):
         vols = json.loads(ide.overlay_env(room)["TERMINAL_DOCKER_VOLUMES"])
@@ -190,6 +189,17 @@ def test_overlay_shared_unknown_mode_on_record_is_readonly(tmp_path, monkeypatch
     assert _shared_specs(vols) == [f"{host}:/shared:ro"]
 
 
+def test_ensure_share_layout_creates_inbox_and_room_dir(tmp_path, monkeypatch):
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    monkeypatch.setenv("RETINUE_SHARED_DIR", str(shared))
+    room = _room(id="lab-1", workspace="sandbox")
+    path = ide.ensure_share_layout(room)
+    assert path == str(shared / "rooms" / "lab-1")
+    assert (shared / "inbox").is_dir()
+    assert (shared / "rooms" / "lab-1").is_dir()
+
+
 def test_overlay_shared_missing_dir_raises(tmp_path, monkeypatch):
     missing = tmp_path / "no-such-shared"
     monkeypatch.setenv("RETINUE_SHARED_DIR", str(missing))
@@ -200,8 +210,8 @@ def test_overlay_shared_missing_dir_raises(tmp_path, monkeypatch):
 
 
 def test_parse_shared_mode_defaults_and_rejects():
-    assert ide.parse_shared_mode(None) == "ro"
-    assert ide.parse_shared_mode("") == "ro"
+    assert ide.parse_shared_mode(None) == "rw"
+    assert ide.parse_shared_mode("") == "rw"
     assert ide.parse_shared_mode("RW") == "rw"
     assert ide.parse_shared_mode("ro") == "ro"
     with pytest.raises(ValueError, match="shared_mode"):
@@ -265,7 +275,7 @@ def test_create_and_patch_roundtrip(tmp_path, monkeypatch):
     created = adapter.create_room("Lab", ["scout"], None, None)
     assert created["workspace"] == "sandbox"
     assert created["ide_path"] is None
-    assert created["shared_mode"] is None
+    assert created["shared_mode"] == "rw"
 
     with pytest.raises(ValueError, match="IDE rooms need a host path"):
         adapter.create_room("Code", ["scout"], None, None, workspace="ide")
@@ -540,20 +550,20 @@ def test_shared_mode_patch_changes_cache_key_and_evicts_old_env(tmp_path, monkey
     old_overlay = ide.overlay_env(room_before)
     old_key = old_overlay["TERMINAL_DOCKER_SHARED_CONTAINER_KEY"]
     assert _shared_specs(json.loads(old_overlay["TERMINAL_DOCKER_VOLUMES"])) == [
-        f"{os.path.abspath(str(shared))}:/shared:ro"
+        f"{os.path.abspath(str(shared))}:/shared:rw"
     ]
 
     stale_env = _FakeCachedEnv()
     monkeypatch.setattr(terminal_tool, "_active_environments", {old_key: stale_env})
     monkeypatch.setattr(terminal_tool, "_last_activity", {old_key: 1.0})
 
-    patched = adapter.patch_room(created["id"], {"shared_mode": "rw"})
-    assert patched["shared_mode"] == "rw"
+    patched = adapter.patch_room(created["id"], {"shared_mode": "ro"})
+    assert patched["shared_mode"] == "ro"
     room_after = adapter.store.get(created["id"])
     assert room_after is not None
     new_overlay = ide.overlay_env(room_after)
     assert _shared_specs(json.loads(new_overlay["TERMINAL_DOCKER_VOLUMES"])) == [
-        f"{os.path.abspath(str(shared))}:/shared:rw"
+        f"{os.path.abspath(str(shared))}:/shared:ro"
     ]
 
     new_key = _cache_key_during(room_after, monkeypatch, tmp_path)

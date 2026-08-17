@@ -451,15 +451,18 @@ def test_briefing_mentions_shared_folder_only_when_configured(tmp_path, monkeypa
 
     monkeypatch.setenv("RETINUE_SHARED_DIR", str(tmp_path))
     text = engine.room_briefing(room, "scout", ["Mark"])
+    assert "/shared is a folder shared with every room" in text
+    assert f"/shared/rooms/{room.id}/" in text
+    assert "/shared/inbox/" in text
+    assert "filing cabinet" in text
+    assert "read-only" not in text
+
+
+def test_briefing_shared_folder_says_readonly_when_ro(tmp_path, monkeypatch):
+    monkeypatch.setenv("RETINUE_SHARED_DIR", str(tmp_path))
+    text = engine.room_briefing(_room(lead="scout", shared_mode="ro"), "scout", ["Mark"])
     assert "/shared is a read-only folder shared with every room." in text
     assert "cannot write there" in text
-
-
-def test_briefing_shared_folder_says_writable_when_rw(tmp_path, monkeypatch):
-    monkeypatch.setenv("RETINUE_SHARED_DIR", str(tmp_path))
-    text = engine.room_briefing(_room(lead="scout", shared_mode="rw"), "scout", ["Mark"])
-    assert "read from it and write to it" in text
-    assert "read-only" not in text
 
 
 def test_briefing_lists_room_artifacts():

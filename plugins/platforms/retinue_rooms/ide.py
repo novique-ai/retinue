@@ -47,17 +47,37 @@ def parse_workspace(value: object) -> str:
 
 
 def parse_shared_mode(value: object) -> str:
-    raw = (str(value).strip().lower() if value is not None and str(value).strip() else SHARED_MODE_RO)
+    raw = (str(value).strip().lower() if value is not None and str(value).strip() else SHARED_MODE_RW)
     if raw not in SHARED_MODES:
         raise ValueError("shared_mode must be 'ro' or 'rw'")
     return raw
 
 
 def shared_mode_for(room: Room) -> str:
-    """Absent or unknown on the record is read-only."""
+    """Absent means writable. A garbage value on disk stays read-only."""
     raw = (room.shared_mode or "").strip().lower()
+    if not raw:
+        return SHARED_MODE_RW
     return raw if raw in SHARED_MODES else SHARED_MODE_RO
 
+
+def room_share_dir(room: Room) -> Optional[str]:
+    """Host path for this room's folder under the shared drop, or None."""
+    root = resolve_shared_dir()
+    if root is None:
+        return None
+    return os.path.join(root, "rooms", room.id)
+
+
+def ensure_share_layout(room: Room) -> Optional[str]:
+    """Create inbox/ and rooms/<id>/ when the shared drop is configured."""
+    root = resolve_shared_dir()
+    if root is None:
+        return None
+    os.makedirs(os.path.join(root, "inbox"), exist_ok=True)
+    path = os.path.join(root, "rooms", room.id)
+    os.makedirs(path, exist_ok=True)
+    return path
 
 def configured_ide_root() -> Optional[str]:
     raw = (os.getenv(IDE_ROOT_ENV) or "").strip()
@@ -268,6 +288,7 @@ def apply_room_workspace(
     needs to serialize on a process-wide lock to keep its mounts.
     """
     overlay = overlay_env(room, home_dir)
+    ensure_share_layout(room)
     for key in INVARIANT_ENV:
         value = overlay.get(key)
         if value is not None and os.environ.get(key) != value:
