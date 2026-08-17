@@ -970,6 +970,7 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             # One speaker at a time. Their reply is on the transcript
             # before the next member starts, so reviewers see the draft.
             member = wave[0]
+            self._post_system(room_id, engine.turn_started_notice(names.get(member, member)))
             room = self.store.get(room_id) or room
             ok, reply = await self._agent_turn(room, member)
             turns_taken += 1
@@ -1021,6 +1022,16 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             # session history from the turn that produced them.
             if not (m.kind == KIND_AGENT and m.speaker == member)
         ]
+        if not delta:
+            return False, "nothing new to respond to"
+        delivered_through = delta[-1].seq
+        turn_started = engine.turn_started_notice(self._display_names(room).get(member, member))
+        if (
+            delta[-1].kind == KIND_SYSTEM
+            and delta[-1].speaker == "room"
+            and delta[-1].text == turn_started
+        ):
+            delta = delta[:-1]
         if not delta:
             return False, "nothing new to respond to"
         trigger = delta[-1]
@@ -1110,8 +1121,8 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         # re-shown next turn only if new messages arrive — acceptable v1.
         # touch_last_seen merges under the store lock so parallel members
         # cannot clobber each other's cursor.
-        self.store.touch_last_seen(room.id, member, delta[-1].seq)
-        room.last_seen[member] = max(room.last_seen.get(member, 0), delta[-1].seq)
+        self.store.touch_last_seen(room.id, member, delivered_through)
+        room.last_seen[member] = max(room.last_seen.get(member, 0), delivered_through)
 
         token = _turn_member.set(member)
         try:

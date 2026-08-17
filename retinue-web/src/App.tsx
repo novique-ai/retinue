@@ -37,7 +37,7 @@ import {
   WorkspaceStatus,
 } from "./api";
 import { LOGO_SRC, YOU_SRC, agentIcon } from "./icons";
-import { remainingThinkers, remainingThinkersAfter } from "./thinking";
+import { includeBusyThinkers, remainingThinkers, remainingThinkersAfter } from "./thinking";
 
 /** Shared outer ring/tooltip/working-pulse frame for every avatar shape. */
 function AvatarFrame({
@@ -819,6 +819,10 @@ function RoomView({
     () => Object.fromEntries(agents.map((a) => [a.slug, a])),
     [agents],
   );
+  const visibleThinking = useMemo(
+    () => includeBusyThinkers(thinking, room.members, agentsBySlug),
+    [thinking, room.members, agentsBySlug],
+  );
   const mentionQuery = mentionOff ? null : mentionPartial(draft, caret);
   const mentionChoices = mentionQuery
     ? room.members.filter((m) => {
@@ -880,7 +884,7 @@ function RoomView({
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
-  }, [messages, thinking]);
+  }, [messages, visibleThinking]);
 
   // Self-heal: a no-reply system line (or a cycle abort) must drop the
   // bubble even if it arrived before setThinking(planned), or if we only
@@ -1133,30 +1137,30 @@ function RoomView({
             agentsBySlug={agentsBySlug}
           />
         ))}
-        {thinking[0] && (
-          <div key={thinking[0]} className="msg-row">
+        {visibleThinking[0] && (
+          <div key={visibleThinking[0]} className="msg-row">
             <AgentAvatar
-              identity={agentsBySlug[thinking[0]]?.identity}
-              slug={thinking[0]}
-              fallback={thinking[0]}
-              label={handleOf(thinking[0])}
+              identity={agentsBySlug[visibleThinking[0]]?.identity}
+              slug={visibleThinking[0]}
+              fallback={visibleThinking[0]}
+              label={handleOf(visibleThinking[0])}
               size={32}
               working
             />
             <div className="bubble thinking">
               <span
                 className="chip"
-                style={{ color: identityColor(agentsBySlug[thinking[0]]?.identity.color) }}
+                style={{ color: identityColor(agentsBySlug[visibleThinking[0]]?.identity.color) }}
               >
-                {handleOf(thinking[0])}
+                {handleOf(visibleThinking[0])}
               </span>
               <div className="msg-text dots">thinking</div>
             </div>
           </div>
         )}
-        {thinking.length > 1 && (
+        {visibleThinking.length > 1 && (
           <div className="queued-hint">
-            Up next: {thinking.slice(1).map((w) => `@${handleOf(w)}`).join(" → ")}
+            Up next: {visibleThinking.slice(1).map((w) => `@${handleOf(w)}`).join(" → ")}
           </div>
         )}
       </div>

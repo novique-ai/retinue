@@ -56,3 +56,18 @@ export function remainingThinkersAfter(
   if (lastUser < 0) return waiting;
   return remainingThinkers(waiting, messages.slice(lastUser + 1));
 }
+
+export function includeBusyThinkers(
+  waiting: string[],
+  members: string[],
+  agentsBySlug: Record<string, { busy?: boolean } | undefined>,
+): string[] {
+  const merged = [...waiting];
+  const seen = new Set(waiting);
+  for (const member of members) {
+    if (seen.has(member) || !agentsBySlug[member]?.busy) continue;
+    seen.add(member);
+    merged.push(member);
+  }
+  return merged;
+}

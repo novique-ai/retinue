@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 import pytest
 
 from . import engine
-from .engine import KIND_SYSTEM, KIND_USER, Room, RoomMessage
+from .engine import KIND_AGENT, KIND_SYSTEM, KIND_USER, Room, RoomMessage
 from .store import RoomStore
 
 
@@ -243,3 +244,75 @@ def test_http_invite_and_remove_are_incremental(tmp_path, monkeypatch):
     finally:
         httpd.shutdown()
         httpd.server_close()
+
+
+def test_turn_start_notice_is_stored_before_agent_reply(tmp_path, monkeypatch):
+    adapter = _adapter(tmp_path, monkeypatch)
+    room = _room(members=["lucy"], lead="lucy")
+    adapter.store.create(room)
+    user_message = adapter.store.append(
+        room.id,
+        RoomMessage(seq=0, ts=0, kind=KIND_USER, speaker="Sheila", text="@Lucy please check this"),
+    )
+    monkeypatch.setattr(adapter, "_display_names", lambda _room: {"lucy": "Lucy"})
+
+    async def fake_turn(_room, member):
+        assert member == "lucy"
+        return True, "On it."
+
+    monkeypatch.setattr(adapter, "_agent_turn", fake_turn)
+
+    asyncio.run(adapter._run_cycle_workspace(room, user_message))
+
+    transcript = adapter.store.read_since(room.id, 0)
+    assert [(m.kind, m.speaker, m.text) for m in transcript] == [
+        (KIND_USER, "Sheila", "@Lucy please check this"),
+        (KIND_SYSTEM, "room", "Lucy is on it."),
+        (KIND_AGENT, "lucy", "On it."),
+    ]
+
+
+def test_agent_followup_turn_posts_start_notice_for_next_member(tmp_path, monkeypatch):
+    adapter = _adapter(tmp_path, monkeypatch)
+    room = _room(
+        members=["sheila-graphics-and-visual-produ", "lucy"],
+        lead="sheila-graphics-and-visual-produ",
+    )
+    adapter.store.create(room)
+    user_message = adapter.store.append(
+        room.id,
+        RoomMessage(
+            seq=0,
+            ts=0,
+            kind=KIND_USER,
+            speaker="User",
+            text="@Sheila please take the first pass",
+        ),
+    )
+    monkeypatch.setattr(
+        adapter,
+        "_display_names",
+        lambda _room: {
+            "sheila-graphics-and-visual-produ": "Sheila",
+            "lucy": "Lucy",
+        },
+    )
+
+    async def fake_turn(_room, member):
+        if member == "sheila-graphics-and-visual-produ":
+            return True, "@Lucy please polish the copy."
+        assert member == "lucy"
+        return True, "Looks good."
+
+    monkeypatch.setattr(adapter, "_agent_turn", fake_turn)
+
+    asyncio.run(adapter._run_cycle_workspace(room, user_message))
+
+    transcript = adapter.store.read_since(room.id, 0)
+    assert [(m.kind, m.speaker, m.text) for m in transcript] == [
+        (KIND_USER, "User", "@Sheila please take the first pass"),
+        (KIND_SYSTEM, "room", "Sheila is on it."),
+        (KIND_AGENT, "sheila-graphics-and-visual-produ", "@Lucy please polish the copy."),
+        (KIND_SYSTEM, "room", "Lucy is on it."),
+        (KIND_AGENT, "lucy", "Looks good."),
+    ]
