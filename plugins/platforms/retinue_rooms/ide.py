@@ -17,6 +17,7 @@ parallel; they never have.)
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from contextlib import contextmanager
@@ -105,23 +106,8 @@ def resolve_ide_path(explicit: Optional[str] = None) -> str:
     return path
 
 
-def container_key(room_id: str, workspace: str) -> str:
-    mode = parse_workspace(workspace)
-    rid = (room_id or "room").strip() or "room"
-    return f"retinue-{mode}-{rid}"
-
-
-def overlay_env(room: Room, home_dir: Optional[str] = None) -> Dict[str, str]:
-    """Env the terminal backend must see for this room's container."""
-    from . import attachments
-
+def _room_overlay_volumes(room: Room) -> List[str]:
     mode = parse_workspace(room.workspace)
-    env = {
-        "TERMINAL_ENV": "docker",
-        "TERMINAL_DOCKER_SHARED_CONTAINER_KEY": container_key(room.id, mode),
-        "TERMINAL_CWD": CONTAINER_MOUNT,
-        "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE": "0",
-    }
     volumes: List[str] = []
     if mode == WORKSPACE_IDE:
         path = resolve_ide_path(room.ide_path)
@@ -129,6 +115,41 @@ def overlay_env(room: Room, home_dir: Optional[str] = None) -> Dict[str, str]:
     shared = resolve_shared_dir()
     if shared:
         volumes.append(f"{shared}:{SHARED_MOUNT}:{shared_mode_for(room)}")
+    return volumes
+
+
+def _overlay_fingerprint(volumes: List[str]) -> str:
+    payload = json.dumps(volumes, ensure_ascii=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:8]
+
+
+def container_key(room_id: str, workspace: str, overlay_fingerprint: Optional[str] = None) -> str:
+    mode = parse_workspace(workspace)
+    rid = (room_id or "room").strip() or "room"
+    suffix = f"-{overlay_fingerprint}" if overlay_fingerprint else ""
+    return f"retinue-{mode}-{rid}{suffix}"
+
+
+def container_key_for_room(room: Room) -> str:
+    mode = parse_workspace(room.workspace)
+    return container_key(
+        room.id,
+        mode,
+        overlay_fingerprint=_overlay_fingerprint(_room_overlay_volumes(room)),
+    )
+
+
+def overlay_env(room: Room, home_dir: Optional[str] = None) -> Dict[str, str]:
+    """Env the terminal backend must see for this room's container."""
+    from . import attachments
+
+    volumes = _room_overlay_volumes(room)
+    env = {
+        "TERMINAL_ENV": "docker",
+        "TERMINAL_DOCKER_SHARED_CONTAINER_KEY": container_key_for_room(room),
+        "TERMINAL_CWD": CONTAINER_MOUNT,
+        "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE": "0",
+    }
     if home_dir:
         uploads = attachments._dir(home_dir, room.id)
         os.makedirs(uploads, exist_ok=True)

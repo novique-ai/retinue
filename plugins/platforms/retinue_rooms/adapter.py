@@ -55,6 +55,12 @@ _DEFAULT_USER_NAME = "User"
 class AgentBusy(ValueError):
     """Raised when a model switch would evict a mid-turn agent."""
 
+
+def _evict_room_environment(cache_key: str) -> None:
+    from tools import terminal_tool
+
+    terminal_tool._evict_environment_for_task(cache_key)
+
 # Parallel turns share one adapter.send(chat_id=room). The gateway's notify
 # metadata does not echo event.metadata, and send() runs AFTER the runner
 # leaves _profile_runtime_scope — so HERMES_HOME is the default home for
@@ -424,6 +430,8 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         if room is None:
             raise KeyError(room_id)
         touched = False
+        overlay_key_before: Optional[str] = None
+        overlay_key_after: Optional[str] = None
         if "name" in body:
             name = str(body.get("name") or "").strip()
             if not name:
@@ -461,6 +469,9 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         if "max_agent_turns" in body and body.get("max_agent_turns") is not None:
             room.max_agent_turns = max(1, int(body.get("max_agent_turns")))
             touched = True
+        overlay_touched = any(key in body for key in ("workspace", "ide_path", "shared_mode"))
+        if overlay_touched:
+            overlay_key_before = ide.container_key_for_room(room)
         if "workspace" in body or "ide_path" in body:
             ide.apply_workspace_fields(
                 room,
@@ -474,7 +485,11 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             touched = True
         if not touched:
             raise ValueError("nothing to update")
+        if overlay_touched:
+            overlay_key_after = ide.container_key_for_room(room)
         self.store.update(room)
+        if overlay_key_before and overlay_key_after and overlay_key_before != overlay_key_after:
+            _evict_room_environment(overlay_key_before)
         for member in departed:
             self._post_system(room_id, engine.member_left_notice(member))
         for member in joined:

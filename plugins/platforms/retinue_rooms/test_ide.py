@@ -91,7 +91,7 @@ def test_overlay_sandbox_clears_volumes(tmp_path, monkeypatch):
     room = _room(workspace="sandbox")
     env = ide.overlay_env(room)
     assert env["TERMINAL_ENV"] == "docker"
-    assert env["TERMINAL_DOCKER_SHARED_CONTAINER_KEY"] == "retinue-sandbox-r-1"
+    assert env["TERMINAL_DOCKER_SHARED_CONTAINER_KEY"] == ide.container_key_for_room(room)
     assert json.loads(env["TERMINAL_DOCKER_VOLUMES"]) == []
     assert env["TERMINAL_CWD"] == "/workspace"
 
@@ -110,9 +110,13 @@ def test_overlay_ide_bind_mounts_host_path(tmp_path, monkeypatch):
     monkeypatch.delenv("RETINUE_SHARED_DIR", raising=False)
     room = _room(workspace="ide", ide_path=str(tmp_path))
     env = ide.overlay_env(room)
-    assert env["TERMINAL_DOCKER_SHARED_CONTAINER_KEY"] == "retinue-ide-r-1"
+    assert env["TERMINAL_DOCKER_SHARED_CONTAINER_KEY"] == ide.container_key_for_room(room)
     assert json.loads(env["TERMINAL_DOCKER_VOLUMES"]) == [f"{tmp_path}:/workspace:rw"]
-    with_home = json.loads(ide.overlay_env(room, str(tmp_path))["TERMINAL_DOCKER_VOLUMES"])
+    with_home_overlay = ide.overlay_env(room, str(tmp_path))
+    with_home = json.loads(with_home_overlay["TERMINAL_DOCKER_VOLUMES"])
+    assert with_home_overlay["TERMINAL_DOCKER_SHARED_CONTAINER_KEY"] == env[
+        "TERMINAL_DOCKER_SHARED_CONTAINER_KEY"
+    ]
     assert with_home[0] == f"{tmp_path}:/workspace:rw"
     assert with_home[1].endswith(":/workspace/uploads:ro")
 
@@ -231,7 +235,7 @@ def test_apply_room_workspace_does_not_leak_the_room_into_process_env(tmp_path, 
         assert overlay["TERMINAL_ENV"] == "docker"
         # in-scope readers see the room
         assert workspace_context.getenv("TERMINAL_DOCKER_VOLUMES") == "[]"
-        assert workspace_context.shared_container_key() == "retinue-sandbox-r-1"
+        assert workspace_context.shared_container_key() == ide.container_key_for_room(room)
         # process env is NOT rewritten with the room's values
         assert os.environ["TERMINAL_DOCKER_VOLUMES"] == '["/leak:/workspace:rw"]'
 
@@ -480,6 +484,14 @@ def _cache_key_during(room, monkeypatch, tmp_path):
         return terminal_tool._resolve_container_task_id(None)
 
 
+class _FakeCachedEnv:
+    def __init__(self) -> None:
+        self.cleaned = False
+
+    def cleanup(self) -> None:
+        self.cleaned = True
+
+
 def test_room_turn_keys_the_env_cache_by_container(monkeypatch, tmp_path):
     """A sandbox turn and an IDE turn must not resolve to the same cache key.
 
@@ -496,8 +508,8 @@ def test_room_turn_keys_the_env_cache_by_container(monkeypatch, tmp_path):
     sandbox_key = _cache_key_during(sandbox_room, monkeypatch, tmp_path)
     ide_key = _cache_key_during(ide_room, monkeypatch, tmp_path)
 
-    assert sandbox_key == ide.container_key("r-sand", "sandbox")
-    assert ide_key == ide.container_key("r-ide", "ide")
+    assert sandbox_key == ide.container_key_for_room(sandbox_room)
+    assert ide_key == ide.container_key_for_room(ide_room)
     assert sandbox_key != ide_key
 
 
@@ -506,6 +518,92 @@ def test_two_sandbox_rooms_do_not_share_one_cached_container(monkeypatch, tmp_pa
     a = _cache_key_during(_room(id="r-a", workspace="sandbox"), monkeypatch, tmp_path)
     b = _cache_key_during(_room(id="r-b", workspace="sandbox"), monkeypatch, tmp_path)
     assert a != b
+
+
+def test_shared_mode_patch_changes_cache_key_and_evicts_old_env(tmp_path, monkeypatch):
+    from gateway.config import PlatformConfig
+    from tools import terminal_tool
+
+    from .adapter import RetinueRoomsAdapter
+
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RETINUE_SHARED_DIR", str(shared))
+    monkeypatch.setattr("gateway.status.write_runtime_status", lambda **kw: None)
+
+    adapter = RetinueRoomsAdapter(PlatformConfig())
+    adapter.store = RoomStore(base_dir=str(tmp_path / "rooms"))
+    created = adapter.create_room("Lab", ["scout"], None, None, workspace="sandbox")
+    room_before = adapter.store.get(created["id"])
+    assert room_before is not None
+    old_overlay = ide.overlay_env(room_before)
+    old_key = old_overlay["TERMINAL_DOCKER_SHARED_CONTAINER_KEY"]
+    assert _shared_specs(json.loads(old_overlay["TERMINAL_DOCKER_VOLUMES"])) == [
+        f"{os.path.abspath(str(shared))}:/shared:ro"
+    ]
+
+    stale_env = _FakeCachedEnv()
+    monkeypatch.setattr(terminal_tool, "_active_environments", {old_key: stale_env})
+    monkeypatch.setattr(terminal_tool, "_last_activity", {old_key: 1.0})
+
+    patched = adapter.patch_room(created["id"], {"shared_mode": "rw"})
+    assert patched["shared_mode"] == "rw"
+    room_after = adapter.store.get(created["id"])
+    assert room_after is not None
+    new_overlay = ide.overlay_env(room_after)
+    assert _shared_specs(json.loads(new_overlay["TERMINAL_DOCKER_VOLUMES"])) == [
+        f"{os.path.abspath(str(shared))}:/shared:rw"
+    ]
+
+    new_key = _cache_key_during(room_after, monkeypatch, tmp_path)
+    assert new_key == new_overlay["TERMINAL_DOCKER_SHARED_CONTAINER_KEY"]
+    assert new_key != old_key
+    assert old_key not in terminal_tool._active_environments
+    assert stale_env.cleaned is True
+
+
+def test_ide_path_patch_changes_cache_key_and_evicts_old_env(tmp_path, monkeypatch):
+    from gateway.config import PlatformConfig
+    from tools import terminal_tool
+
+    from .adapter import RetinueRoomsAdapter
+
+    old_root = tmp_path / "old-root"
+    new_root = tmp_path / "new-root"
+    old_root.mkdir()
+    new_root.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("RETINUE_SHARED_DIR", raising=False)
+    monkeypatch.setattr("gateway.status.write_runtime_status", lambda **kw: None)
+
+    adapter = RetinueRoomsAdapter(PlatformConfig())
+    adapter.store = RoomStore(base_dir=str(tmp_path / "rooms"))
+    created = adapter.create_room(
+        "Code", ["scout"], None, None, workspace="ide", ide_path=str(old_root)
+    )
+    room_before = adapter.store.get(created["id"])
+    assert room_before is not None
+    old_overlay = ide.overlay_env(room_before)
+    old_key = old_overlay["TERMINAL_DOCKER_SHARED_CONTAINER_KEY"]
+    assert json.loads(old_overlay["TERMINAL_DOCKER_VOLUMES"]) == [f"{old_root}:/workspace:rw"]
+
+    stale_env = _FakeCachedEnv()
+    monkeypatch.setattr(terminal_tool, "_active_environments", {old_key: stale_env})
+    monkeypatch.setattr(terminal_tool, "_last_activity", {old_key: 1.0})
+
+    patched = adapter.patch_room(created["id"], {"ide_path": str(new_root)})
+    assert patched["ide_path"] == str(new_root)
+    room_after = adapter.store.get(created["id"])
+    assert room_after is not None
+    new_overlay = ide.overlay_env(room_after)
+    assert json.loads(new_overlay["TERMINAL_DOCKER_VOLUMES"]) == [f"{new_root}:/workspace:rw"]
+
+    new_key = _cache_key_during(room_after, monkeypatch, tmp_path)
+    assert new_key == new_overlay["TERMINAL_DOCKER_SHARED_CONTAINER_KEY"]
+    assert new_key != old_key
+    assert old_key not in terminal_tool._active_environments
+    assert stale_env.cleaned is True
 
 
 def test_cache_key_falls_back_to_default_outside_a_room(monkeypatch):
@@ -554,8 +652,10 @@ async def test_concurrent_rooms_never_see_each_others_container_key(tmp_path):
         cycle(_room(id="beta", workspace="ide", ide_path=str(tmp_path)), "beta", first=False),
     )
 
-    assert seen["alpha"] == "retinue-sandbox-alpha"
-    assert seen["beta"] == "retinue-ide-beta"
+    assert seen["alpha"] == ide.container_key_for_room(_room(id="alpha", workspace="sandbox"))
+    assert seen["beta"] == ide.container_key_for_room(
+        _room(id="beta", workspace="ide", ide_path=str(tmp_path))
+    )
 
 
 @pytest.mark.asyncio
@@ -613,7 +713,7 @@ def test_workspace_key_reaches_a_tool_dispatch_thread(tmp_path):
         t.start()
         t.join()
 
-    assert seen["key"] == "retinue-sandbox-threaded"
+    assert seen["key"] == ide.container_key_for_room(_room(id="threaded"))
 
 
 def test_no_overlay_falls_back_to_process_env(monkeypatch, tmp_path):
@@ -625,8 +725,9 @@ def test_no_overlay_falls_back_to_process_env(monkeypatch, tmp_path):
     monkeypatch.setenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", "set-by-operator")
     assert workspace_context.shared_container_key() == "set-by-operator"
 
-    with ide.apply_room_workspace(_room(id="scoped"), str(tmp_path)):
-        assert workspace_context.shared_container_key() == "retinue-sandbox-scoped"
+    room = _room(id="scoped")
+    with ide.apply_room_workspace(room, str(tmp_path)):
+        assert workspace_context.shared_container_key() == ide.container_key_for_room(room)
 
     assert workspace_context.shared_container_key() == "set-by-operator"
 
