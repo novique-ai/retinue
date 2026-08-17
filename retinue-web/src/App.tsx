@@ -76,11 +76,11 @@ function ringPad(size: number): number {
  * An agent's avatar. Resolution order (CONTRACT-identity.md + operator
  * correction 2026-08-17):
  *   1. `identity.emoji` — an explicit per-agent override always wins.
- *   2. bespoke artwork, if `slug` is one of the six named retainers
- *      (icons.ts) — the palette colour still shows as a ring/backing behind
- *      the illustration, so an agent's colour stays consistent across every
- *      surface even when its glyph is a picture, not a letter.
- *   3. `identity.initial` over the resolved palette colour — everyone else.
+ *   2. artwork from `agentIcon(slug)` — commissioned portrait for the six
+ *      named retainers, otherwise a stable clay-pool image. The palette
+ *      colour still shows as a ring/backing behind the illustration.
+ *   3. `identity.initial` over the resolved palette colour — only when
+ *      there is no slug (hire-form preview) or no artwork path.
  * Never re-derive a colour or initial here — always read `identity`.
  * `fallback` only covers `identity` being entirely missing (e.g. a room
  * member slug that no longer resolves to a live agent). `slug` is omitted
