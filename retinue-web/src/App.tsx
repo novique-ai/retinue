@@ -3130,14 +3130,6 @@ export default function App() {
               +
             </button>
           </div>
-          <div className="nav-row">
-            <button
-              className={selectedProjectId === "" ? "nav-item active" : "nav-item"}
-              onClick={() => selectProject("")}
-            >
-              Unfiled
-            </button>
-          </div>
           {visibleProjects.map((p) => (
             <div key={p.id} className={`nav-row${p.archived ? " archived" : ""}`}>
               <button
@@ -3159,6 +3151,15 @@ export default function App() {
               />
             </div>
           ))}
+          {/* Unfiled is pinned last — not a real project, not in `order`. */}
+          <div className="nav-row">
+            <button
+              className={selectedProjectId === "" ? "nav-item active" : "nav-item"}
+              onClick={() => selectProject("")}
+            >
+              Unfiled
+            </button>
+          </div>
         </div>
         <div className="section">
           <div className="section-head">
