@@ -205,6 +205,7 @@ async function startMic(): Promise<{ stop: () => Promise<Blob> }> {
 const SPEAK_KEY = "retinue.speakReplies";
 const ARCHIVED_KEY = "retinue.showArchived";
 const DRAG_MIME = "application/x-retinue";
+const SIDEBAR_COLLAPSED_KEY = "retinue.sidebarCollapsed";
 
 function teamSlug(label: string): string {
   return (
@@ -341,6 +342,35 @@ function ReorderButtons({
   );
 }
 
+/**
+ * Collapsed-sidebar rail entry for one room — an initial today, structured so
+ * a richer per-agent avatar badge can drop in later without a reshape.
+ */
+function RailButton({
+  room,
+  active,
+  onClick,
+}: {
+  room: RoomMeta;
+  active: boolean;
+  onClick: () => void;
+}) {
+  const initial = (room.name.trim()[0] || "?").toUpperCase();
+  return (
+    <button
+      type="button"
+      className={`rail-item${active ? " active" : ""}${room.archived ? " archived" : ""}`}
+      style={{ color: chipColor(room.id) }}
+      aria-label={room.name}
+      aria-current={active ? "true" : undefined}
+      title={room.name}
+      onClick={onClick}
+    >
+      {initial}
+    </button>
+  );
+}
+
 // ── message row ──────────────────────────────────────────────────────────
 
 function MentionBody({
@@ -465,6 +495,8 @@ function RoomView({
   onEdit,
   onArchive,
   onDelete,
+  sidebarCollapsed,
+  onToggleSidebar,
 }: {
   room: RoomMeta;
   userName: string;
@@ -472,6 +504,8 @@ function RoomView({
   onEdit: () => void;
   onArchive: () => void;
   onDelete: () => void;
+  sidebarCollapsed: boolean;
+  onToggleSidebar: () => void;
 }) {
   const [messages, setMessages] = useState<RoomMsg[]>([]);
   const [draft, setDraft] = useState("");
@@ -696,6 +730,16 @@ function RoomView({
           </div>
         </div>
         <div className="room-header-actions">
+          <button
+            type="button"
+            className="mini wide"
+            aria-expanded={!sidebarCollapsed}
+            aria-label={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+            title={`${sidebarCollapsed ? "Expand" : "Collapse"} sidebar (Ctrl+B)`}
+            onClick={onToggleSidebar}
+          >
+            {sidebarCollapsed ? "»" : "«"}
+          </button>
           <button className="mini wide" onClick={onEdit}>
             Edit
           </button>
@@ -1818,10 +1862,12 @@ function SettingsPanel({
   onReauth,
   onDone,
   onPrincipal,
+  onDirtyChange,
 }: {
   onReauth: (provider: string) => void;
   onDone: () => void;
   onPrincipal?: (p: Principal) => void;
+  onDirtyChange?: (dirty: boolean) => void;
 }) {
   const [accounts, setAccounts] = useState<Array<ProviderAuth & { login?: string }>>([]);
   const [voice, setVoice] = useState<VoiceStatus | null>(null);
@@ -1829,8 +1875,13 @@ function SettingsPanel({
   const [models, setModels] = useState<ModelPreset[]>([]);
   const [youName, setYouName] = useState("");
   const [youAbout, setYouAbout] = useState("");
+  // What the server has stored — the dirty comparison baseline. Updated on
+  // load and again after a successful save.
+  const [baseName, setBaseName] = useState("");
+  const [baseAbout, setBaseAbout] = useState("");
   const [claudeKey, setClaudeKey] = useState("");
   const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
 
   const reload = useCallback(() => {
     api
@@ -1843,14 +1894,52 @@ function SettingsPanel({
     api
       .getPrincipal()
       .then((p) => {
-        setYouName(p.display_name || "");
-        setYouAbout(p.about || "");
+        // An unset principal's display_name comes back as the literal "You" —
+        // prefilling that is indistinguishable from a name someone chose, so
+        // treat it as empty and let the placeholder carry it instead. Empty
+        // is also the dirty baseline, so an untouched panel isn't flagged.
+        const name = p.display_name === "You" ? "" : p.display_name || "";
+        const about = p.about || "";
+        setYouName(name);
+        setYouAbout(about);
+        setBaseName(name);
+        setBaseAbout(about);
       })
       .catch(() => {});
   }, []);
   useEffect(() => {
     reload();
   }, [reload]);
+
+  const dirty = youName !== baseName || youAbout !== baseAbout;
+  useEffect(() => {
+    onDirtyChange?.(dirty);
+  }, [dirty, onDirtyChange]);
+
+  const saveYou = async () => {
+    const trimmed = youName.trim();
+    if (!trimmed || busy) return;
+    setBusy(true);
+    try {
+      const saved = await api.savePrincipal({ display_name: trimmed, about: youAbout });
+      onPrincipal?.(saved);
+      setYouName(trimmed);
+      setBaseName(trimmed);
+      setBaseAbout(youAbout);
+      setNote("Saved your name for this workspace.");
+    } catch (e) {
+      setNote(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const confirmDiscard = () =>
+    !dirty || window.confirm("Discard unsaved changes to your name and about you?");
+
+  const handleDone = () => {
+    if (confirmDiscard()) onDone();
+  };
 
   return (
     <div className="panel settings-panel">
@@ -1876,24 +1965,16 @@ function SettingsPanel({
         />
       </label>
       <p className="note">This is you, not a hire. Retainers will use this name. You do not take turns.</p>
-      <button
-        className="mini"
-        disabled={!youName.trim()}
-        onClick={async () => {
-          try {
-            const saved = await api.savePrincipal({
-              display_name: youName.trim(),
-              about: youAbout,
-            });
-            onPrincipal?.(saved);
-            setNote("Saved your name for this workspace.");
-          } catch (e) {
-            setNote(String(e));
-          }
-        }}
-      >
-        Save you
-      </button>
+      <div className="settings-save-row">
+        <button
+          className={dirty ? "mini wide primary" : "mini wide"}
+          disabled={!dirty || !youName.trim() || busy}
+          onClick={saveYou}
+        >
+          Save you
+        </button>
+        {dirty && <span className="unsaved-badge">Unsaved changes</span>}
+      </div>
       {accounts.map((acct) => (
         <div key={acct.id} className="settings-row">
           <div>
@@ -1929,7 +2010,12 @@ function SettingsPanel({
               </button>
             </div>
           ) : (
-            <button className="mini" onClick={() => onReauth(acct.id)}>
+            <button
+              className="mini"
+              onClick={() => {
+                if (confirmDiscard()) onReauth(acct.id);
+              }}
+            >
               Sign in
             </button>
           )}
@@ -1966,7 +2052,7 @@ function SettingsPanel({
       </div>
       {note && <p className="note">{note}</p>}
       <div className="panel-actions">
-        <button className="primary" onClick={onDone}>
+        <button className="primary" onClick={handleDone}>
           Done
         </button>
       </div>
@@ -2025,6 +2111,12 @@ export default function App() {
   );
   const [reauthProvider, setReauthProvider] = useState("xai-oauth");
   const [gitSha, setGitSha] = useState<string | null>(null);
+  // Per-viewer display preference, not workspace data — lives in
+  // localStorage, never synced through /sidebar (that's item order only).
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(
+    () => localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1",
+  );
+  const [settingsDirty, setSettingsDirty] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -2087,6 +2179,33 @@ export default function App() {
     }, 2000);
     return () => window.clearInterval(t);
   }, []);
+
+  const toggleSidebar = useCallback(() => {
+    setSidebarCollapsed((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem(SIDEBAR_COLLAPSED_KEY, next ? "1" : "0");
+      } catch {
+        /* ignore */
+      }
+      return next;
+    });
+  }, []);
+
+  // Ctrl+B / Cmd+B, the conventional sidebar toggle — but not while the user
+  // is typing somewhere.
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key.toLowerCase() !== "b" || !(e.ctrlKey || e.metaKey)) return;
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || target?.isContentEditable) return;
+      e.preventDefault();
+      toggleSidebar();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [toggleSidebar]);
 
   const persistLayout = useCallback(
     async (next: SidebarLayout) => {
@@ -2305,7 +2424,30 @@ export default function App() {
         </div>
       )}
       <div className="shell">
-      <aside className="sidebar">
+      <aside className={sidebarCollapsed ? "sidebar collapsed" : "sidebar"}>
+        {sidebarCollapsed ? (
+          <nav className="rail" aria-label="Rooms">
+            <button
+              type="button"
+              className="rail-toggle"
+              aria-expanded={false}
+              aria-label="Expand sidebar"
+              title="Expand sidebar (Ctrl+B)"
+              onClick={toggleSidebar}
+            >
+              <img className="rail-logo" src={LOGO_SRC} alt="" />
+            </button>
+            {visibleRooms.map((r) => (
+              <RailButton
+                key={r.id}
+                room={r}
+                active={current?.id === r.id}
+                onClick={() => setCurrent(r)}
+              />
+            ))}
+          </nav>
+        ) : (
+          <>
         <div className="brand">
           <img className="brand-logo" src={LOGO_SRC} alt="" />
           Retinue
@@ -2635,6 +2777,8 @@ export default function App() {
             </>
           )}
         </footer>
+          </>
+        )}
       </aside>
       <main className="main">
         {current ? (
@@ -2649,6 +2793,8 @@ export default function App() {
             }}
             onArchive={() => void archiveRoom(current)}
             onDelete={() => void deleteRoom(current)}
+            sidebarCollapsed={sidebarCollapsed}
+            onToggleSidebar={toggleSidebar}
           />
         ) : visibleCast.length === 0 ? (
           <div className="welcome empty-state">
@@ -2722,9 +2868,17 @@ export default function App() {
         <div
           className="overlay"
           onClick={() => {
+            if (
+              modal === "settings" &&
+              settingsDirty &&
+              !window.confirm("Discard unsaved changes to your name and about you?")
+            ) {
+              return;
+            }
             setModal(null);
             setEditingRoom(null);
             setEditingAgent(null);
+            setSettingsDirty(false);
           }}
         >
           <div onClick={(e) => e.stopPropagation()}>
@@ -2809,8 +2963,10 @@ export default function App() {
                     /* ignore */
                   }
                 }}
+                onDirtyChange={setSettingsDirty}
                 onDone={() => {
                   setModal(null);
+                  setSettingsDirty(false);
                   void refresh();
                 }}
               />
