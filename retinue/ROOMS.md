@@ -118,7 +118,7 @@ convention: no `RETINUE_ROOMS_API_KEY` → localhost-only):
 | `GET/POST /agents` | roster / hire (`{name, job, how, model?}` — `model` names a preset) |
 | `GET/PATCH /agents/{slug}` | inspect / edit (`{name?, job?, how?, model?, archived?}`) — SOUL rewrite in place; `model` still switches the preset. No restart. |
 | `DELETE /agents/{slug}` | remove `profiles/<slug>/` (never `default`); evicts the live registration |
-| `GET/POST /rooms` | list / create (`{name, members[], lead?, max_agent_turns?, workspace?, ide_path?, shared_mode?}`) — `workspace` is `sandbox` (default) or `ide`; `shared_mode` is `ro` (default) or `rw`. List is sidebar-ordered and includes `archived` |
+| `GET/POST /rooms` | list / create (`{name, members[], lead?, max_agent_turns?, workspace?, ide_path?, shared_mode?}`) — `workspace` is `sandbox` (default) or `ide`; `shared_mode` is `rw` (default) or `ro`. List is sidebar-ordered and includes `archived` |
 | `GET/PATCH/DELETE /rooms/{id}` | inspect / edit (`{name?, members?, lead?, archived?, max_agent_turns?, workspace?, ide_path?, shared_mode?}`) / remove. Archive hides without wiping the transcript. Full-array `members` restaffs wholesale; members it adds or drops get the same join/leave notices and `last_seen` seeding as the incremental endpoints. |
 | `POST /rooms/{id}/members` | invite one agent (`{member}`) → 201. Seeds `last_seen` so a first-time invitee sees only the last 20 messages (and the join notice). A re-invite keeps their existing cursor. |
 | `DELETE /rooms/{id}/members/{slug}` | remove one agent → 200. `last_seen` is kept so a later re-invite resumes where they left off. Refuses the last remaining member. |
@@ -312,18 +312,26 @@ an agent.
 | `shared_mount` | `/shared` when configured, else `null` |
 | `shared_error` | why the path cannot be mounted, or `null` |
 
-**Default mode is read-only.** A room's `shared_mode` is `ro` or `rw`.
-Absent or unknown values are treated as `ro`. The API rejects any other
-value (it is not silently coerced). Opt a room into writes with
-`shared_mode: "rw"` on create or patch. Read-only is the default because
-this is a workspace-wide surface: one room writing into it is visible to
-every other room, and that should be an explicit choice.
+**Default mode is read-write.** A room's `shared_mode` is `rw` or `ro`.
+Absent values are treated as `rw`. A garbage value already on disk stays
+`ro` so a bad record cannot grant a write. The API rejects any other
+value (it is not silently coerced). Pin a room to read-only with
+`shared_mode: "ro"` on create or patch.
+
+The write default is the point of the feature: a drop folder nobody can
+leave a file in is only half a drop folder. To keep that from becoming a
+pile of loose files, writable rooms are briefed to write under
+`/shared/rooms/<room-id>/`, read the human's drops from `/shared/inbox/`,
+and leave `/shared/` itself empty. The gateway creates those two directories
+on the first turn if they are missing. Opting a room back to `ro` is the
+explicit safety choice.
 
 **Members are told about it.** When the folder is configured, the per-turn
-briefing gains a line naming `/shared` and saying whether this room may write
-there. A mount nobody is told about is a mount nobody uses — and an agent that
-does not know a path is read-only discovers it as a terminal error mid-task.
-When the folder is unset, the briefing is unchanged.
+briefing names `/shared`, says whether this room may write, and (when it
+may) names that room's folder. A mount nobody is told about is a mount
+nobody uses — and an agent that does not know a path is read-only
+discovers it as a terminal error mid-task. When the folder is unset, the
+briefing is unchanged.
 
 ## Deliberate v1 limits
 

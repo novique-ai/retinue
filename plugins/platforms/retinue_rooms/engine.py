@@ -77,7 +77,8 @@ class Room:
     # ide: same container runtime, bind-mount of ide_path at /workspace.
     workspace: str = "sandbox"
     ide_path: Optional[str] = None
-    # /shared mount: "ro" (default) or "rw". Absent/unknown treated as "ro".
+    # /shared mount: "rw" (default) or "ro". Absent treated as "rw";
+    # unknown values on disk stay read-only.
     shared_mode: Optional[str] = None
 
     def default_responder(self) -> Optional[str]:
@@ -558,9 +559,14 @@ def room_briefing(
         if shared_mode_for(room) == SHARED_MODE_RW:
             parts.append(
                 f"{SHARED_MOUNT} is a folder shared with every room and with "
-                "the human on the host. You can read from it and write to it. "
-                "Leave something there when it is meant to outlive this room "
-                "or be picked up elsewhere; keep room work under /workspace."
+                "the human on the host. You can read and write it. Keep it "
+                "organized — it is a filing cabinet, not a dump. This room's "
+                f"files go under {SHARED_MOUNT}/rooms/{room.id}/. The human "
+                f"drops things for you in {SHARED_MOUNT}/inbox/. Read "
+                f"{SHARED_MOUNT}/README.md before writing. Do not leave loose "
+                f"files at {SHARED_MOUNT}/ itself, and do not edit another "
+                "room's folder. Name files so a stranger knows what they are. "
+                "Throwaway work stays under /workspace."
             )
         else:
             parts.append(

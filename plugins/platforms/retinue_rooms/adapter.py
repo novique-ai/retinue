@@ -413,8 +413,7 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             max_agent_turns=max(1, int(max_agent_turns or engine.DEFAULT_MAX_AGENT_TURNS)),
         )
         ide.apply_workspace_fields(room, workspace=workspace, ide_path=ide_path, touching_path=True)
-        if shared_mode is not None:
-            room.shared_mode = ide.parse_shared_mode(shared_mode)
+        room.shared_mode = ide.parse_shared_mode(shared_mode)
         self.store.create(room)
         unknown = [m for m in members if not self._profile_exists(m)]
         payload = room.to_dict()
