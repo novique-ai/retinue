@@ -85,6 +85,12 @@ body {
   display: flex;
   flex-direction: column;
   overflow-y: auto;
+  transition: width 0.15s ease;
+}
+
+.sidebar.collapsed {
+  width: 64px;
+  overflow-x: hidden;
 }
 
 .settings-panel {
@@ -108,6 +114,18 @@ body {
 
 .settings-key input {
   width: 160px;
+}
+
+.settings-save-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.unsaved-badge {
+  font-size: 12px;
+  font-weight: 600;
+  color: #e0af68;
 }
 
 .brand {
@@ -174,6 +192,10 @@ body {
 @media (prefers-reduced-motion: reduce) {
   .avatar-wrap.working::after {
     animation: none;
+  }
+
+  .sidebar {
+    transition: none;
   }
 }
 
@@ -293,6 +315,65 @@ body {
   letter-spacing: 0.02em;
   opacity: 0.85;
   user-select: all;
+}
+
+/* ── collapsed sidebar rail ──────────────────────────────── */
+
+.rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 0;
+  flex: 1;
+  overflow-y: auto;
+}
+
+.rail-toggle {
+  flex: none;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--bg-input);
+  color: var(--text);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  margin-bottom: 6px;
+}
+
+.rail-logo {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  object-fit: cover;
+  background: #f3efe6;
+}
+
+/* One room per row — an initial today, a richer avatar badge later. */
+.rail-item {
+  flex: none;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--bg-input);
+  cursor: pointer;
+  font-weight: 700;
+  font-size: 13px;
+  padding: 0;
+}
+
+.rail-item.active {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.rail-item.archived {
+  opacity: 0.5;
 }
 
 /* ── main / chat ─────────────────────────────────────────── */
