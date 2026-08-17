@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 import time
 import uuid
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from typing import Any, Dict, List, Optional
 
 KIND_USER = "user"
@@ -24,6 +24,15 @@ CYCLE_BUDGET_PREFIX = "turn budget"
 DID_NOT_REPLY_INFIX = " did not reply ("
 
 DEFAULT_MAX_AGENT_TURNS = 8
+
+# On invite, seed last_seen so the newcomer receives only the last N
+# messages rather than the whole transcript. This is not a compromise
+# and is not laziness: room_briefing already includes the itinerary
+# when the lead keeps one, and the itinerary is already a lead-authored
+# outline of the room's purpose. "The itinerary plus the last N turns"
+# — the briefed join — falls out of seeding last_seen. No summarisation
+# call, no new prompt path.
+INVITE_TRANSCRIPT_WINDOW = 20
 
 # @name — profile names may contain letters, digits, underscores, hyphens.
 _TOKEN_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_-]*")
@@ -318,6 +327,39 @@ def merge_followups(
 def did_not_reply_notice(member: str, reason: str) -> str:
     """System line posted when a planned speaker produces no agent message."""
     return f"{member}{DID_NOT_REPLY_INFIX}{reason})"
+
+
+def member_joined_notice(member: str) -> str:
+    """System line posted when someone is invited into a live room."""
+    return f"{member} joined the room"
+
+
+def member_left_notice(member: str) -> str:
+    """System line posted when someone is removed from a live room."""
+    return f"{member} left the room"
+
+
+def seed_invite_last_seen(room: Room, member: str, head_seq: int) -> None:
+    """Set last_seen for a first-time invitee so they see at most WINDOW messages.
+
+    A member who already has a last_seen entry is a re-invite: keep their
+    real position. last_seen survives removal so this works. ``head_seq``
+    is the highest transcript seq at seed time (typically the join
+    notice). The cursor is never negative.
+    """
+    if member in room.last_seen:
+        return
+    room.last_seen[member] = max(0, int(head_seq) - INVITE_TRANSCRIPT_WINDOW)
+
+
+def with_members(room: Room, members: List[str]) -> Room:
+    """A copy of *room* whose roster is *members* (one cycle's snapshot).
+
+    Invite/remove updates the stored roster immediately, but turn
+    planning for an already-running user-message cycle must keep using
+    the members that cycle started with.
+    """
+    return replace(room, members=list(members))
 
 
 def cycle_internal_error_notice() -> str:

@@ -430,10 +430,20 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
                 raise ValueError("room name is required")
             room.name = name
             touched = True
+        # Members added through the full-array restaff are joining a live room
+        # exactly as much as one added through POST /rooms/{id}/members, so they
+        # get the same treatment: a system notice and a seeded cursor. Skipping
+        # it here would leave the whole-transcript-on-first-turn bug alive
+        # behind the other door — the Edit Room panel is the door most people
+        # actually use.
+        joined: List[str] = []
+        departed: List[str] = []
         if "members" in body:
             members = [str(m).strip() for m in (body.get("members") or []) if str(m).strip()]
             if not members:
                 raise ValueError("a room needs at least one agent member")
+            joined = [m for m in members if m not in room.members]
+            departed = [m for m in room.members if m not in members]
             room.members = members
             if room.lead and room.lead not in room.members:
                 room.lead = room.members[0]
@@ -465,6 +475,63 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         if not touched:
             raise ValueError("nothing to update")
         self.store.update(room)
+        for member in departed:
+            self._post_system(room_id, engine.member_left_notice(member))
+        for member in joined:
+            posted = self._post_system(room_id, engine.member_joined_notice(member))
+            head = posted.seq if posted is not None else 0
+            room = self.store.mutate(
+                room_id, lambda r, m=member, h=head: engine.seed_invite_last_seen(r, m, h)
+            )
+        return self._room_payload(room)
+
+    def add_room_member(self, room_id: str, member: str) -> Dict[str, Any]:
+        """Invite one agent into a live room (incremental; does not restaff).
+
+        Seeds last_seen only when the member has no existing entry, so a
+        re-invite resumes where they left off. The join notice is posted
+        first; the cursor is then set from that seq so the newcomer sees
+        the last INVITE_TRANSCRIPT_WINDOW messages (including the notice).
+        """
+        member = (member or "").strip()
+        if not member:
+            raise ValueError("member is required")
+
+        def add(room: Room) -> None:
+            if member in room.members:
+                raise ValueError(f"{member} is already a member")
+            room.members.append(member)
+
+        self.store.mutate(room_id, add)
+        posted = self._post_system(room_id, engine.member_joined_notice(member))
+        head = posted.seq if posted is not None else 0
+        room = self.store.mutate(
+            room_id, lambda r: engine.seed_invite_last_seen(r, member, head)
+        )
+        return self._room_payload(room)
+
+    def remove_room_member(self, room_id: str, member: str) -> Dict[str, Any]:
+        """Remove one agent from a live room. last_seen survives."""
+        member = (member or "").strip()
+        if not member:
+            raise ValueError("member is required")
+
+        def drop(room: Room) -> None:
+            if member not in room.members:
+                raise ValueError(f"{member} is not a member")
+            if len(room.members) == 1:
+                raise ValueError("a room needs at least one agent member")
+            room.members = [m for m in room.members if m != member]
+            if room.lead == member:
+                room.lead = room.members[0]
+            # last_seen is left in place: a later re-invite resumes
+            # at this cursor instead of replaying the room.
+
+        room = self.store.mutate(room_id, drop)
+        self._post_system(room_id, engine.member_left_notice(member))
+        return self._room_payload(room)
+
+    def _room_payload(self, room: Room) -> Dict[str, Any]:
         unknown = [m for m in room.members if not self._profile_exists(m)]
         payload = room.to_dict()
         if unknown:
@@ -863,8 +930,18 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
     async def _run_cycle_workspace(self, room: Room, user_message: RoomMessage) -> None:
         room_id = room.id
         budget = room.max_agent_turns
+        # Snapshot the roster for this user-message cycle. Invite/remove
+        # updates stored members immediately (and posts a system line) but
+        # must not rewrite a queue that is already running — the newcomer
+        # speaks on the next user message, and a removed member still
+        # finishes a turn already planned. Model-switch uses AgentBusy
+        # because it evicts a running AIAgent; membership does not, so
+        # we do not raise AgentBusy here.
+        cycle_members = list(room.members)
         names = self._display_names(room)
-        queue = engine.plan_user_turns(room, user_message.text, names)
+        queue = engine.plan_user_turns(
+            engine.with_members(room, cycle_members), user_message.text, names
+        )
         spoken: List[str] = []
         turns_taken = 0
         while queue:
@@ -912,7 +989,12 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             )
             queue.extend(
                 engine.merge_followups(
-                    room, [(member, reply)], queue, spoken, budget - turns_taken, names
+                    engine.with_members(room, cycle_members),
+                    [(member, reply)],
+                    queue,
+                    spoken,
+                    budget - turns_taken,
+                    names,
                 )
             )
 
@@ -1034,13 +1116,14 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             self._resolve_pending(room.id, ok=False, text="turn timed out", member=member)
             return False, f"no reply within {int(budget)}s"
 
-    def _post_system(self, room_id: str, text: str) -> None:
+    def _post_system(self, room_id: str, text: str) -> Optional[RoomMessage]:
         try:
-            self.store.append(
+            return self.store.append(
                 room_id, RoomMessage(seq=0, ts=0, kind=KIND_SYSTEM, speaker="room", text=text)
             )
         except Exception:
             logger.exception("Retinue rooms: failed to post system notice to %s", room_id)
+            return None
 
 
 # ── HTTP surface ─────────────────────────────────────────────────────────
@@ -1595,6 +1678,14 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
             except RuntimeError as e:
                 return self._json(503, {"error": str(e)})
             return self._json(202, payload)
+        if len(parts) == 3 and parts[0] == "rooms" and parts[2] == "members":
+            try:
+                payload = adapter.add_room_member(parts[1], str(body.get("member") or ""))
+            except KeyError:
+                return self._json(404, {"error": "no such room"})
+            except ValueError as e:
+                return self._json(400, {"error": str(e)})
+            return self._json(201, payload)
         return self._json(404, {"error": "not found"})
 
     def do_PATCH(self):
@@ -1672,6 +1763,14 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
                 payload = self.server.adapter.delete_agent(parts[1])
             except KeyError:
                 return self._json(404, {"error": "no such agent"})
+            except ValueError as e:
+                return self._json(400, {"error": str(e)})
+            return self._json(200, payload)
+        if len(parts) == 4 and parts[0] == "rooms" and parts[2] == "members":
+            try:
+                payload = self.server.adapter.remove_room_member(parts[1], parts[3])
+            except KeyError:
+                return self._json(404, {"error": "no such room"})
             except ValueError as e:
                 return self._json(400, {"error": str(e)})
             return self._json(200, payload)

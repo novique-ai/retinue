@@ -264,6 +264,51 @@ def test_merge_followups_respects_budget():
 # ── formatting ───────────────────────────────────────────────────────────
 
 
+def test_invite_notices_match_existing_system_voice():
+    assert engine.member_joined_notice("critic") == "critic joined the room"
+    assert engine.member_left_notice("critic") == "critic left the room"
+    assert engine.INVITE_TRANSCRIPT_WINDOW == 20
+
+
+def test_seed_invite_last_seen_long_room_is_head_minus_window():
+    room = _room()
+    engine.seed_invite_last_seen(room, "critic", 26)
+    assert room.last_seen["critic"] == 6
+
+
+def test_seed_invite_last_seen_short_or_empty_is_zero():
+    room = _room()
+    engine.seed_invite_last_seen(room, "critic", 5)
+    assert room.last_seen["critic"] == 0
+    empty = _room()
+    engine.seed_invite_last_seen(empty, "critic", 0)
+    assert empty.last_seen["critic"] == 0
+
+
+def test_seed_invite_last_seen_keeps_existing_entry_including_zero():
+    room = _room()
+    room.last_seen["critic"] = 7
+    engine.seed_invite_last_seen(room, "critic", 100)
+    assert room.last_seen["critic"] == 7
+    room.last_seen["critic"] = 0
+    engine.seed_invite_last_seen(room, "critic", 100)
+    assert room.last_seen["critic"] == 0
+
+
+def test_with_members_snapshot_ignores_live_roster():
+    live = _room(members=["scout", "editor", "critic"], lead="scout")
+    planned = engine.plan_user_turns(
+        engine.with_members(live, ["scout", "editor"]), "@critic hello"
+    )
+    # critic is on the live roster but not in this cycle's snapshot, so
+    # the mention is ignored and the lead takes the turn.
+    assert planned == ["scout"]
+    still_queued = engine.plan_user_turns(
+        engine.with_members(live, ["scout", "critic"]), "@critic"
+    )
+    assert still_queued == ["critic"]
+
+
 def test_did_not_reply_notice_is_what_the_web_ui_parses():
     text = engine.did_not_reply_notice(
         "sheila-graphics-and-visual-produ", "agent returned no reply"

@@ -46,6 +46,37 @@ user ──HTTP──▶ RetinueRoomsAdapter ──MessageEvent(profile=member)�
   transcript as the member (`thread_id`). It does not start a new mention
   cycle. Progress sends without `job_id` stay off the transcript.
 
+## Live membership (invite / remove)
+
+A room's roster is not fixed at creation. The UI drives incremental
+`POST /rooms/{id}/members` and `DELETE /rooms/{id}/members/{slug}` so a
+writer does not have to send the whole array (and two writers cannot
+last-write-wins each other the way a pair of full-array `PATCH`es can).
+`PATCH /rooms/{id}` with `members` still restaffs wholesale, but a member
+who is *new* to the roster is joining a live room exactly as much as one
+added incrementally — so that path posts the same notices and seeds the same
+cursor. The Edit Room panel is the door most people use; fixing only the
+incremental endpoint would have left the whole-transcript-on-first-turn bug
+alive behind it.
+
+- **Briefed join.** A first-time invitee's `last_seen` is seeded to
+  `max(0, head − 20)` so their first turn is the last 20 messages, not
+  the whole transcript. `room_briefing` already includes the itinerary
+  when the lead keeps one, so "the itinerary plus the last 20 turns"
+  needs no summarisation call and no new prompt path. A short or empty
+  room seeds `0` (never a negative cursor). Re-inviting someone who
+  already has a `last_seen` entry leaves that cursor alone.
+- **Removal keeps `last_seen`.** A few bytes; a later re-invite resumes
+  where they left rather than replaying the room.
+- **System notices.** One line on join (`{slug} joined the room`) and
+  one on removal (`{slug} left the room`), same voice as the other
+  `KIND_SYSTEM` notices.
+- **Next user message only.** Turn planning is snapshotted at the start
+  of each user-message cycle. An invite or removal is visible on the
+  transcript immediately, but it does not rewrite a queue that is
+  already running. Model-switch uses `AgentBusy` because it would evict
+  a running agent; membership does not, so invite/remove do not 409.
+
 ## Turn-taking (v1)
 
 1. A user message mentions members with `@name` → each mentioned member responds, in
@@ -88,7 +119,9 @@ convention: no `RETINUE_ROOMS_API_KEY` → localhost-only):
 | `GET/PATCH /agents/{slug}` | inspect / edit (`{name?, job?, how?, model?, archived?}`) — SOUL rewrite in place; `model` still switches the preset. No restart. |
 | `DELETE /agents/{slug}` | remove `profiles/<slug>/` (never `default`); evicts the live registration |
 | `GET/POST /rooms` | list / create (`{name, members[], lead?, max_agent_turns?, workspace?, ide_path?, shared_mode?}`) — `workspace` is `sandbox` (default) or `ide`; `shared_mode` is `ro` (default) or `rw`. List is sidebar-ordered and includes `archived` |
-| `GET/PATCH/DELETE /rooms/{id}` | inspect / edit (`{name?, members?, lead?, archived?, max_agent_turns?, workspace?, ide_path?, shared_mode?}`) / remove. Archive hides without wiping the transcript. |
+| `GET/PATCH/DELETE /rooms/{id}` | inspect / edit (`{name?, members?, lead?, archived?, max_agent_turns?, workspace?, ide_path?, shared_mode?}`) / remove. Archive hides without wiping the transcript. Full-array `members` restaffs wholesale; members it adds or drops get the same join/leave notices and `last_seen` seeding as the incremental endpoints. |
+| `POST /rooms/{id}/members` | invite one agent (`{member}`) → 201. Seeds `last_seen` so a first-time invitee sees only the last 20 messages (and the join notice). A re-invite keeps their existing cursor. |
+| `DELETE /rooms/{id}/members/{slug}` | remove one agent → 200. `last_seen` is kept so a later re-invite resumes where they left off. Refuses the last remaining member. |
 | `GET /rooms/{id}/routines` | routines whose `source_room` is this room |
 | `GET/PUT /rooms/{id}/itinerary` | living outline. The **lead** authors it (fenced `itinerary` block in their reply). The user can view/edit the right pane. |
 | `GET/PUT /sidebar` | room order + team separators + agent order (`{rooms[], items:[{kind:team,id,label}|{kind:agent,slug}]}`) |

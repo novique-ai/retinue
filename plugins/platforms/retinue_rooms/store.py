@@ -89,6 +89,22 @@ class RoomStore:
         with self._lock:
             self._write_meta(room)
 
+    def mutate(self, room_id: str, fn) -> Room:
+        """Load-modify-write room meta under the store lock.
+
+        Incremental membership edits use this so two invites cannot
+        last-write-wins each other the way a pair of full-array PATCHes can.
+        """
+        with self._lock:
+            try:
+                with open(self._meta_path(room_id), encoding="utf-8") as f:
+                    room = Room.from_dict(json.load(f))
+            except (OSError, ValueError, KeyError):
+                raise KeyError(room_id)
+            fn(room)
+            self._write_meta(room)
+            return room
+
     def touch_last_seen(self, room_id: str, member: str, seq: int) -> None:
         """Merge one member's last_seen without clobbering siblings.
 
