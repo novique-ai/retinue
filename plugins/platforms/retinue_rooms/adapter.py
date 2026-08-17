@@ -394,6 +394,7 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         max_agent_turns: Optional[int],
         workspace: Optional[str] = None,
         ide_path: Optional[str] = None,
+        shared_mode: Optional[str] = None,
     ) -> Dict[str, Any]:
         members = [m.strip() for m in members if m and m.strip()]
         if not members:
@@ -406,6 +407,8 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             max_agent_turns=max(1, int(max_agent_turns or engine.DEFAULT_MAX_AGENT_TURNS)),
         )
         ide.apply_workspace_fields(room, workspace=workspace, ide_path=ide_path, touching_path=True)
+        if shared_mode is not None:
+            room.shared_mode = ide.parse_shared_mode(shared_mode)
         self.store.create(room)
         unknown = [m for m in members if not self._profile_exists(m)]
         payload = room.to_dict()
@@ -455,6 +458,9 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
                 ide_path=body.get("ide_path") if "ide_path" in body else room.ide_path,
                 touching_path="ide_path" in body,
             )
+            touched = True
+        if "shared_mode" in body:
+            room.shared_mode = ide.parse_shared_mode(body.get("shared_mode"))
             touched = True
         if not touched:
             raise ValueError("nothing to update")
@@ -1511,6 +1517,7 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
                     max_agent_turns=body.get("max_agent_turns"),
                     workspace=body.get("workspace"),
                     ide_path=body.get("ide_path"),
+                    shared_mode=body.get("shared_mode"),
                 )
             except ValueError as e:
                 return self._json(400, {"error": str(e)})

@@ -31,6 +31,11 @@ WORKSPACE_IDE = "ide"
 WORKSPACE_MODES = frozenset({WORKSPACE_SANDBOX, WORKSPACE_IDE})
 IDE_ROOT_ENV = "RETINUE_IDE_ROOT"
 CONTAINER_MOUNT = "/workspace"
+SHARED_DIR_ENV = "RETINUE_SHARED_DIR"
+SHARED_MOUNT = "/shared"
+SHARED_MODE_RO = "ro"
+SHARED_MODE_RW = "rw"
+SHARED_MODES = frozenset({SHARED_MODE_RO, SHARED_MODE_RW})
 
 
 def parse_workspace(value: object) -> str:
@@ -40,9 +45,51 @@ def parse_workspace(value: object) -> str:
     return raw
 
 
+def parse_shared_mode(value: object) -> str:
+    raw = (str(value).strip().lower() if value is not None and str(value).strip() else SHARED_MODE_RO)
+    if raw not in SHARED_MODES:
+        raise ValueError("shared_mode must be 'ro' or 'rw'")
+    return raw
+
+
+def shared_mode_for(room: Room) -> str:
+    """Absent or unknown on the record is read-only."""
+    raw = (room.shared_mode or "").strip().lower()
+    return raw if raw in SHARED_MODES else SHARED_MODE_RO
+
+
 def configured_ide_root() -> Optional[str]:
     raw = (os.getenv(IDE_ROOT_ENV) or "").strip()
     return os.path.abspath(os.path.expanduser(raw)) if raw else None
+
+
+def configured_shared_dir() -> Optional[str]:
+    raw = (os.getenv(SHARED_DIR_ENV) or "").strip()
+    return os.path.abspath(os.path.expanduser(raw)) if raw else None
+
+
+def resolve_shared_dir() -> Optional[str]:
+    """Absolute existing directory, or None if ``RETINUE_SHARED_DIR`` is unset.
+
+    Unset means no mount and no directory created. A configured path that
+    is missing is a hard error — never a silent skip.
+    """
+    path = configured_shared_dir()
+    if path is None:
+        return None
+    if not os.path.isdir(path):
+        raise ValueError(f"shared folder is not a directory: {path}")
+    return path
+
+
+def shared_dir_error() -> Optional[str]:
+    """Why the configured shared folder cannot be mounted, or ``None``."""
+    path = configured_shared_dir()
+    if path is None:
+        return None
+    if not os.path.isdir(path):
+        return f"shared folder is not a directory: {path}"
+    return None
 
 
 def resolve_ide_path(explicit: Optional[str] = None) -> str:
@@ -79,6 +126,9 @@ def overlay_env(room: Room, home_dir: Optional[str] = None) -> Dict[str, str]:
     if mode == WORKSPACE_IDE:
         path = resolve_ide_path(room.ide_path)
         volumes.append(f"{path}:{CONTAINER_MOUNT}:rw")
+    shared = resolve_shared_dir()
+    if shared:
+        volumes.append(f"{shared}:{SHARED_MOUNT}:{shared_mode_for(room)}")
     if home_dir:
         uploads = attachments._dir(home_dir, room.id)
         os.makedirs(uploads, exist_ok=True)

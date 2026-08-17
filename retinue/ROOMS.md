@@ -87,8 +87,8 @@ convention: no `RETINUE_ROOMS_API_KEY` → localhost-only):
 | `GET/POST /agents` | roster / hire (`{name, job, how, model?}` — `model` names a preset) |
 | `GET/PATCH /agents/{slug}` | inspect / edit (`{name?, job?, how?, model?, archived?}`) — SOUL rewrite in place; `model` still switches the preset. No restart. |
 | `DELETE /agents/{slug}` | remove `profiles/<slug>/` (never `default`); evicts the live registration |
-| `GET/POST /rooms` | list / create (`{name, members[], lead?, max_agent_turns?, workspace?, ide_path?}`) — `workspace` is `sandbox` (default) or `ide`. List is sidebar-ordered and includes `archived` |
-| `GET/PATCH/DELETE /rooms/{id}` | inspect / edit (`{name?, members?, lead?, archived?, max_agent_turns?, workspace?, ide_path?}`) / remove. Archive hides without wiping the transcript. |
+| `GET/POST /rooms` | list / create (`{name, members[], lead?, max_agent_turns?, workspace?, ide_path?, shared_mode?}`) — `workspace` is `sandbox` (default) or `ide`; `shared_mode` is `ro` (default) or `rw`. List is sidebar-ordered and includes `archived` |
+| `GET/PATCH/DELETE /rooms/{id}` | inspect / edit (`{name?, members?, lead?, archived?, max_agent_turns?, workspace?, ide_path?, shared_mode?}`) / remove. Archive hides without wiping the transcript. |
 | `GET /rooms/{id}/routines` | routines whose `source_room` is this room |
 | `GET/PUT /rooms/{id}/itinerary` | living outline. The **lead** authors it (fenced `itinerary` block in their reply). The user can view/edit the right pane. |
 | `GET/PUT /sidebar` | room order + team separators + agent order (`{rooms[], items:[{kind:team,id,label}|{kind:agent,slug}]}`) |
@@ -100,7 +100,7 @@ convention: no `RETINUE_ROOMS_API_KEY` → localhost-only):
 | `GET/POST /routines` | list / save a demonstration (`{name, room, since?, until?}`). `source_room` is set on save; the room chrome lists matching routines. |
 | `GET/DELETE /routines/{slug}` | inspect / remove |
 | `POST /routines/{slug}/run` | replay the prompts into `{room}` (waits each cycle) |
-| `GET /workspace` | shared workspace-computer status + attach command |
+| `GET /workspace` | workspace-computer status + attach command + shared-folder report (`shared_dir`, `shared_mount`, `shared_error`) |
 | `GET /voice` | STT/TTS backend status (`xai` or OpenAI-compat sidecar) |
 | `POST /rooms/{id}/audio` | hold-to-talk: raw audio → STT → same cycle as `/messages` |
 | `POST /tts` | `{text, speaker?}` → audio/mpeg (or wav); per-slug voice map |
@@ -167,6 +167,7 @@ the room meta / `retinue-agent.json`; they hide an entry without deleting it.
 | `RETINUE_ROOMS_HOST` / `_PORT` | `127.0.0.1` / `8643` | bind address |
 | `RETINUE_ROOMS_TURN_TIMEOUT` | `300` | seconds to wait for one **cloud** agent turn |
 | `RETINUE_ROOMS_LOCAL_TURN_TIMEOUT` | `1800` | seconds to wait for one **local-LLM** turn (covers a slow first token and a sibling queued on the same llama-server) |
+| `RETINUE_SHARED_DIR` | unset | absolute host path mounted at `/shared` in every room container. Unset = off (no mount, no directory created). Must already exist; a missing path is an error, not a silent create. |
 
 ## The workspace computer (P3)
 
@@ -243,6 +244,53 @@ overrides still outrank it, and callers with no room overlay still get
 
 Default cwd inside the container is `/workspace` (the isolated tree, or the
 mounted host path).
+
+## Shared folder (`/shared`)
+
+A workspace-level host directory that every room can reach, sandbox and `ide`
+alike. It is a deliberate hole in per-room isolation (issue #67) — opt-in,
+never on by accident.
+
+**Off unless configured.** If `RETINUE_SHARED_DIR` is unset, nothing is
+mounted, nothing is created, and the container looks exactly as it did
+before. Set it to an **existing** absolute host path to turn the feature on:
+
+```bash
+RETINUE_SHARED_DIR=/var/lib/retinue/shared
+```
+
+The path is resolved the same way as `RETINUE_IDE_ROOT` (`abspath` +
+`expanduser`). If the path is set but is not a directory, the gateway does
+**not** create it and does **not** skip the mount: `GET /workspace` reports
+the error in `shared_error`, and a room cycle that would have mounted it
+fails loudly.
+
+**Mount path is `/shared`, not `/workspace/shared`.** For an `ide` room,
+`/workspace` is a bind-mount of the user's real project tree, so
+`/workspace/shared` would drop a foreign directory inside their source. `/shared`
+is the same path in both room kinds, which is what makes it explainable to
+an agent.
+
+`GET /workspace` reports:
+
+| field | meaning |
+|---|---|
+| `shared_dir` | resolved host path, or `null` if unset |
+| `shared_mount` | `/shared` when configured, else `null` |
+| `shared_error` | why the path cannot be mounted, or `null` |
+
+**Default mode is read-only.** A room's `shared_mode` is `ro` or `rw`.
+Absent or unknown values are treated as `ro`. The API rejects any other
+value (it is not silently coerced). Opt a room into writes with
+`shared_mode: "rw"` on create or patch. Read-only is the default because
+this is a workspace-wide surface: one room writing into it is visible to
+every other room, and that should be an explicit choice.
+
+**Members are told about it.** When the folder is configured, the per-turn
+briefing gains a line naming `/shared` and saying whether this room may write
+there. A mount nobody is told about is a mount nobody uses — and an agent that
+does not know a path is read-only discovers it as a terminal error mid-task.
+When the folder is unset, the briefing is unchanged.
 
 ## Deliberate v1 limits
 
