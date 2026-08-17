@@ -180,7 +180,7 @@ def _container_ids_for_room(room: Room) -> List[str]:
     runtime = _runtime()
     if not runtime:
         raise WorkspaceFileError(503, "neither podman nor docker is on PATH")
-    label = sanitize_label(ide.container_key(room.id, room.workspace or "sandbox"))
+    label = sanitize_label(ide.container_key_for_room(room))
     try:
         proc = subprocess.run(
             [
