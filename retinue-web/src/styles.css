@@ -613,7 +613,69 @@ body {
 .member-chip {
   display: inline-flex;
   align-items: center;
+  gap: 4px;
+  position: relative;
+}
+
+.row-menu-note {
+  display: block;
+  padding: 6px 8px;
+  font-size: 11.5px;
+  color: var(--text-dim);
+  max-width: 180px;
+}
+
+.invite-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.invite-menu {
+  position: absolute;
+  left: 0;
+  top: 28px;
+  z-index: 20;
+  width: 220px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.invite-note {
+  margin: 2px 4px 6px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-dim);
+}
+
+.invite-empty {
+  margin: 2px 4px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.invite-opt {
+  display: flex;
+  align-items: center;
   gap: 6px;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: 0;
+  color: var(--text);
+  padding: 6px 8px;
+  border-radius: 6px;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.invite-opt:hover {
+  background: var(--bg-input);
 }
 
 .messages {

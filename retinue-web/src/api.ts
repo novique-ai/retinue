@@ -353,6 +353,16 @@ export const api = {
   ) => req<RoomMeta>("POST", "/rooms", { name, members, lead, ...extra }),
   patchRoom: (id: string, body: RoomPatch) => req<RoomMeta>("PATCH", `/rooms/${id}`, body),
   deleteRoom: (id: string) => req<{ deleted: string }>("DELETE", `/rooms/${id}`),
+  /**
+   * Incremental invite — seeds `last_seen` to the last 20 messages rather
+   * than the full transcript. Never use `patchRoom({ members })` for this;
+   * that clobbers the member list instead of adding one.
+   */
+  inviteMember: (id: string, member: string) =>
+    req<RoomMeta>("POST", `/rooms/${id}/members`, { member }),
+  /** `last_seen` survives removal, so re-inviting resumes where they left off. */
+  removeMember: (id: string, slug: string) =>
+    req<RoomMeta>("DELETE", `/rooms/${id}/members/${encodeURIComponent(slug)}`),
   transcript: (id: string, since: number, wait: number, signal?: AbortSignal) =>
     req<{ messages: RoomMsg[] }>(
       "GET",
