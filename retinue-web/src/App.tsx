@@ -144,11 +144,10 @@ function AgentAvatar({
  * a circle), its own accent ring, and a different colour family (a neutral,
  * not one of the twelve agent palette keys) so the one line in a transcript
  * that is *yours* reads as a categorically different kind of participant,
- * not "one more agent." `you.png` is the same illustrated character family
- * as the named-agent artwork (navy hood, gold star) — it is a PLACEHOLDER
- * pending a bespoke glasses-and-vest render in that same style; the
- * shape/frame/colour distinction here is what carries "different kind of
- * participant" today, not the art itself.
+ * not "one more agent." `you.png` is the glasses-and-vest portrait in the
+ * same clay character family as the named-agent artwork. The rounded-square
+ * frame and neutral ring still mark the human as a different kind of
+ * participant from the circular agent badges.
  */
 function UserAvatar({
   label,

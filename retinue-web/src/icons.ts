@@ -9,9 +9,8 @@
 const NAMED = new Set(["admin", "editor", "envoy", "janitor", "scout", "scribe"]);
 
 export const LOGO_SRC = "icons/logo.png";
-/** Same illustrated character family as the named agents (navy hood, gold
- * star) — a PLACEHOLDER pending a bespoke glasses-and-vest render for the
- * user in that same art style. See `UserAvatar` in App.tsx. */
+/** The human's illustrated portrait (glasses and vest) in the same clay
+ * character family as the named-agent artwork. See `UserAvatar` in App.tsx. */
 export const YOU_SRC = "icons/you.png";
 
 /** PNG path for one of the six named slugs, or null — never a shared pool
