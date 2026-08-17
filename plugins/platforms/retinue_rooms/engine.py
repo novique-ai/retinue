@@ -68,6 +68,8 @@ class Room:
     # ide: same container runtime, bind-mount of ide_path at /workspace.
     workspace: str = "sandbox"
     ide_path: Optional[str] = None
+    # /shared mount: "ro" (default) or "rw". Absent/unknown treated as "ro".
+    shared_mode: Optional[str] = None
 
     def default_responder(self) -> Optional[str]:
         if self.lead and self.lead in self.members:
@@ -90,6 +92,7 @@ class Room:
             archived=bool(data.get("archived")),
             workspace=str(data.get("workspace") or "sandbox"),
             ide_path=(str(data["ide_path"]) if data.get("ide_path") else None),
+            shared_mode=(str(data["shared_mode"]) if data.get("shared_mode") else None),
         )
 
 
@@ -488,6 +491,26 @@ def room_briefing(
             "This room is sandboxed. Your terminal /workspace is an isolated "
             "container with no host IDE mount."
         )
+    # A mount nobody is told about is a mount nobody uses. Only mentioned
+    # when it is actually configured, and the read-only case says so — an
+    # agent that tries to write to a ro mount fails in the terminal instead
+    # of in the reply.
+    from .ide import SHARED_MOUNT, SHARED_MODE_RW, configured_shared_dir, shared_mode_for
+
+    if configured_shared_dir():
+        if shared_mode_for(room) == SHARED_MODE_RW:
+            parts.append(
+                f"{SHARED_MOUNT} is a folder shared with every room and with "
+                "the human on the host. You can read from it and write to it. "
+                "Leave something there when it is meant to outlive this room "
+                "or be picked up elsewhere; keep room work under /workspace."
+            )
+        else:
+            parts.append(
+                f"{SHARED_MOUNT} is a read-only folder shared with every room. "
+                "Read from it; you cannot write there. Your own work still "
+                "goes under /workspace."
+            )
     if itinerary:
         from .itinerary import briefing_lines
 

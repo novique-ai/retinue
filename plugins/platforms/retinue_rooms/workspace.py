@@ -35,6 +35,7 @@ def _runtime() -> Optional[str]:
 def workspace_status() -> Dict[str, Any]:
     key = (os.getenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY") or "").strip()
     runtime = _runtime()
+    shared_dir = ide.configured_shared_dir()
     status: Dict[str, Any] = {
         "enabled": bool(key),
         "key": key or None,
@@ -44,6 +45,9 @@ def workspace_status() -> Dict[str, Any]:
         "attach": None,
         "detail": None,
         "ide_root": ide.configured_ide_root(),
+        "shared_dir": shared_dir,
+        "shared_mount": ide.SHARED_MOUNT if shared_dir else None,
+        "shared_error": ide.shared_dir_error(),
     }
     if not key:
         status["detail"] = (

@@ -24,6 +24,7 @@ def test_old_room_json_defaults_to_sandbox():
     room = Room.from_dict({"id": "old", "name": "Old", "members": ["scout"]})
     assert room.workspace == "sandbox"
     assert room.ide_path is None
+    assert room.shared_mode is None
 
 
 def test_parse_workspace_defaults_and_rejects():
@@ -81,7 +82,12 @@ def test_list_folders_requires_a_root_or_path(tmp_path, monkeypatch):
     assert listing["root"] is None
 
 
-def test_overlay_sandbox_clears_volumes(tmp_path):
+def _shared_specs(vols: list[str]) -> list[str]:
+    return [v for v in vols if ":/shared:" in v or v.endswith(":/shared")]
+
+
+def test_overlay_sandbox_clears_volumes(tmp_path, monkeypatch):
+    monkeypatch.delenv("RETINUE_SHARED_DIR", raising=False)
     room = _room(workspace="sandbox")
     env = ide.overlay_env(room)
     assert env["TERMINAL_ENV"] == "docker"
@@ -90,7 +96,8 @@ def test_overlay_sandbox_clears_volumes(tmp_path):
     assert env["TERMINAL_CWD"] == "/workspace"
 
 
-def test_overlay_sandbox_mounts_room_uploads(tmp_path):
+def test_overlay_sandbox_mounts_room_uploads(tmp_path, monkeypatch):
+    monkeypatch.delenv("RETINUE_SHARED_DIR", raising=False)
     room = _room(workspace="sandbox")
     env = ide.overlay_env(room, str(tmp_path))
     vols = json.loads(env["TERMINAL_DOCKER_VOLUMES"])
@@ -99,7 +106,8 @@ def test_overlay_sandbox_mounts_room_uploads(tmp_path):
     assert os.path.isdir(vols[0].split(":")[0])
 
 
-def test_overlay_ide_bind_mounts_host_path(tmp_path):
+def test_overlay_ide_bind_mounts_host_path(tmp_path, monkeypatch):
+    monkeypatch.delenv("RETINUE_SHARED_DIR", raising=False)
     room = _room(workspace="ide", ide_path=str(tmp_path))
     env = ide.overlay_env(room)
     assert env["TERMINAL_DOCKER_SHARED_CONTAINER_KEY"] == "retinue-ide-r-1"
@@ -107,6 +115,95 @@ def test_overlay_ide_bind_mounts_host_path(tmp_path):
     with_home = json.loads(ide.overlay_env(room, str(tmp_path))["TERMINAL_DOCKER_VOLUMES"])
     assert with_home[0] == f"{tmp_path}:/workspace:rw"
     assert with_home[1].endswith(":/workspace/uploads:ro")
+
+
+def test_overlay_no_shared_when_unset_sandbox(monkeypatch):
+    monkeypatch.delenv("RETINUE_SHARED_DIR", raising=False)
+    assert ide.configured_shared_dir() is None
+    vols = json.loads(ide.overlay_env(_room(workspace="sandbox"))["TERMINAL_DOCKER_VOLUMES"])
+    assert _shared_specs(vols) == []
+
+
+def test_overlay_no_shared_when_unset_ide(tmp_path, monkeypatch):
+    monkeypatch.delenv("RETINUE_SHARED_DIR", raising=False)
+    assert ide.configured_shared_dir() is None
+    assert ide.SHARED_MOUNT == "/shared"
+    room = _room(workspace="ide", ide_path=str(tmp_path))
+    vols = json.loads(ide.overlay_env(room)["TERMINAL_DOCKER_VOLUMES"])
+    assert _shared_specs(vols) == []
+    assert f"{tmp_path}:/workspace:rw" in vols
+
+
+def test_overlay_shared_readonly_by_default(tmp_path, monkeypatch):
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    monkeypatch.setenv("RETINUE_SHARED_DIR", str(shared))
+    host = os.path.abspath(str(shared))
+    sand_vols = json.loads(ide.overlay_env(_room(workspace="sandbox"))["TERMINAL_DOCKER_VOLUMES"])
+    ide_vols = json.loads(
+        ide.overlay_env(_room(workspace="ide", ide_path=str(tmp_path)))["TERMINAL_DOCKER_VOLUMES"]
+    )
+    assert f"{host}:/shared:ro" in sand_vols
+    assert f"{host}:/shared:ro" in ide_vols
+    assert _shared_specs(sand_vols) == [f"{host}:/shared:ro"]
+    assert _shared_specs(ide_vols) == [f"{host}:/shared:ro"]
+
+
+def test_overlay_shared_rw_when_opted_in(tmp_path, monkeypatch):
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    monkeypatch.setenv("RETINUE_SHARED_DIR", str(shared))
+    host = os.path.abspath(str(shared))
+    room = _room(workspace="sandbox", shared_mode="rw")
+    vols = json.loads(ide.overlay_env(room)["TERMINAL_DOCKER_VOLUMES"])
+    assert f"{host}:/shared:rw" in vols
+    assert _shared_specs(vols) == [f"{host}:/shared:rw"]
+
+
+def test_overlay_shared_ro_when_explicit_or_absent(tmp_path, monkeypatch):
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    monkeypatch.setenv("RETINUE_SHARED_DIR", str(shared))
+    host = os.path.abspath(str(shared))
+    for room in (
+        _room(workspace="sandbox", shared_mode="ro"),
+        _room(workspace="sandbox"),
+        _room(workspace="ide", ide_path=str(tmp_path), shared_mode="ro"),
+    ):
+        vols = json.loads(ide.overlay_env(room)["TERMINAL_DOCKER_VOLUMES"])
+        assert _shared_specs(vols) == [f"{host}:/shared:ro"]
+
+
+def test_overlay_shared_unknown_mode_on_record_is_readonly(tmp_path, monkeypatch):
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    monkeypatch.setenv("RETINUE_SHARED_DIR", str(shared))
+    host = os.path.abspath(str(shared))
+    room = Room.from_dict(
+        {"id": "old", "name": "Old", "members": ["scout"], "shared_mode": "bogus"}
+    )
+    vols = json.loads(ide.overlay_env(room)["TERMINAL_DOCKER_VOLUMES"])
+    assert _shared_specs(vols) == [f"{host}:/shared:ro"]
+
+
+def test_overlay_shared_missing_dir_raises(tmp_path, monkeypatch):
+    missing = tmp_path / "no-such-shared"
+    monkeypatch.setenv("RETINUE_SHARED_DIR", str(missing))
+    with pytest.raises(ValueError, match="not a directory"):
+        ide.overlay_env(_room(workspace="sandbox"))
+    with pytest.raises(ValueError, match="not a directory"):
+        ide.overlay_env(_room(workspace="ide", ide_path=str(tmp_path)))
+
+
+def test_parse_shared_mode_defaults_and_rejects():
+    assert ide.parse_shared_mode(None) == "ro"
+    assert ide.parse_shared_mode("") == "ro"
+    assert ide.parse_shared_mode("RW") == "rw"
+    assert ide.parse_shared_mode("ro") == "ro"
+    with pytest.raises(ValueError, match="shared_mode"):
+        ide.parse_shared_mode("readwrite")
+    with pytest.raises(ValueError, match="shared_mode"):
+        ide.parse_shared_mode("yes")
 
 
 def test_sandbox_and_ide_use_different_container_keys(tmp_path):
@@ -127,6 +224,7 @@ def test_apply_room_workspace_does_not_leak_the_room_into_process_env(tmp_path, 
     survives a cycle untouched.
     """
     monkeypatch.setenv("TERMINAL_DOCKER_VOLUMES", '["/leak:/workspace:rw"]')
+    monkeypatch.delenv("RETINUE_SHARED_DIR", raising=False)
     room = _room(workspace="sandbox")
 
     with ide.apply_room_workspace(room) as overlay:
@@ -163,6 +261,7 @@ def test_create_and_patch_roundtrip(tmp_path, monkeypatch):
     created = adapter.create_room("Lab", ["scout"], None, None)
     assert created["workspace"] == "sandbox"
     assert created["ide_path"] is None
+    assert created["shared_mode"] is None
 
     with pytest.raises(ValueError, match="IDE rooms need a host path"):
         adapter.create_room("Code", ["scout"], None, None, workspace="ide")
@@ -178,6 +277,32 @@ def test_create_and_patch_roundtrip(tmp_path, monkeypatch):
     back = adapter.patch_room(created["id"], {"workspace": "sandbox"})
     assert back["workspace"] == "sandbox"
     assert back["ide_path"] is None
+
+
+def test_shared_mode_create_patch_and_rejects_invalid(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("gateway.status.write_runtime_status", lambda **kw: None)
+    from gateway.config import PlatformConfig
+
+    from .adapter import RetinueRoomsAdapter
+
+    adapter = RetinueRoomsAdapter(PlatformConfig())
+    adapter.store = RoomStore(base_dir=str(tmp_path / "rooms"))
+
+    with pytest.raises(ValueError, match="shared_mode"):
+        adapter.create_room("Nope", ["scout"], None, None, shared_mode="readwrite")
+
+    created = adapter.create_room("Lab", ["scout"], None, None, shared_mode="rw")
+    assert created["shared_mode"] == "rw"
+
+    with pytest.raises(ValueError, match="shared_mode"):
+        adapter.patch_room(created["id"], {"shared_mode": "yes"})
+    still = adapter.store.get(created["id"])
+    assert still is not None
+    assert still.shared_mode == "rw", "invalid patch must not coerce or overwrite shared_mode"
+
+    patched = adapter.patch_room(created["id"], {"shared_mode": "ro"})
+    assert patched["shared_mode"] == "ro"
 
 
 def test_http_create_ide_room(tmp_path, monkeypatch):
