@@ -267,6 +267,7 @@ def test_merge_followups_respects_budget():
 def test_invite_notices_match_existing_system_voice():
     assert engine.member_joined_notice("critic") == "critic joined the room"
     assert engine.member_left_notice("critic") == "critic left the room"
+    assert engine.turn_started_notice("Lucy") == "Lucy is on it."
     assert engine.INVITE_TRANSCRIPT_WINDOW == 20
 
 

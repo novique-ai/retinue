@@ -330,6 +330,11 @@ def did_not_reply_notice(member: str, reason: str) -> str:
     return f"{member}{DID_NOT_REPLY_INFIX}{reason})"
 
 
+def turn_started_notice(member: str) -> str:
+    """System line posted when a member's turn begins."""
+    return f"{member} is on it."
+
+
 def member_joined_notice(member: str) -> str:
     """System line posted when someone is invited into a live room."""
     return f"{member} joined the room"
