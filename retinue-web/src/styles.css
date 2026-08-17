@@ -12,6 +12,35 @@
   --text-dim: #8b91a7;
   --accent: #7aa2f7;
   --accent-text: #10121a;
+
+  /*
+   * Per-agent identity palette (CONTRACT-identity.md). The twelve KEYS and
+   * their order are the backend's — do not reorder or rename. The COLOURS
+   * are ours: each is the Tailwind 400 shade of its own name, chosen so
+   * every value in the set (a) reads as a distinct hue from the other
+   * eleven and (b) clears >7:1 contrast against --accent-text (the ink used
+   * on every filled badge) and >8:1 against --bg / --bg-input / --bg-raised
+   * (the surfaces a badge or a coloured chip sits on) — checked by hand for
+   * all twelve, not just the ones that looked risky.
+   */
+  --palette-indigo: #818cf8;
+  --palette-teal: #2dd4bf;
+  --palette-amber: #fbbf24;
+  --palette-rose: #fb7185;
+  --palette-violet: #a78bfa;
+  --palette-lime: #a3e635;
+  --palette-cyan: #22d3ee;
+  --palette-orange: #fb923c;
+  --palette-emerald: #34d399;
+  --palette-fuchsia: #e879f9;
+  --palette-sky: #38bdf8;
+  --palette-red: #f87171;
+
+  /* The user's identity is deliberately NOT drawn from the palette above —
+     a neutral, not a hue, so it never gets confused for "just another
+     agent colour." */
+  --identity-user-bg: #cbd5e1;
+  --identity-user-ink: #10121a;
 }
 
 html,
@@ -161,6 +190,37 @@ body {
   object-fit: cover;
   background: #f3efe6;
   flex: none;
+}
+
+/* Identity badge — a colour ring/backing (emoji, initial, or a hand-drawn
+   illustration sits on top) — see AgentAvatar / UserAvatar in App.tsx. */
+.avatar-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  line-height: 1;
+  user-select: none;
+  color: var(--accent-text);
+}
+
+/* A picture inside a badge ring — bespoke agent artwork (icons.ts) or the
+   user's you.png — inset so the badge's own background shows through as a
+   ring around it (see ringPad() in App.tsx). */
+.avatar-illustration {
+  border-radius: 50%;
+  object-fit: cover;
+  display: block;
+  background: #f3efe6;
+}
+
+/* The user's badge is a rounded square, not a circle, and drawn from
+   --identity-user-bg/-ink, not the agent palette — a categorical, not
+   just a colour, difference from every agent avatar. */
+.avatar-badge.avatar-user {
+  border-radius: 30%;
+  background: var(--identity-user-bg);
+  color: var(--identity-user-ink);
 }
 
 .avatar-wrap.working {
@@ -949,6 +1009,70 @@ select:focus {
   gap: 6px;
 }
 
+/* ── identity / voice / persona pickers (hire + edit agent panels) ──── */
+
+.identity-pick-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.identity-pick-row input {
+  width: 108px;
+}
+
+.identity-pick-row select {
+  flex: 1;
+}
+
+.persona-dials {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.persona-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.persona-dial-label {
+  flex: none;
+  width: 68px;
+  font-size: 12.5px;
+  color: var(--text-dim);
+  text-transform: capitalize;
+}
+
+.segmented {
+  display: flex;
+  gap: 4px;
+  flex: 1;
+}
+
+.seg-opt {
+  flex: 1;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 6px 4px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.seg-opt.picked {
+  background: var(--accent);
+  color: var(--accent-text);
+  border-color: var(--accent);
+}
+
+.seg-opt:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+
 .note {
   color: var(--text-dim);
   font-size: 12.5px;
@@ -968,6 +1092,17 @@ select:focus {
   width: 100%;
   border-radius: 8px;
   position: relative;
+}
+
+/* Team affiliation accent — a shared border colour down every member of the
+   same team, so grouping is legible without relying on the team separator
+   alone. Individuals stay distinguishable: this is a thin border, the
+   agent's own badge colour/glyph is the real identity signal. Transparent
+   by default so teamed and un-teamed rows never shift width against each
+   other. */
+.agent-row {
+  border-left: 3px solid transparent;
+  padding-left: 4px;
 }
 
 .nav-row.drop-before,

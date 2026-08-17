@@ -1,12 +1,14 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type DragEvent,
   type ReactNode,
 } from "react";
 import {
+  AgentIdentity,
   AgentMeta,
   AgentPatch,
   api,
@@ -17,6 +19,7 @@ import {
   workspaceFileUrl,
   IdeFolderListing,
   ModelPreset,
+  Persona,
   Principal,
   ReauthSession,
   RoomMeta,
@@ -33,35 +36,158 @@ import {
   VoiceStatus,
   WorkspaceStatus,
 } from "./api";
-import { LOGO_SRC, YOU_SRC, agentIcon, speakerIcon } from "./icons";
+import { LOGO_SRC, YOU_SRC, agentIcon } from "./icons";
 import { remainingThinkers, remainingThinkersAfter } from "./thinking";
 
-function Avatar({
-  src,
+/** Shared outer ring/tooltip/working-pulse frame for every avatar shape. */
+function AvatarFrame({
+  children,
   label,
-  size = 28,
   working = false,
 }: {
-  src: string;
+  children: ReactNode;
   label?: string;
-  size?: number;
   working?: boolean;
 }) {
   const title = working && label ? `${label} is working` : label;
   return (
     <span className={working ? "avatar-wrap working" : "avatar-wrap"} title={title}>
-      <img
-        className="avatar"
-        src={src}
-        alt={title ?? ""}
-        width={size}
-        height={size}
-        draggable={false}
-      />
+      {children}
     </span>
   );
 }
 
+/**
+ * CSS colour for a palette key — reads the `--palette-<key>` custom property
+ * (styles.css) so every surface agrees. `color` is always a key the backend
+ * resolved (CONTRACT-identity.md), never re-derived here.
+ */
+function identityColor(color: string | null | undefined): string {
+  return color ? `var(--palette-${color}, var(--text))` : "var(--text)";
+}
+
+/** Gap (each side) between an illustrated avatar's frame and the picture
+ * inside it — the frame's own background peeks through as a colour ring. */
+function ringPad(size: number): number {
+  return Math.max(2, Math.round(size * 0.07));
+}
+
+/**
+ * An agent's avatar. Resolution order (CONTRACT-identity.md + operator
+ * correction 2026-08-17):
+ *   1. `identity.emoji` — an explicit per-agent override always wins.
+ *   2. bespoke artwork, if `slug` is one of the six named retainers
+ *      (icons.ts) — the palette colour still shows as a ring/backing behind
+ *      the illustration, so an agent's colour stays consistent across every
+ *      surface even when its glyph is a picture, not a letter.
+ *   3. `identity.initial` over the resolved palette colour — everyone else.
+ * Never re-derive a colour or initial here — always read `identity`.
+ * `fallback` only covers `identity` being entirely missing (e.g. a room
+ * member slug that no longer resolves to a live agent). `slug` is omitted
+ * for previews of an agent that doesn't exist yet (hire form) — no artwork
+ * lookup is attempted without one.
+ */
+function AgentAvatar({
+  identity,
+  slug,
+  fallback,
+  label,
+  size = 28,
+  working = false,
+}: {
+  identity: AgentIdentity | null | undefined;
+  slug?: string;
+  fallback: string;
+  label?: string;
+  size?: number;
+  working?: boolean;
+}) {
+  const initial = identity?.initial || (fallback.trim().charAt(0) || "?").toUpperCase();
+  const color = identity?.color;
+  const ring = color ? `var(--palette-${color}, var(--bg-input))` : "var(--bg-input)";
+  const art = identity?.emoji ? null : slug ? agentIcon(slug) : null;
+  const pad = ringPad(size);
+  return (
+    <AvatarFrame label={label} working={working}>
+      <span
+        className="avatar avatar-badge"
+        style={{
+          width: size,
+          height: size,
+          fontSize: Math.round(size * 0.46),
+          background: ring,
+          color: color ? "var(--accent-text)" : "var(--text)",
+        }}
+        aria-hidden={label ? true : undefined}
+        role={label ? undefined : "img"}
+        aria-label={label ? undefined : "agent"}
+      >
+        {art ? (
+          <img
+            className="avatar-illustration"
+            src={art}
+            alt=""
+            width={size - pad * 2}
+            height={size - pad * 2}
+            draggable={false}
+          />
+        ) : (
+          identity?.emoji || initial
+        )}
+      </span>
+    </AvatarFrame>
+  );
+}
+
+/**
+ * The human's avatar — deliberately a different shape (rounded square, not
+ * a circle), its own accent ring, and a different colour family (a neutral,
+ * not one of the twelve agent palette keys) so the one line in a transcript
+ * that is *yours* reads as a categorically different kind of participant,
+ * not "one more agent." `you.png` is the same illustrated character family
+ * as the named-agent artwork (navy hood, gold star) — it is a PLACEHOLDER
+ * pending a bespoke glasses-and-vest render in that same style; the
+ * shape/frame/colour distinction here is what carries "different kind of
+ * participant" today, not the art itself.
+ */
+function UserAvatar({
+  label,
+  size = 28,
+  working = false,
+}: {
+  label?: string;
+  size?: number;
+  working?: boolean;
+}) {
+  const pad = ringPad(size);
+  return (
+    <AvatarFrame label={label} working={working}>
+      <span
+        className="avatar avatar-badge avatar-user"
+        style={{ width: size, height: size }}
+        aria-hidden={label ? true : undefined}
+        role={label ? undefined : "img"}
+        aria-label={label ? undefined : "you"}
+      >
+        <img
+          className="avatar-illustration"
+          src={YOU_SRC}
+          alt=""
+          width={size - pad * 2}
+          height={size - pad * 2}
+          draggable={false}
+        />
+      </span>
+    </AvatarFrame>
+  );
+}
+
+/**
+ * Generic 7-hue hash for entities the backend has no derived identity for:
+ * rooms (collapsed rail) and team-affiliation accents in the sidebar.
+ * Agents have a real backend-derived colour in `identity.color` — never call
+ * this for an agent (see `identityColor` / `AgentAvatar` above).
+ */
 const CHIP_COLORS = ["#7aa2f7", "#9ece6a", "#e0af68", "#bb9af7", "#7dcfff", "#f7768e", "#73daca"];
 
 function chipColor(name: string): string {
@@ -359,8 +485,8 @@ function RailButton({
   return (
     <button
       type="button"
-      className={`rail-item${active ? " active" : ""}${room.archived ? " archived" : ""}`}
-      style={{ color: chipColor(room.id) }}
+      className={`rail-item avatar-badge${active ? " active" : ""}${room.archived ? " archived" : ""}`}
+      style={{ background: chipColor(room.id) }}
       aria-label={room.name}
       aria-current={active ? "true" : undefined}
       title={room.name}
@@ -377,10 +503,12 @@ function MentionBody({
   text,
   members,
   handleOf,
+  agentsBySlug,
 }: {
   text: string;
   members: string[];
   handleOf: (slug: string) => string;
+  agentsBySlug: Record<string, AgentMeta>;
 }) {
   const unfenced = blankFences(text);
   const re = /@([A-Za-z0-9_][A-Za-z0-9_-]*)/g;
@@ -395,7 +523,7 @@ function MentionBody({
       <span
         key={match.index}
         className="live-mention"
-        style={{ color: chipColor(slug) }}
+        style={{ color: identityColor(agentsBySlug[slug]?.identity.color) }}
         title={`@${handleOf(slug)}`}
       >
         {text.slice(match.index, match.index + match[0].length)}
@@ -453,12 +581,14 @@ function MessageRow({
   members,
   handleOf,
   roomId,
+  agentsBySlug,
 }: {
   msg: RoomMsg;
   userName: string;
   members: string[];
   handleOf: (slug: string) => string;
   roomId: string;
+  agentsBySlug: Record<string, AgentMeta>;
 }) {
   if (msg.kind === "system") {
     return <div className="msg-system">— {msg.text} —</div>;
@@ -466,19 +596,26 @@ function MessageRow({
   const mine = msg.kind === "user";
   return (
     <div className={mine ? "msg-row mine" : "msg-row"}>
-      <Avatar
-        src={speakerIcon(msg.speaker, userName)}
-        label={mine ? userName : msg.speaker}
-        size={32}
-      />
+      {mine ? (
+        <UserAvatar label={userName} size={32} />
+      ) : (
+        <AgentAvatar
+          identity={agentsBySlug[msg.speaker]?.identity}
+          slug={msg.speaker}
+          fallback={msg.speaker}
+          label={msg.speaker}
+          size={32}
+          working={!!agentsBySlug[msg.speaker]?.busy}
+        />
+      )}
       <div className={mine ? "bubble mine" : "bubble"}>
         {!mine && (
-          <span className="chip" style={{ color: chipColor(msg.speaker) }}>
+          <span className="chip" style={{ color: identityColor(agentsBySlug[msg.speaker]?.identity.color) }}>
             {handleOf(msg.speaker) !== msg.speaker ? handleOf(msg.speaker) : msg.speaker}
           </span>
         )}
         <div className="msg-text">
-          <MentionBody text={msg.text} members={members} handleOf={handleOf} />
+          <MentionBody text={msg.text} members={members} handleOf={handleOf} agentsBySlug={agentsBySlug} />
         </div>
         <WorkspaceStrip roomId={roomId} text={msg.text} />
       </div>
@@ -547,6 +684,10 @@ function RoomView({
   const handleOf = useCallback(
     (slug: string) => mentionHandle(slug, agents, room.members),
     [agents, room.members],
+  );
+  const agentsBySlug = useMemo(
+    () => Object.fromEntries(agents.map((a) => [a.slug, a])),
+    [agents],
   );
   const mentionQuery = mentionOff ? null : mentionPartial(draft, caret);
   const mentionChoices = mentionQuery
@@ -715,13 +856,15 @@ function RoomView({
           <div className="room-members">
             {room.members.map((m) => (
               <span key={m} className="member-chip">
-                <Avatar
-                  src={agentIcon(m)}
+                <AgentAvatar
+                  identity={agentsBySlug[m]?.identity}
+                  slug={m}
+                  fallback={m}
                   label={handleOf(m)}
                   size={24}
-                  working={!!agents.find((a) => a.slug === m)?.busy}
+                  working={!!agentsBySlug[m]?.busy}
                 />
-                <span className="chip" style={{ color: chipColor(m) }}>
+                <span className="chip" style={{ color: identityColor(agentsBySlug[m]?.identity.color) }}>
                   @{handleOf(m)}
                   {room.lead === m ? " ★" : ""}
                 </span>
@@ -823,18 +966,24 @@ function RoomView({
             members={room.members}
             handleOf={handleOf}
             roomId={room.id}
+            agentsBySlug={agentsBySlug}
           />
         ))}
         {thinking[0] && (
           <div key={thinking[0]} className="msg-row">
-            <Avatar
-              src={agentIcon(thinking[0])}
+            <AgentAvatar
+              identity={agentsBySlug[thinking[0]]?.identity}
+              slug={thinking[0]}
+              fallback={thinking[0]}
               label={handleOf(thinking[0])}
               size={32}
               working
             />
             <div className="bubble thinking">
-              <span className="chip" style={{ color: chipColor(thinking[0]) }}>
+              <span
+                className="chip"
+                style={{ color: identityColor(agentsBySlug[thinking[0]]?.identity.color) }}
+              >
                 {handleOf(thinking[0])}
               </span>
               <div className="msg-text dots">thinking</div>
@@ -871,7 +1020,7 @@ function RoomView({
                 setCaret((c) => c + token.length);
               }}
             >
-              <Avatar src={agentIcon(m)} label={handleOf(m)} size={18} />
+              <AgentAvatar identity={agentsBySlug[m]?.identity} slug={m} fallback={m} label={handleOf(m)} size={18} />
               @{handleOf(m)}
             </button>
           ))}
@@ -934,7 +1083,7 @@ function RoomView({
                       setMentionPick(0);
                     }}
                   >
-                    <Avatar src={agentIcon(m)} label={handleOf(m)} size={16} />
+                    <AgentAvatar identity={agentsBySlug[m]?.identity} slug={m} fallback={m} label={handleOf(m)} size={16} />
                     @{handleOf(m)}
                     {handleOf(m) !== m ? <span className="nav-sub"> @{m}</span> : null}
                   </button>
@@ -1239,12 +1388,135 @@ function ItineraryPane({
 
 // ── forms ────────────────────────────────────────────────────────────────
 
+const PERSONA_DEFAULT: Persona = { warmth: "balanced", verbosity: "balanced", formality: "balanced" };
+
+const PERSONA_DIAL_OPTIONS: {
+  dial: keyof Persona;
+  options: { value: string; label: string }[];
+}[] = [
+  {
+    dial: "warmth",
+    options: [
+      { value: "terse", label: "Terse" },
+      { value: "balanced", label: "Balanced" },
+      { value: "warm", label: "Warm" },
+    ],
+  },
+  {
+    dial: "verbosity",
+    options: [
+      { value: "brief", label: "Brief" },
+      { value: "balanced", label: "Balanced" },
+      { value: "thorough", label: "Thorough" },
+    ],
+  },
+  {
+    dial: "formality",
+    options: [
+      { value: "casual", label: "Casual" },
+      { value: "balanced", label: "Balanced" },
+      { value: "formal", label: "Formal" },
+    ],
+  },
+];
+
+function personaIsDefault(persona: Persona): boolean {
+  return (
+    persona.warmth === PERSONA_DEFAULT.warmth &&
+    persona.verbosity === PERSONA_DEFAULT.verbosity &&
+    persona.formality === PERSONA_DEFAULT.formality
+  );
+}
+
+/**
+ * The three persona dials as segmented choices, not free text — "how it
+ * should work" already covers free-form instruction; the value here is that
+ * two agents differ *predictably*. Leaving every dial on "Balanced" changes
+ * nothing about the agent (see the hint line).
+ */
+function PersonaDials({ persona, onChange }: { persona: Persona; onChange: (next: Persona) => void }) {
+  return (
+    <div className="persona-dials">
+      <span className="field-label">
+        Persona
+        <span className="nav-sub">
+          {personaIsDefault(persona)
+            ? "Balanced on all three — leaving it here changes nothing about this agent."
+            : "Adjusted from balanced."}
+        </span>
+      </span>
+      {PERSONA_DIAL_OPTIONS.map(({ dial, options }) => (
+        <div className="persona-row" key={dial} role="group" aria-label={dial}>
+          <span className="persona-dial-label">{dial}</span>
+          <div className="segmented">
+            {options.map((opt) => (
+              <button
+                type="button"
+                key={opt.value}
+                className={persona[dial] === opt.value ? "seg-opt picked" : "seg-opt"}
+                aria-pressed={persona[dial] === opt.value}
+                onClick={() => onChange({ ...persona, [dial]: opt.value } as Persona)}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function voiceLabel(id: string, voices: Record<string, string>): string {
+  return voices[id] || id;
+}
+
+function ModelPicker({ model, models, onChange }: { model: string; models: ModelPreset[]; onChange: (v: string) => void }) {
+  if (models.length === 0) return null;
+  return (
+    <label>
+      Model
+      <select value={model} onChange={(e) => onChange(e.target.value)}>
+        <option value="">Workspace default</option>
+        {models.some((m) => !m.local) && (
+          <optgroup label="Cloud">
+            {models
+              .filter((m) => !m.local)
+              .map((m) => (
+                <option key={m.name} value={m.name}>
+                  {m.name} ({m.summary})
+                </option>
+              ))}
+          </optgroup>
+        )}
+        {models.some((m) => m.local) && (
+          <optgroup label="Local">
+            {models
+              .filter((m) => m.local)
+              .map((m) => (
+                <option key={m.name} value={m.name}>
+                  {m.name} ({m.summary})
+                </option>
+              ))}
+          </optgroup>
+        )}
+      </select>
+    </label>
+  );
+}
+
 function HirePanel({ onDone }: { onDone: (created?: AgentMeta) => void }) {
   const [name, setName] = useState("");
   const [job, setJob] = useState("");
   const [how, setHow] = useState("");
   const [model, setModel] = useState("");
   const [models, setModels] = useState<ModelPreset[]>([]);
+  const [avatarEmoji, setAvatarEmoji] = useState("");
+  const [avatarColor, setAvatarColor] = useState("");
+  const [voice, setVoice] = useState("");
+  const [persona, setPersona] = useState<Persona>(PERSONA_DEFAULT);
+  const [palette, setPalette] = useState<string[]>([]);
+  const [voices, setVoices] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState("");
   useEffect(() => {
@@ -1252,7 +1524,25 @@ function HirePanel({ onDone }: { onDone: (created?: AgentMeta) => void }) {
       .listModels()
       .then((r) => setModels(r.models))
       .catch(() => setModels([]));
+    api
+      .getPalette()
+      .then((r) => setPalette(r.colors))
+      .catch(() => setPalette([]));
+    api
+      .voiceStatus()
+      .then((v) => setVoices(v.voices))
+      .catch(() => setVoices({}));
   }, []);
+  const trimmedEmoji = avatarEmoji.trim();
+  const previewIdentity =
+    trimmedEmoji || avatarColor
+      ? {
+          emoji: trimmedEmoji || null,
+          initial: (name.trim().charAt(0) || "?").toUpperCase(),
+          color: avatarColor,
+          color_source: (avatarColor ? "override" : "derived") as "override" | "derived",
+        }
+      : undefined;
   return (
     <div className="panel">
       <h3>Hire an agent</h3>
@@ -1277,36 +1567,40 @@ function HirePanel({ onDone }: { onDone: (created?: AgentMeta) => void }) {
           placeholder="Check sources before answering. Keep replies short. Hand writing questions to the editor."
         />
       </label>
-      {models.length > 0 && (
-        <label>
-          Model
-          <select value={model} onChange={(e) => setModel(e.target.value)}>
-            <option value="">Workspace default</option>
-            {models.some((m) => !m.local) && (
-              <optgroup label="Cloud">
-                {models
-                  .filter((m) => !m.local)
-                  .map((m) => (
-                    <option key={m.name} value={m.name}>
-                      {m.name} ({m.summary})
-                    </option>
-                  ))}
-              </optgroup>
-            )}
-            {models.some((m) => m.local) && (
-              <optgroup label="Local">
-                {models
-                  .filter((m) => m.local)
-                  .map((m) => (
-                    <option key={m.name} value={m.name}>
-                      {m.name} ({m.summary})
-                    </option>
-                  ))}
-              </optgroup>
-            )}
+      <ModelPicker model={model} models={models} onChange={setModel} />
+      <div className="identity-pick">
+        <span className="field-label">Look</span>
+        <div className="identity-pick-row">
+          <AgentAvatar identity={previewIdentity} fallback={name || "?"} size={40} />
+          <input
+            value={avatarEmoji}
+            onChange={(e) => setAvatarEmoji(e.target.value)}
+            placeholder="Emoji (optional)"
+            maxLength={4}
+            aria-label="Avatar emoji"
+          />
+          <select value={avatarColor} onChange={(e) => setAvatarColor(e.target.value)} aria-label="Avatar colour">
+            <option value="">Auto (assigned from the name)</option>
+            {palette.map((c) => (
+              <option key={c} value={c}>
+                {c}
+              </option>
+            ))}
           </select>
-        </label>
-      )}
+        </div>
+      </div>
+      <label>
+        Voice
+        <select value={voice} onChange={(e) => setVoice(e.target.value)}>
+          <option value="">Auto (assigned from the name)</option>
+          {Object.entries(voices).map(([id, label]) => (
+            <option key={id} value={id}>
+              {label}
+            </option>
+          ))}
+        </select>
+      </label>
+      <PersonaDials persona={persona} onChange={setPersona} />
       {note && <p className="note">{note}</p>}
       <div className="panel-actions">
         <button onClick={() => onDone()}>Cancel</button>
@@ -1316,7 +1610,12 @@ function HirePanel({ onDone }: { onDone: (created?: AgentMeta) => void }) {
           onClick={async () => {
             setBusy(true);
             try {
-              const created = await api.hire(name, job, how, model);
+              const created = await api.hire(name, job, how, model, {
+                avatar_emoji: trimmedEmoji || undefined,
+                avatar_color: avatarColor || undefined,
+                voice: voice || undefined,
+                persona,
+              });
               setNote(
                 created.online
                   ? `${created.display_name} is hired and ready.`
@@ -1529,7 +1828,7 @@ function NewRoomPanel({
               className={picked.includes(a.slug) ? "pick picked" : "pick"}
               onClick={() => toggle(a.slug)}
             >
-              <Avatar src={agentIcon(a.slug)} label={a.slug} size={18} />
+              <AgentAvatar identity={a.identity} slug={a.slug} fallback={a.slug} label={a.slug} size={18} />
               @{a.slug}
             </button>
           ))}
@@ -1617,7 +1916,7 @@ function EditRoomPanel({
             className={picked.includes(a.slug) ? "pick picked" : "pick"}
             onClick={() => toggle(a.slug)}
           >
-            <Avatar src={agentIcon(a.slug)} label={a.slug} size={18} />
+            <AgentAvatar identity={a.identity} slug={a.slug} fallback={a.slug} label={a.slug} size={18} />
             @{a.slug}
           </button>
         ))}
@@ -1680,16 +1979,31 @@ function EditRoomPanel({
 function EditAgentPanel({
   agent,
   models,
+  palette,
+  voices,
   onDone,
 }: {
   agent: AgentMeta;
   models: ModelPreset[];
+  palette: string[];
+  voices: Record<string, string>;
   onDone: (updated?: AgentMeta) => void;
 }) {
   const [name, setName] = useState(agent.display_name || agent.slug);
   const [job, setJob] = useState(agent.job || "");
   const [how, setHow] = useState(agent.how || "");
   const [model, setModel] = useState(agent.model_preset || "");
+  // Populate from the stored overrides directly (`avatar_emoji`,
+  // `avatar_color`, `voice`) rather than inferring them from the resolved
+  // values — the backend emits both, and the stored one is ground truth for
+  // "is this actually overridden." null/"" means no override, i.e. Auto.
+  const baseEmoji = agent.avatar_emoji ?? "";
+  const baseColor = agent.avatar_color ?? "";
+  const baseVoice = (agent.voice ?? "").toLowerCase();
+  const [avatarEmoji, setAvatarEmoji] = useState(baseEmoji);
+  const [avatarColor, setAvatarColor] = useState(baseColor);
+  const [voice, setVoice] = useState(baseVoice);
+  const [persona, setPersona] = useState<Persona>(agent.persona);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState("");
   return (
@@ -1726,6 +2040,49 @@ function EditAgentPanel({
           </select>
         </label>
       )}
+      <div className="identity-pick">
+        <span className="field-label">Look</span>
+        <div className="identity-pick-row">
+          <AgentAvatar
+            identity={{
+              emoji: avatarEmoji.trim() || null,
+              initial: agent.identity.initial,
+              color: avatarColor || agent.identity.color,
+              color_source: avatarColor ? "override" : "derived",
+            }}
+            slug={agent.slug}
+            fallback={name || agent.slug}
+            size={40}
+          />
+          <input
+            value={avatarEmoji}
+            onChange={(e) => setAvatarEmoji(e.target.value)}
+            placeholder="Emoji (optional)"
+            maxLength={4}
+            aria-label="Avatar emoji"
+          />
+          <select value={avatarColor} onChange={(e) => setAvatarColor(e.target.value)} aria-label="Avatar colour">
+            <option value="">{`Auto (currently ${agent.identity.color})`}</option>
+            {palette.map((c) => (
+              <option key={c} value={c}>
+                {c}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+      <label>
+        Voice
+        <select value={voice} onChange={(e) => setVoice(e.target.value)}>
+          <option value="">{`Auto (currently sounds like ${voiceLabel(agent.voice_resolved, voices)})`}</option>
+          {Object.entries(voices).map(([id, label]) => (
+            <option key={id} value={id}>
+              {label}
+            </option>
+          ))}
+        </select>
+      </label>
+      <PersonaDials persona={persona} onChange={setPersona} />
       {note && <p className="note">{note}</p>}
       <div className="panel-actions">
         <button onClick={() => onDone()}>Cancel</button>
@@ -1737,6 +2094,17 @@ function EditAgentPanel({
             try {
               const body: AgentPatch = { name: name.trim(), job: job.trim(), how };
               if (model && model !== agent.model_preset) body.model = model;
+              const trimmedEmoji = avatarEmoji.trim();
+              if (trimmedEmoji !== baseEmoji) body.avatar_emoji = trimmedEmoji || null;
+              if (avatarColor !== baseColor) body.avatar_color = avatarColor || null;
+              if (voice !== baseVoice) body.voice = voice || null;
+              if (
+                persona.warmth !== agent.persona.warmth ||
+                persona.verbosity !== agent.persona.verbosity ||
+                persona.formality !== agent.persona.formality
+              ) {
+                body.persona = persona;
+              }
               onDone(await api.patchAgent(agent.slug, body));
             } catch (e) {
               setNote(String(e));
@@ -2095,6 +2463,8 @@ export default function App() {
   const [rooms, setRooms] = useState<RoomMeta[]>([]);
   const [agents, setAgents] = useState<AgentMeta[]>([]);
   const [models, setModels] = useState<ModelPreset[]>([]);
+  const [palette, setPalette] = useState<string[]>([]);
+  const [voices, setVoices] = useState<Record<string, string>>({});
   const [routineList, setRoutineList] = useState<RoutineMeta[]>([]);
   const [workspaceInfo, setWorkspaceInfo] = useState<WorkspaceStatus | null>(null);
   const [layout, setLayout] = useState<SidebarLayout>({ rooms: [], items: [] });
@@ -2132,6 +2502,11 @@ export default function App() {
       setModels(m.models);
       setRoutineList(rt.routines);
       setWorkspaceInfo(ws);
+      // Rarely change; harmless to refresh alongside everything else, and
+      // keeps the hire/edit panels' pickers off a running gateway rather
+      // than a second hardcoded copy (CONTRACT-identity.md).
+      api.getPalette().then((p) => setPalette(p.colors)).catch(() => {});
+      api.voiceStatus().then((v) => setVoices(v.voices)).catch(() => {});
       try {
         setLayout(await api.getSidebar());
       } catch {
@@ -2504,9 +2879,11 @@ export default function App() {
                   )}
                   <span className="nav-sub nav-faces">
                     {r.members.map((m) => (
-                      <Avatar
+                      <AgentAvatar
                         key={m}
-                        src={agentIcon(m)}
+                        identity={agentsBySlug[m]?.identity}
+                        slug={m}
+                        fallback={m}
                         label={m}
                         size={18}
                         working={!!agentsBySlug[m]?.busy}
@@ -2547,7 +2924,21 @@ export default function App() {
               </button>
             </div>
           </div>
-          {layout.items.map((item) => {
+          {(() => {
+            // Team affiliation follows sidebar position: an agent belongs to
+            // the most recent team separator above it (or no team, before
+            // the first one). Reuses `chipColor` — teams have no backend
+            // identity of their own, only agents do.
+            let openTeam: SidebarTeam | null = null;
+            const teamOfSlug = new Map<string, SidebarTeam | null>();
+            for (const it of layout.items) {
+              if (it.kind === "team") {
+                openTeam = it;
+              } else {
+                teamOfSlug.set(it.slug, openTeam);
+              }
+            }
+            return layout.items.map((item) => {
             const visIdx = visibleItemKeys.indexOf(itemKey(item));
             if (item.kind === "team") {
               const hint =
@@ -2599,10 +2990,13 @@ export default function App() {
             if (!a || (!showArchived && a.archived)) return null;
             const hint =
               dropHint?.list === "items" && dropHint.id === itemKey(item) ? dropHint.place : "";
+            const team = teamOfSlug.get(item.slug) ?? null;
             return (
               <div
                 key={item.slug}
                 className={`agent-row${a.archived ? " archived" : ""}${hint ? ` drop-${hint}` : ""}`}
+                style={team ? { borderLeftColor: chipColor(team.id) } : undefined}
+                title={team ? `Team: ${team.label}` : undefined}
                 onDragOver={(e) => {
                   e.preventDefault();
                   setDropHint({
@@ -2629,14 +3023,16 @@ export default function App() {
                   onDown={() => moveItem(itemKey(item), 1)}
                 />
                 <div className={`agent-item${needsReauth(a.auth_status) ? " needs-auth" : ""}`}>
-                  <Avatar
-                    src={agentIcon(a.slug)}
+                  <AgentAvatar
+                    identity={a.identity}
+                    slug={a.slug}
+                    fallback={a.slug}
                     label={a.display_name || a.slug}
                     size={32}
                     working={!!a.busy}
                   />
                   <div className="agent-copy">
-                    <span className="chip" style={{ color: chipColor(a.slug) }}>
+                    <span className="chip" style={{ color: identityColor(a.identity.color) }}>
                       @{a.slug}
                     </span>
                     <span className="nav-sub">
@@ -2711,7 +3107,8 @@ export default function App() {
                 />
               </div>
             );
-          })}
+            });
+          })()}
         </div>
         <label className="section-toggle">
           <input
@@ -2817,13 +3214,15 @@ export default function App() {
             </p>
             <div className="retinue-cast">
               <div className="cast-member principal">
-                <Avatar src={YOU_SRC} label={userName} size={72} />
+                <UserAvatar label={userName} size={72} />
                 <span>{userName}</span>
               </div>
               {visibleCast.map((a) => (
                 <div key={a.slug} className="cast-member">
-                  <Avatar
-                    src={agentIcon(a.slug)}
+                  <AgentAvatar
+                    identity={a.identity}
+                    slug={a.slug}
+                    fallback={a.slug}
                     label={a.display_name || a.slug}
                     size={72}
                     working={!!a.busy}
@@ -2846,13 +3245,15 @@ export default function App() {
             </p>
             <div className="retinue-cast">
               <div className="cast-member principal">
-                <Avatar src={YOU_SRC} label={userName} size={72} />
+                <UserAvatar label={userName} size={72} />
                 <span>{userName}</span>
               </div>
               {visibleCast.map((a) => (
                 <div key={a.slug} className="cast-member">
-                  <Avatar
-                    src={agentIcon(a.slug)}
+                  <AgentAvatar
+                    identity={a.identity}
+                    slug={a.slug}
+                    fallback={a.slug}
                     label={a.display_name || a.slug}
                     size={72}
                     working={!!a.busy}
@@ -2925,6 +3326,8 @@ export default function App() {
               <EditAgentPanel
                 agent={editingAgent}
                 models={models}
+                palette={palette}
+                voices={voices}
                 onDone={(updated) => {
                   setModal(null);
                   setEditingAgent(null);

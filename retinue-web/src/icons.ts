@@ -1,24 +1,22 @@
-/** Named retainers get a hand-drawn icon; everyone else hashes into the pool. */
-
+/**
+ * Bespoke hand-drawn/3D-rendered artwork exists for six named retainer
+ * slugs — commissioned, on-brand character illustrations, not placeholders.
+ * Everyone else falls back to the identity system's initial-over-colour
+ * badge (see `AgentAvatar` in App.tsx), not a shared placeholder pool: a
+ * pool of 3 images reused across every unnamed agent is exactly the "they
+ * all look the same" problem #78 exists to fix.
+ */
 const NAMED = new Set(["admin", "editor", "envoy", "janitor", "scout", "scribe"]);
-const POOL = 3;
 
 export const LOGO_SRC = "icons/logo.png";
+/** Same illustrated character family as the named agents (navy hood, gold
+ * star) — a PLACEHOLDER pending a bespoke glasses-and-vest render for the
+ * user in that same art style. See `UserAvatar` in App.tsx. */
 export const YOU_SRC = "icons/you.png";
 
-function hashSlug(slug: string): number {
-  let h = 0;
-  for (const c of slug) h = (h * 31 + c.charCodeAt(0)) >>> 0;
-  return h;
-}
-
-export function agentIcon(slug: string): string {
+/** PNG path for one of the six named slugs, or null — never a shared pool
+ * fallback. Callers fall back to the identity badge when this is null. */
+export function agentIcon(slug: string): string | null {
   const s = (slug || "").toLowerCase();
-  if (NAMED.has(s)) return `icons/agents/${s}.png`;
-  return `icons/pool/${hashSlug(s) % POOL}.png`;
-}
-
-export function speakerIcon(speaker: string, userName: string): string {
-  if (!speaker || speaker === userName || speaker === "You") return YOU_SRC;
-  return agentIcon(speaker);
+  return NAMED.has(s) ? `icons/agents/${s}.png` : null;
 }

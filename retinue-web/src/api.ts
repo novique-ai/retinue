@@ -49,6 +49,33 @@ export interface ReauthSession {
   evicted?: number;
 }
 
+/**
+ * Backend-computed per-agent visual identity (CONTRACT-identity.md). Render
+ * from these fields directly — the derivation hash lives on the backend
+ * only, so the frontend must never recompute `color` or a colour-source
+ * itself, only display what the server already resolved.
+ */
+export interface AgentIdentity {
+  /** Override emoji, or null — fall back to `initial` when null. */
+  emoji: string | null;
+  /** First character of display_name, uppercased. Always non-empty. */
+  initial: string;
+  /** A palette key (see `api.getPalette`), never a CSS colour. */
+  color: string;
+  color_source: "override" | "derived";
+}
+
+export type PersonaWarmth = "terse" | "balanced" | "warm";
+export type PersonaVerbosity = "brief" | "balanced" | "thorough";
+export type PersonaFormality = "casual" | "balanced" | "formal";
+
+/** The three persona dials. Always present on an agent; default "balanced". */
+export interface Persona {
+  warmth: PersonaWarmth;
+  verbosity: PersonaVerbosity;
+  formality: PersonaFormality;
+}
+
 export interface AgentMeta {
   display_name: string;
   slug: string;
@@ -67,6 +94,21 @@ export interface AgentMeta {
   auth_status?: AuthStatus;
   auth_provider?: string | null;
   auth_error?: string | null;
+  identity: AgentIdentity;
+  /** The override voice id, or the one derived from the slug. */
+  voice_resolved: string;
+  /**
+   * The stored override, or null when there is none (voice is derived).
+   * Backend lowercases on write — compare case-insensitively against
+   * `GET /voice` ids.
+   */
+  voice: string | null;
+  /** Stored override — same value as `identity.emoji`, included at the top
+   * level too so a form can populate from it directly. */
+  avatar_emoji: string | null;
+  /** Stored override, or null when `identity.color_source === "derived"`. */
+  avatar_color: string | null;
+  persona: Persona;
 }
 
 export interface SidebarTeam {
@@ -103,6 +145,13 @@ export interface AgentPatch {
   how?: string;
   model?: string;
   archived?: boolean;
+  /** null clears the override and falls back to the initial. */
+  avatar_emoji?: string | null;
+  /** A palette key, or null to fall back to the derived colour. */
+  avatar_color?: string | null;
+  /** A voice id, or null to fall back to the derived voice. */
+  voice?: string | null;
+  persona?: Persona;
 }
 
 export interface Principal {
@@ -326,8 +375,30 @@ export const api = {
     req<{ seq: number; planned: string[] }>("POST", `/rooms/${id}/messages`, { text, from }),
   listAgents: () => req<{ agents: AgentMeta[] }>("GET", "/agents"),
   listModels: () => req<{ models: ModelPreset[] }>("GET", "/models"),
-  hire: (name: string, job: string, how: string, model?: string) =>
-    req<AgentMeta>("POST", "/agents", { name, job, how, model: model || undefined }),
+  /**
+   * The twelve palette keys, in the backend's stable order (do not
+   * hardcode a second copy — see CONTRACT-identity.md).
+   */
+  getPalette: () => req<{ colors: string[] }>("GET", "/identity/palette"),
+  hire: (
+    name: string,
+    job: string,
+    how: string,
+    model?: string,
+    identity?: {
+      avatar_emoji?: string;
+      avatar_color?: string;
+      voice?: string;
+      persona?: Persona;
+    },
+  ) =>
+    req<AgentMeta>("POST", "/agents", {
+      name,
+      job,
+      how,
+      model: model || undefined,
+      ...identity,
+    }),
   switchModel: (slug: string, model: string) =>
     req<AgentMeta>("PATCH", `/agents/${slug}`, { model }),
   patchAgent: (slug: string, body: AgentPatch) =>
