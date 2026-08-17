@@ -422,6 +422,134 @@ function RowMenu({
   );
 }
 
+/**
+ * Chip-level "…" menu for a room member. A naked × on a 24px avatar is too
+ * easy to miss-hit, so removal is two clicks: open the menu, then confirm.
+ */
+function MemberMenu({
+  onRemove,
+  disabledReason,
+}: {
+  onRemove: () => void;
+  disabledReason: string | null;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const close = (e: MouseEvent) => {
+      if (!ref.current?.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
+  }, [open]);
+  return (
+    <div className="row-menu-wrap" ref={ref}>
+      <button
+        type="button"
+        className="mini"
+        title="Member options"
+        onClick={(e) => {
+          e.stopPropagation();
+          setOpen((v) => !v);
+        }}
+      >
+        ⋯
+      </button>
+      {open && (
+        <div className="row-menu">
+          {disabledReason ? (
+            <span className="row-menu-note">{disabledReason}</span>
+          ) : (
+            <button
+              type="button"
+              className="danger"
+              onClick={(e) => {
+                e.stopPropagation();
+                setOpen(false);
+                onRemove();
+              }}
+            >
+              Remove from room
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Room-header invite control. Only agents not already in the room are
+ * offered. The 20-message window is stated up front so the newcomer's
+ * blind spot isn't a surprise.
+ */
+function InviteMenu({
+  candidates,
+  onInvite,
+}: {
+  candidates: AgentMeta[];
+  onInvite: (slug: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const close = (e: MouseEvent) => {
+      if (!ref.current?.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
+  }, [open]);
+  return (
+    <div className="invite-wrap" ref={ref}>
+      <button
+        type="button"
+        className="mini wide"
+        title="Invite an agent into this room"
+        onClick={(e) => {
+          e.stopPropagation();
+          setOpen((v) => !v);
+        }}
+      >
+        + invite
+      </button>
+      {open && (
+        <div className="invite-menu">
+          <p className="invite-note">
+            New members see roughly the last 20 messages, not the full transcript.
+          </p>
+          {candidates.length === 0 ? (
+            <p className="invite-empty">Everyone available is already here.</p>
+          ) : (
+            candidates.map((a) => (
+              <button
+                key={a.slug}
+                type="button"
+                className="invite-opt"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setOpen(false);
+                  onInvite(a.slug);
+                }}
+              >
+                <AgentAvatar
+                  identity={a.identity}
+                  slug={a.slug}
+                  fallback={a.slug}
+                  label={a.display_name || a.slug}
+                  size={20}
+                />
+                @{a.slug}
+              </button>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** Keyboard-accessible move-up / move-down for sidebar rows (pairs with drag). */
 function ReorderButtons({
   what,
@@ -632,6 +760,7 @@ function RoomView({
   onEdit,
   onArchive,
   onDelete,
+  onRoomUpdate,
   sidebarCollapsed,
   onToggleSidebar,
 }: {
@@ -641,6 +770,7 @@ function RoomView({
   onEdit: () => void;
   onArchive: () => void;
   onDelete: () => void;
+  onRoomUpdate: (updated: RoomMeta) => void;
   sidebarCollapsed: boolean;
   onToggleSidebar: () => void;
 }) {
@@ -786,6 +916,33 @@ function RoomView({
     }
   }, [messages, speakReplies]);
 
+  const inviteCandidates = useMemo(
+    () => agents.filter((a) => !a.archived && !room.members.includes(a.slug)),
+    [agents, room.members],
+  );
+
+  const inviteMember = useCallback(
+    async (slug: string) => {
+      try {
+        onRoomUpdate(await api.inviteMember(room.id, slug));
+      } catch (e) {
+        alert(String(e));
+      }
+    },
+    [room.id, onRoomUpdate],
+  );
+
+  const removeMember = useCallback(
+    async (slug: string) => {
+      try {
+        onRoomUpdate(await api.removeMember(room.id, slug));
+      } catch (e) {
+        alert(String(e));
+      }
+    },
+    [room.id, onRoomUpdate],
+  );
+
   const send = useCallback(async () => {
     const text = draft.trim();
     if ((!text && pendingFiles.length === 0) || sending) return;
@@ -868,8 +1025,15 @@ function RoomView({
                   @{handleOf(m)}
                   {room.lead === m ? " ★" : ""}
                 </span>
+                <MemberMenu
+                  disabledReason={
+                    room.members.length <= 1 ? "A room needs at least one member" : null
+                  }
+                  onRemove={() => void removeMember(m)}
+                />
               </span>
             ))}
+            <InviteMenu candidates={inviteCandidates} onInvite={(slug) => void inviteMember(slug)} />
           </div>
         </div>
         <div className="room-header-actions">
@@ -3190,6 +3354,10 @@ export default function App() {
             }}
             onArchive={() => void archiveRoom(current)}
             onDelete={() => void deleteRoom(current)}
+            onRoomUpdate={(updated) => {
+              setCurrent(updated);
+              void refresh();
+            }}
             sidebarCollapsed={sidebarCollapsed}
             onToggleSidebar={toggleSidebar}
           />
