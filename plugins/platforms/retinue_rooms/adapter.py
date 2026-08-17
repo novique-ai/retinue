@@ -40,7 +40,7 @@ from gateway.platforms.base import (
     SendResult,
 )
 
-from . import attachments, auth, engine, hire, ide, itinerary, keepalive, principal, routines, sidebar, voice, workspace
+from . import attachments, auth, engine, hire, ide, identity, itinerary, keepalive, principal, routines, sidebar, voice, workspace
 from .engine import KIND_AGENT, KIND_SYSTEM, KIND_USER, Room, RoomMessage
 from .store import RoomStore
 
@@ -573,6 +573,14 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             persona["how"] = str(body.get("how") or "")
         if "archived" in body:
             persona["archived"] = bool(body.get("archived"))
+        if "avatar_emoji" in body:
+            persona["avatar_emoji"] = body.get("avatar_emoji")
+        if "avatar_color" in body:
+            persona["avatar_color"] = body.get("avatar_color")
+        if "voice" in body:
+            persona["voice"] = body.get("voice")
+        if "persona" in body:
+            persona["persona"] = body.get("persona")
         if not model and not persona:
             raise ValueError("nothing to update")
         if persona:
@@ -635,14 +643,30 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         return auth.start_reauth(provider, on_success=_after)
 
     def hire_agent(
-        self, name: str, job: str, how: str, model: Optional[str] = None
+        self,
+        name: str,
+        job: str,
+        how: str,
+        model: Optional[str] = None,
+        avatar_emoji: Any = None,
+        avatar_color: Any = None,
+        voice: Any = None,
+        persona: Any = None,
     ) -> Dict[str, Any]:
         try:
             hire.ensure_bundled_cloud_presets(self._home_dir())
         except Exception:
             logger.debug("Retinue rooms: preset seed on hire failed", exc_info=True)
         meta = hire.scaffold_profile(
-            self._home_dir(), name, job, how, model_preset=model
+            self._home_dir(),
+            name,
+            job,
+            how,
+            model_preset=model,
+            avatar_emoji=avatar_emoji,
+            avatar_color=avatar_color,
+            voice=voice,
+            persona=persona,
         )
         activation = self._activate_slug(meta["slug"])
         meta["online"] = bool(activation.get("online"))
@@ -926,6 +950,7 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
                 for item in attachments.list_uploads(self._home_dir(), room.id)
             ],
             principal_about=str(me.get("about") or "") or None,
+            principal_name=str(me.get("display_name") or "") or None,
         )
 
         speaker_display = (
@@ -1222,6 +1247,7 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
         "sidebar",
         "auth",
         "principal",
+        "identity",
     )
 
     def do_GET(self):
@@ -1277,7 +1303,9 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
             except ValueError as e:
                 return self._json(400, {"error": str(e)})
         if parts == ["voice"]:
-            return self._json(200, voice.status())
+            return self._json(200, voice.status(adapter._home_dir()))
+        if parts == ["identity", "palette"]:
+            return self._json(200, identity.palette_payload())
         if parts == ["sidebar"]:
             return self._json(200, adapter.get_sidebar())
         if parts == ["auth"] or (len(parts) == 2 and parts[0] == "auth" and parts[1] == "reauth"):
@@ -1454,7 +1482,9 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
         text = str(body.get("text") or "")
         speaker = str(body.get("speaker") or body.get("voice") or "")
         try:
-            audio = voice.synthesize_dispatch(text, speaker)
+            audio = voice.synthesize_dispatch(
+                text, speaker, home_dir=self.server.adapter._home_dir()
+            )
         except voice.VoiceError as e:
             return self._json(502, {"error": str(e)})
         ctype = "audio/wav" if audio[:4] == b"RIFF" else "audio/mpeg"
@@ -1502,6 +1532,10 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
                     job=str(body.get("job") or ""),
                     how=str(body.get("how") or ""),
                     model=str(body.get("model") or "") or None,
+                    avatar_emoji=body.get("avatar_emoji") if "avatar_emoji" in body else None,
+                    avatar_color=body.get("avatar_color") if "avatar_color" in body else None,
+                    voice=body.get("voice") if "voice" in body else None,
+                    persona=body.get("persona") if "persona" in body else None,
                 )
             except ValueError as e:
                 return self._json(400, {"error": str(e)})

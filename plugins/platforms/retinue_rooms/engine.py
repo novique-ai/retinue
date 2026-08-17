@@ -430,6 +430,7 @@ def room_briefing(
     itinerary: Optional[Dict[str, Any]] = None,
     artifacts: Optional[List[str]] = None,
     principal_about: Optional[str] = None,
+    principal_name: Optional[str] = None,
 ) -> str:
     """Per-turn channel prompt: who you are, who is here, how to behave."""
     names = display_names or {}
@@ -477,6 +478,20 @@ def room_briefing(
     if principal_about:
         who = people.split(",")[0].strip() if people else "the human"
         parts.append(f"About {who}: {principal_about}")
+    # The principal is workspace state, not agent state — guidance lives
+    # here, not in SOUL.md. Skip the literal default "You": addressing
+    # someone as "You" is worse than not addressing them at all.
+    # "Occasionally" is the whole difficulty: a rule the model can satisfy
+    # by maximising becomes every reply. Name the occasions, and say not
+    # every message.
+    name = (principal_name or "").strip()
+    if name and name != "You":
+        parts.append(
+            f"The human's name is {name}. Use it the way a colleague would: "
+            f"when you greet them, when you hand something back, or when you "
+            f"re-engage after time away. Most messages should not use their "
+            f"name — do not add it to every reply."
+        )
     if artifacts:
         parts.append("Work already in this room: " + ", ".join(artifacts) + ".")
         parts.append("Reuse those paths when the user asks to see them again.")
