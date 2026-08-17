@@ -196,6 +196,11 @@ function chipColor(name: string): string {
   return CHIP_COLORS[h % CHIP_COLORS.length];
 }
 
+/** User-facing agent label: display name, falling back to slug. No `@` prefix. */
+function agentLabel(a: AgentMeta): string {
+  return a.display_name || a.slug;
+}
+
 const MENTION_TOKEN = /^[A-Za-z0-9_][A-Za-z0-9_-]*$/;
 
 function mentionHandle(slug: string, agents: AgentMeta[], members: string[]): string {
@@ -537,10 +542,10 @@ function InviteMenu({
                   identity={a.identity}
                   slug={a.slug}
                   fallback={a.slug}
-                  label={a.display_name || a.slug}
+                  label={agentLabel(a)}
                   size={20}
                 />
-                @{a.slug}
+                {agentLabel(a)}
               </button>
             ))
           )}
@@ -1992,8 +1997,8 @@ function NewRoomPanel({
               className={picked.includes(a.slug) ? "pick picked" : "pick"}
               onClick={() => toggle(a.slug)}
             >
-              <AgentAvatar identity={a.identity} slug={a.slug} fallback={a.slug} label={a.slug} size={18} />
-              @{a.slug}
+              <AgentAvatar identity={a.identity} slug={a.slug} fallback={a.slug} label={agentLabel(a)} size={18} />
+              {agentLabel(a)}
             </button>
           ))}
         {agents.filter((a) => !a.archived).length === 0 && (
@@ -2005,11 +2010,14 @@ function NewRoomPanel({
           Lead (answers when nobody is mentioned)
           <select value={lead} onChange={(e) => setLead(e.target.value)}>
             <option value="">first member</option>
-            {picked.map((m) => (
-              <option key={m} value={m}>
-                @{m}
-              </option>
-            ))}
+            {picked.map((m) => {
+              const agent = agents.find((a) => a.slug === m);
+              return (
+                <option key={m} value={m}>
+                  {agent ? agentLabel(agent) : m}
+                </option>
+              );
+            })}
           </select>
         </label>
       )}
@@ -2080,8 +2088,8 @@ function EditRoomPanel({
             className={picked.includes(a.slug) ? "pick picked" : "pick"}
             onClick={() => toggle(a.slug)}
           >
-            <AgentAvatar identity={a.identity} slug={a.slug} fallback={a.slug} label={a.slug} size={18} />
-            @{a.slug}
+            <AgentAvatar identity={a.identity} slug={a.slug} fallback={a.slug} label={agentLabel(a)} size={18} />
+            {agentLabel(a)}
           </button>
         ))}
       </div>
@@ -2090,11 +2098,14 @@ function EditRoomPanel({
           Lead (answers when nobody is mentioned)
           <select value={lead} onChange={(e) => setLead(e.target.value)}>
             <option value="">first member</option>
-            {picked.map((m) => (
-              <option key={m} value={m}>
-                @{m}
-              </option>
-            ))}
+            {picked.map((m) => {
+              const agent = agents.find((a) => a.slug === m);
+              return (
+                <option key={m} value={m}>
+                  {agent ? agentLabel(agent) : m}
+                </option>
+              );
+            })}
           </select>
         </label>
       )}
@@ -3180,7 +3191,7 @@ export default function App() {
                   ⋮⋮
                 </span>
                 <ReorderButtons
-                  what={`agent @${a.slug}`}
+                  what={`agent ${agentLabel(a)}`}
                   canUp={visIdx > 0}
                   canDown={visIdx >= 0 && visIdx < visibleItemKeys.length - 1}
                   onUp={() => moveItem(itemKey(item), -1)}
@@ -3191,13 +3202,13 @@ export default function App() {
                     identity={a.identity}
                     slug={a.slug}
                     fallback={a.slug}
-                    label={a.display_name || a.slug}
+                    label={agentLabel(a)}
                     size={32}
                     working={!!a.busy}
                   />
                   <div className="agent-copy">
                     <span className="chip" style={{ color: identityColor(a.identity.color) }}>
-                      @{a.slug}
+                      {agentLabel(a)}
                     </span>
                     <span className="nav-sub">
                       {a.job || "hand-made profile"}
@@ -3391,11 +3402,11 @@ export default function App() {
                     identity={a.identity}
                     slug={a.slug}
                     fallback={a.slug}
-                    label={a.display_name || a.slug}
+                    label={agentLabel(a)}
                     size={72}
                     working={!!a.busy}
                   />
-                  <span>@{a.slug}</span>
+                  <span>{agentLabel(a)}</span>
                 </div>
               ))}
             </div>
@@ -3422,11 +3433,11 @@ export default function App() {
                     identity={a.identity}
                     slug={a.slug}
                     fallback={a.slug}
-                    label={a.display_name || a.slug}
+                    label={agentLabel(a)}
                     size={72}
                     working={!!a.busy}
                   />
-                  <span>@{a.slug}</span>
+                  <span>{agentLabel(a)}</span>
                 </div>
               ))}
             </div>
