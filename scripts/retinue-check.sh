@@ -24,10 +24,10 @@ fi
 echo "==> pytest plugins/platforms/retinue_rooms  (using $PYTEST)"
 "$PYTEST" plugins/platforms/retinue_rooms -q
 
-echo "==> retinue-web build (tsc + vite)"
+echo "==> retinue-web PTT tests + build (tsc + vite)"
 if [[ ! -d retinue-web/node_modules ]]; then
   (cd retinue-web && npm ci)
 fi
-(cd retinue-web && npm run build)
+(cd retinue-web && node --experimental-strip-types --test src/voice/ptt.test.ts && npm run build)
 
 echo "==> retinue-check ok"

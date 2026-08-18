@@ -51,10 +51,11 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: retinue-web/package-lock.json
-      - name: Install and build retinue-web
+      - name: Install, test, and build retinue-web
         working-directory: retinue-web
         run: |
           npm ci
+          node --experimental-strip-types --test src/voice/ptt.test.ts
           npm run build
 
   retinue-delta:

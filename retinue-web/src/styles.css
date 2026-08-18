@@ -955,6 +955,14 @@ select:focus {
   cursor: default;
 }
 
+/*
+ * PTT surface only. Android Chrome / Samsung Internet treat a long-press
+ * on a button as a *page* gesture (Back / Forward / Reload / Download)
+ * unless this control opts out of panning, selection, and the touch
+ * callout. Pointer capture + contextmenu prevention live in the PTT
+ * hook. Do not delete these — they are the cross-platform PTT contract,
+ * not visual polish. Do not copy them onto the rest of the UI.
+ */
 .talk-btn {
   background: var(--bg-input);
   color: var(--text);
@@ -965,6 +973,9 @@ select:focus {
   cursor: pointer;
   white-space: nowrap;
   user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-user-drag: none;
   touch-action: none;
 }
 

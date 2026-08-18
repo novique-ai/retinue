@@ -49,6 +49,8 @@ import {
 } from "./cron";
 import { LOGO_SRC, YOU_SRC, agentIcon } from "./icons";
 import { includeBusyThinkers, remainingThinkers, remainingThinkersAfter } from "./thinking";
+import { PushToTalkButton } from "./voice/PushToTalkButton";
+import { usePushToTalk } from "./voice/usePushToTalk";
 
 /** Shared outer ring/tooltip/working-pulse frame for every avatar shape. */
 function AvatarFrame({
@@ -828,7 +830,6 @@ function RoomView({
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [thinking, setThinking] = useState<string[]>([]);
-  const [holding, setHolding] = useState(false);
   const [voiceNote, setVoiceNote] = useState("");
   const [voice, setVoice] = useState<VoiceStatus | null>(null);
   const [speakReplies, setSpeakReplies] = useState(
@@ -847,6 +848,7 @@ function RoomView({
   const draftTextRef = useRef(draft);
   draftTextRef.current = draft;
   const micRef = useRef<{ stop: () => Promise<Blob> } | null>(null);
+  const talkMountedRef = useRef(true);
   const [caret, setCaret] = useState(0);
   const [mentionPick, setMentionPick] = useState(0);
   const [mentionOff, setMentionOff] = useState(false);
@@ -1096,45 +1098,60 @@ function RoomView({
     }
   }, [draft, sending, pendingFiles, room.id, userName]);
 
-  const beginTalk = useCallback(async () => {
-    if (sending || holding) return;
+  const onTalkEngage = useCallback(async () => {
     setVoiceNote("");
-    try {
-      micRef.current = await startMic();
-      setHolding(true);
-    } catch (e) {
-      setVoiceNote(String(e));
-    }
-  }, [sending, holding]);
+    micRef.current = await startMic();
+  }, []);
 
-  const endTalk = useCallback(async () => {
-    const rec = micRef.current;
-    micRef.current = null;
-    setHolding(false);
-    if (!rec) return;
-    const prefix = draftTextRef.current.trim();
-    stickToBottomRef.current = true;
-    setSending(true);
-    setVoiceNote("transcribing…");
-    try {
+  const onTalkRelease = useCallback(
+    async ({ committed }: { committed: boolean }) => {
+      const rec = micRef.current;
+      micRef.current = null;
+      if (!rec) return;
       const blob = await rec.stop();
-      const { planned, text } = await api.sendAudio(room.id, blob, userName, {
-        draft: prefix,
-      });
-      if (roomRef.current !== room.id) return;
-      setThinking(remainingThinkersAfter(planned, messagesRef.current));
-      setVoiceNote(text ? `Heard: ${text}` : "");
-      if (prefix) {
-        setDraft("");
-        setCaret(0);
-        setMentionOff(false);
+      // Unmount / room switch: stop the tracks, do not upload or setState.
+      if (!committed || !talkMountedRef.current) return;
+      const prefix = draftTextRef.current.trim();
+      stickToBottomRef.current = true;
+      setSending(true);
+      setVoiceNote("transcribing…");
+      try {
+        const { planned, text } = await api.sendAudio(room.id, blob, userName, {
+          draft: prefix,
+        });
+        if (roomRef.current !== room.id || !talkMountedRef.current) return;
+        setThinking(remainingThinkersAfter(planned, messagesRef.current));
+        setVoiceNote(text ? `Heard: ${text}` : "");
+        if (prefix) {
+          setDraft("");
+          setCaret(0);
+          setMentionOff(false);
+        }
+      } catch (e) {
+        if (talkMountedRef.current) setVoiceNote(String(e));
+      } finally {
+        if (talkMountedRef.current) setSending(false);
       }
-    } catch (e) {
-      setVoiceNote(String(e));
-    } finally {
-      setSending(false);
-    }
-  }, [room.id, userName]);
+    },
+    [room.id, userName],
+  );
+
+  const ptt = usePushToTalk({
+    disabled: sending,
+    onEngage: onTalkEngage,
+    onRelease: onTalkRelease,
+    onError: (e) => {
+      if (talkMountedRef.current) setVoiceNote(String(e));
+    },
+  });
+  // Registered after usePushToTalk so this cleanup runs first on unmount
+  // (later effects tear down first) and dispose() sees mounted = false.
+  useEffect(() => {
+    talkMountedRef.current = true;
+    return () => {
+      talkMountedRef.current = false;
+    };
+  }, []);
 
   const stopTurn = useCallback(async () => {
     cutSpeak();
@@ -1479,24 +1496,16 @@ function RoomView({
               rows={2}
             />
           </div>
-          <button
-            className={holding ? "talk-btn holding" : "talk-btn"}
+          <PushToTalkButton
+            active={ptt.active}
             disabled={sending}
             title={
               voice && !voice.ready
                 ? `Voice not ready (${voice.backend}): ${voice.detail}`
                 : "Hold to talk"
             }
-            onPointerDown={(e) => {
-              e.preventDefault();
-              (e.currentTarget as HTMLButtonElement).setPointerCapture(e.pointerId);
-              void beginTalk();
-            }}
-            onPointerUp={() => void endTalk()}
-            onPointerCancel={() => void endTalk()}
-          >
-            {holding ? "Listening…" : "Hold to talk"}
-          </button>
+            bind={ptt.bind}
+          />
           <button
             className="send-btn"
             disabled={sending || (!draft.trim() && pendingFiles.length === 0)}
