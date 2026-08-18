@@ -2407,14 +2407,17 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             pconfig = config.platforms.get(platform)
             runtime_adapter = None
 
-        if transport is not None and transport.is_relay:
-            # A relay transport carries the RELAY adapter's config, and
-            # resolve_delivery_transport already applied relay's enablement
-            # rule (config block absent OR enabled). The logical platform is
-            # deliberately NOT natively enabled in a relay-fronted deployment
-            # (its credential lives in the connector), so the native
-            # configured/enabled gate below must not apply — it used to
-            # reject exactly the targets the relay was resolved to serve.
+        if transport is not None:
+            # resolve_delivery_transport already applied the enablement rule
+            # for both transport kinds: it returns a transport only when the
+            # backing config block is absent or enabled. A resolved transport
+            # whose config is None therefore means "live adapter, no config
+            # block", not "disabled".
+            #
+            # Native plugin platforms may be served by a live adapter while a
+            # profile has no platforms block. Relay transports likewise carry
+            # the relay adapter's config while the logical platform remains
+            # unconfigured. One rule covers both cases.
             if pconfig is None:
                 from gateway.config import PlatformConfig
                 pconfig = PlatformConfig(enabled=True)
