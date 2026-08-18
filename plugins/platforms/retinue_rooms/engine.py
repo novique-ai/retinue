@@ -38,6 +38,9 @@ INVITE_TRANSCRIPT_WINDOW = 20
 _TOKEN_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_-]*")
 _MENTION_RE = re.compile(r"@(" + _TOKEN_RE.pattern + r")")
 
+# User-only broadcast. Reserved — do not hire a retainer whose slug is ``room``.
+ROOM_BROADCAST_TOKEN = "room"
+
 
 @dataclass
 class RoomMessage:
@@ -248,14 +251,34 @@ def parse_mentions(
     return seen
 
 
+def has_room_broadcast(text: str) -> bool:
+    """True when the user addressed ``@room`` (not inside a fence)."""
+    for match in _MENTION_RE.finditer(blank_fences(text or "")):
+        if match.group(1).lower() == ROOM_BROADCAST_TOKEN:
+            return True
+    return False
+
+
 def plan_user_turns(
     room: Room,
     text: str,
     display_names: Optional[Dict[str, str]] = None,
 ) -> List[str]:
     """Turn queue for a fresh user message: mentioned members in mention
-    order, else the room's default responder."""
+    order, else the room's default responder.
+
+    ``@room`` (user messages only) addresses every current member.
+    Explicit ``@Name``s keep their mention order at the front; the rest
+    of the roster follows. Agent replies that say ``@room`` do not
+    expand — that path still uses ``parse_mentions`` only.
+    """
     mentioned = parse_mentions(text, room.members, display_names)
+    if has_room_broadcast(text):
+        ordered = list(mentioned)
+        for member in room.members:
+            if member not in ordered:
+                ordered.append(member)
+        return ordered
     if mentioned:
         return mentioned
     responder = room.default_responder()
