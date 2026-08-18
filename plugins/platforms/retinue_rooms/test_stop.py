@@ -239,3 +239,81 @@ def test_stop_http_idle_and_missing(tmp_path, monkeypatch):
         httpd.shutdown()
         httpd.server_close()
         thread.join(timeout=3)
+
+
+def test_no_op_turn_is_never_spoken_as_the_member(tmp_path, monkeypatch):
+    """A member queued with nothing unseen must not apologise for it.
+
+    Regression for novique-ai/retinue#132: the room posted
+    FALLBACK_GENERIC as a KIND_AGENT line from the member, so a pure
+    scheduling no-op read as the retainer failing at the work.
+    """
+    adapter = _adapter(tmp_path, monkeypatch)
+    room = _room(members=["scout"], lead="scout")
+    adapter.store.create(room)
+    user_message = adapter.store.append(
+        room.id,
+        RoomMessage(seq=0, ts=0, kind=KIND_USER, speaker="Mark", text="hello"),
+    )
+    # scout has already read everything, which is what makes the turn a no-op.
+    adapter.store.touch_last_seen(room.id, "scout", user_message.seq)
+    room = adapter.store.get(room.id)
+
+    asyncio.run(_run_locked(adapter, room, user_message))
+
+    kinds = _kinds(adapter.store, room.id)
+    assert not any(kind == KIND_AGENT for kind, _speaker, _text in kinds)
+    assert engine.FALLBACK_GENERIC not in [text for _k, _s, text in kinds]
+    # Nothing was attempted, so the room does not announce a turn either.
+    assert "scout is on it." not in _system_texts(adapter.store, room.id)
+
+
+def test_timed_out_turn_reports_as_the_room_not_the_member(tmp_path, monkeypatch):
+    """A turn that ran and never answered is the room's news.
+
+    Regression for novique-ai/retinue#133: a 300s timeout was rendered as
+    FALLBACK_GENERIC in the member's voice, indistinguishable from a real
+    empty answer. It must be a system did-not-reply line, which is also
+    what clears the thinking indicator.
+    """
+    adapter = _adapter(tmp_path, monkeypatch)
+    room = _room(members=["scout"], lead="scout")
+    adapter.store.create(room)
+    user_message = adapter.store.append(
+        room.id,
+        RoomMessage(seq=0, ts=0, kind=KIND_USER, speaker="Mark", text="hello"),
+    )
+
+    async def fake_turn(_room, member):
+        return False, "no reply within 300s"
+
+    monkeypatch.setattr(adapter, "_agent_turn", fake_turn)
+    asyncio.run(_run_locked(adapter, room, user_message))
+
+    kinds = _kinds(adapter.store, room.id)
+    assert not any(kind == KIND_AGENT for kind, _speaker, _text in kinds)
+    notice = engine.did_not_reply_notice("scout", "no reply within 300s")
+    assert notice in _system_texts(adapter.store, room.id)
+    # The slug prefix is the contract turn_concludes_waiter parses.
+    assert engine.turn_concludes_waiter(
+        RoomMessage(seq=0, ts=0, kind=KIND_SYSTEM, speaker="room", text=notice), "scout"
+    )
+
+
+def test_real_empty_answer_still_speaks_the_fallback(tmp_path, monkeypatch):
+    """The apology keeps its real job: a turn that ran and returned nothing."""
+    adapter = _adapter(tmp_path, monkeypatch)
+    room = _room(members=["scout"], lead="scout")
+    adapter.store.create(room)
+    user_message = adapter.store.append(
+        room.id,
+        RoomMessage(seq=0, ts=0, kind=KIND_USER, speaker="Mark", text="what is the status"),
+    )
+
+    async def fake_turn(_room, member):
+        return True, "   "
+
+    monkeypatch.setattr(adapter, "_agent_turn", fake_turn)
+    asyncio.run(_run_locked(adapter, room, user_message))
+
+    assert (KIND_AGENT, "scout", engine.FALLBACK_GENERIC) in _kinds(adapter.store, room.id)

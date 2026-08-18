@@ -657,6 +657,23 @@ def fallback_reply(trigger_text: str) -> str:
     return FALLBACK_GENERIC
 
 
+# A planned turn can end without an agent message for reasons that are not
+# the retainer failing at anything. Rendering all of them as the apology
+# above tells the human their retainer broke when it did not: the queue
+# simply had nothing for it to read, or a newer turn replaced it.
+NO_OP_TURN_REASONS = frozenset(
+    {
+        "nothing new to respond to",
+        "superseded by a newer turn",
+    }
+)
+
+
+def turn_is_no_op(reason: str) -> bool:
+    """True when a turn ended for a scheduling reason, not a real attempt."""
+    return (reason or "") in NO_OP_TURN_REASONS
+
+
 def room_briefing(
     room: Room,
     member: str,
