@@ -12,12 +12,14 @@ export type TranscriptMsg = {
 
 const CYCLE_INTERNAL_ERROR_PREFIX = "internal error running the turn cycle";
 const CYCLE_BUDGET_PREFIX = "turn budget";
+const CYCLE_STOPPED_PREFIX = "Stopped.";
 const DID_NOT_REPLY_INFIX = " did not reply (";
 
 export function isCycleAbortNotice(text: string): boolean {
   return (
     text.startsWith(CYCLE_INTERNAL_ERROR_PREFIX) ||
-    text.startsWith(CYCLE_BUDGET_PREFIX)
+    text.startsWith(CYCLE_BUDGET_PREFIX) ||
+    text.startsWith(CYCLE_STOPPED_PREFIX)
   );
 }
 

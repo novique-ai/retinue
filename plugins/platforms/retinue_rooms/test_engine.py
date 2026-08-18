@@ -5,6 +5,8 @@ Run:  .venv/bin/python -m pytest plugins/platforms/retinue_rooms/ -q
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from . import engine
 from .engine import KIND_AGENT, KIND_SYSTEM, KIND_USER, Room, RoomMessage
 from .store import RoomStore
@@ -495,6 +497,25 @@ def test_did_not_reply_notice_is_what_the_web_ui_parses():
     budget = engine.cycle_budget_notice(8, ["scribe", "admin"])
     assert budget.startswith(engine.CYCLE_BUDGET_PREFIX)
     assert "scribe, admin" in budget
+    stopped = engine.cycle_stopped_notice("Mark")
+    assert stopped.startswith(engine.CYCLE_STOPPED_PREFIX)
+    assert "Mark stopped this turn." in stopped
+    assert engine.cycle_stopped_notice() == engine.CYCLE_STOPPED_PREFIX
+    assert engine.cycle_stopped_notice("  ") == engine.CYCLE_STOPPED_PREFIX
+    assert engine.is_cycle_abort_notice(stopped)
+
+
+def test_web_thinking_prefixes_stay_in_lockstep():
+    thinking = (
+        Path(__file__).resolve().parents[3] / "retinue-web" / "src" / "thinking.ts"
+    ).read_text(encoding="utf-8")
+    for prefix in (
+        engine.CYCLE_INTERNAL_ERROR_PREFIX,
+        engine.CYCLE_BUDGET_PREFIX,
+        engine.CYCLE_STOPPED_PREFIX,
+        engine.DID_NOT_REPLY_INFIX,
+    ):
+        assert prefix in thinking, prefix
 
 
 def test_old_agent_only_filter_misses_no_reply_system_line():
@@ -572,6 +593,13 @@ def test_cycle_abort_clears_the_whole_queue():
         engine.remaining_thinkers(
             waiting,
             [RoomMessage(1, 1, KIND_SYSTEM, "room", engine.cycle_budget_notice(8, ["scribe"]))],
+        )
+        == []
+    )
+    assert (
+        engine.remaining_thinkers(
+            waiting,
+            [RoomMessage(1, 1, KIND_SYSTEM, "room", engine.cycle_stopped_notice("Mark"))],
         )
         == []
     )

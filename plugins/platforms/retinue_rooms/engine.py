@@ -21,6 +21,7 @@ KIND_SYSTEM = "system"
 # Keep in lockstep with retinue-web/src/thinking.ts.
 CYCLE_INTERNAL_ERROR_PREFIX = "internal error running the turn cycle"
 CYCLE_BUDGET_PREFIX = "turn budget"
+CYCLE_STOPPED_PREFIX = "Stopped."
 DID_NOT_REPLY_INFIX = " did not reply ("
 
 DEFAULT_MAX_AGENT_TURNS = 8
@@ -556,10 +557,20 @@ def cycle_budget_notice(budget: int, queued: List[str]) -> str:
     )
 
 
+def cycle_stopped_notice(who: Optional[str] = None) -> str:
+    """System line posted when the user stops this room's in-flight cycle."""
+    name = (who or "").strip()
+    if name:
+        return f"{CYCLE_STOPPED_PREFIX} {name} stopped this turn."
+    return CYCLE_STOPPED_PREFIX
+
+
 def is_cycle_abort_notice(text: str) -> bool:
     body = text or ""
-    return body.startswith(CYCLE_INTERNAL_ERROR_PREFIX) or body.startswith(
-        CYCLE_BUDGET_PREFIX
+    return (
+        body.startswith(CYCLE_INTERNAL_ERROR_PREFIX)
+        or body.startswith(CYCLE_BUDGET_PREFIX)
+        or body.startswith(CYCLE_STOPPED_PREFIX)
     )
 
 

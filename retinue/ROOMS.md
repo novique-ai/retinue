@@ -160,6 +160,11 @@ alive behind it.
    travelled through `os.environ` and every cycle had to serialize behind one
    process-wide lock, which meant a single local-model turn could hold the
    whole gateway for the full turn timeout.
+7. **Stop** (`POST /rooms/{id}/stop`, room chrome, Escape) aborts this room's
+   cycle: do not start the next queued member, cancel the current model call
+   if the gateway can, and post `Stopped. {name} stopped this turn.` A new
+   user line after that is a normal redirect. Idle stop is a no-op. Speak
+   Replies is cut in the browser (current clip + queue) but the toggle stays.
 
 ## Surfaces
 
@@ -186,6 +191,7 @@ convention: no `RETINUE_ROOMS_API_KEY` → localhost-only):
 | `GET/PUT /rooms/{id}/itinerary` | living outline. The **lead** authors it (fenced `itinerary` block in their reply). The user can view/edit the right pane. |
 | `GET/PUT /sidebar` | room order + team separators + agent order (`{rooms[], items:[{kind:team,id,label}|{kind:agent,slug}]}`) |
 | `POST /rooms/{id}/messages` | user speaks (`{text, from?}`) → 202, cycle runs async |
+| `POST /rooms/{id}/stop` | abort this room's in-flight cycle (`{from?}`) → 200 `{stopped, idle?}`. Posts `Stopped.`. Idle is a no-op. Other rooms are untouched. |
 | `POST /rooms/{id}/attachments` | raw file body + `filename=` query → `{path:/workspace/uploads/…}` (composer `+`) |
 | `GET /rooms/{id}/transcript?since=N&wait=S` | poll (optionally long-poll) the transcript — CLI / fallback |
 | `GET /rooms/{id}/stream?since=N` | SSE transcript (`event: messages`); `access_token` query accepted |

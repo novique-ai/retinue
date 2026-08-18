@@ -907,6 +907,30 @@ function RoomView({
   const playQ = useRef(Promise.resolve());
   const spokenRef = useRef<Set<number>>(new Set());
   const openedAtRef = useRef(Date.now() / 1000);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const speakGenRef = useRef(0);
+
+  const cutSpeak = useCallback(() => {
+    speakGenRef.current += 1;
+    const audio = audioRef.current;
+    audioRef.current = null;
+    if (audio) {
+      audio.onended = null;
+      audio.onerror = null;
+      try {
+        audio.pause();
+      } catch {
+        /* ignore */
+      }
+      audio.removeAttribute("src");
+      try {
+        audio.load();
+      } catch {
+        /* ignore */
+      }
+    }
+    playQ.current = Promise.resolve();
+  }, []);
 
   useEffect(() => {
     api
@@ -935,6 +959,7 @@ function RoomView({
     setSending(false);
     spokenRef.current = new Set();
     openedAtRef.current = Date.now() / 1000;
+    cutSpeak();
     const ctl = new AbortController();
     api.watchTranscript(
       room.id,
@@ -951,7 +976,7 @@ function RoomView({
       ctl.signal,
     );
     return () => ctl.abort();
-  }, [room.id]);
+  }, [room.id, cutSpeak]);
 
   const onTranscriptScroll = () => {
     const el = scrollRef.current;
@@ -977,20 +1002,37 @@ function RoomView({
   }, [messages]);
 
   useEffect(() => {
-    if (!speakReplies) return;
+    if (!speakReplies) {
+      cutSpeak();
+      return;
+    }
     for (const msg of messages) {
       if (msg.kind !== "agent" || spokenRef.current.has(msg.seq)) continue;
       if (msg.ts && msg.ts < openedAtRef.current - 1) continue;
       spokenRef.current.add(msg.seq);
+      const gen = speakGenRef.current;
       playQ.current = playQ.current
         .then(async () => {
+          if (gen !== speakGenRef.current) return;
           const blob = await api.speak(msg.text, msg.speaker);
+          if (gen !== speakGenRef.current) return;
           const url = URL.createObjectURL(blob);
           try {
             await new Promise<void>((resolve, reject) => {
+              if (gen !== speakGenRef.current) {
+                resolve();
+                return;
+              }
               const audio = new Audio(url);
-              audio.onended = () => resolve();
-              audio.onerror = () => reject(new Error("playback failed"));
+              audioRef.current = audio;
+              audio.onended = () => {
+                if (audioRef.current === audio) audioRef.current = null;
+                resolve();
+              };
+              audio.onerror = () => {
+                if (audioRef.current === audio) audioRef.current = null;
+                reject(new Error("playback failed"));
+              };
               void audio.play().catch(reject);
             });
           } finally {
@@ -998,10 +1040,10 @@ function RoomView({
           }
         })
         .catch((e) => {
-          setVoiceNote(String(e));
+          if (gen === speakGenRef.current) setVoiceNote(String(e));
         });
     }
-  }, [messages, speakReplies]);
+  }, [messages, speakReplies, cutSpeak]);
 
   const inviteCandidates = useMemo(
     () => agents.filter((a) => !a.archived && !room.members.includes(a.slug)),
@@ -1094,6 +1136,27 @@ function RoomView({
     }
   }, [room.id, userName]);
 
+  const stopTurn = useCallback(async () => {
+    cutSpeak();
+    setThinking([]);
+    try {
+      await api.stop(room.id, userName);
+    } catch (e) {
+      setVoiceNote(String(e));
+    }
+  }, [cutSpeak, room.id, userName]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      if (mentionQuery) return;
+      e.preventDefault();
+      void stopTurn();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [mentionQuery, stopTurn]);
+
   return (
     <div className="room-view">
       <header className="room-header">
@@ -1134,6 +1197,14 @@ function RoomView({
           </div>
         </div>
         <div className="room-header-actions">
+          <button
+            type="button"
+            className={`mini wide${visibleThinking.length ? " danger-btn" : ""}`}
+            title="Stop this room's turn and Speak Replies (Esc)"
+            onClick={() => void stopTurn()}
+          >
+            Stop
+          </button>
           <button
             type="button"
             className="mini wide"
