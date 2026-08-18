@@ -32,6 +32,30 @@ def test_voice_for_staff_and_override(monkeypatch):
     assert voice.voice_for("newbie") == "iris"
 
 
+def test_voice_for_ignores_stored_staff_slug(tmp_path, monkeypatch):
+    """A leftover hire/edit save of another agent's slug must not reach xAI."""
+    monkeypatch.delenv("RETINUE_VOICE_MAP", raising=False)
+    home = str(tmp_path)
+    (tmp_path / "profiles" / "admin").mkdir(parents=True)
+    (tmp_path / "profiles" / "admin" / "retinue-agent.json").write_text(
+        '{"display_name":"Carlos","slug":"admin","voice":"editor"}',
+        encoding="utf-8",
+    )
+    assert voice.voice_for("admin", home_dir=home) == "eve"
+    assert voice.voice_for("admin", stored="scribe") == "eve"
+    monkeypatch.setenv("RETINUE_VOICE_MAP", "admin:editor")
+    assert voice.voice_for("admin", home_dir=home) == "eve"
+
+
+def test_status_lists_available_narrators(monkeypatch):
+    monkeypatch.delenv("RETINUE_VOICE_MAP", raising=False)
+    st = voice.status()
+    assert st["available"] == list(voice.AVAILABLE_VOICES)
+    assert "editor" not in st["available"]
+    assert "admin" not in st["available"]
+    assert set(st["available"]).issubset(voice.NARRATOR_VOICES)
+
+
 def test_backend_name_aliases(monkeypatch):
     monkeypatch.delenv("RETINUE_VOICE_BACKEND", raising=False)
     assert voice.backend_name() == "xai"
@@ -94,6 +118,30 @@ def test_synthesize_xai_posts_tts(monkeypatch):
     assert seen["url"] == "https://api.x.ai/v1/tts"
     assert seen["json"]["voice_id"] == "ursa"
     assert seen["json"]["text"] == "Hello from scout"
+
+
+def test_synthesize_does_not_forward_a_stored_slug(monkeypatch, tmp_path):
+    monkeypatch.setenv("RETINUE_VOICE_BACKEND", "xai")
+    monkeypatch.delenv("RETINUE_VOICE_MAP", raising=False)
+    monkeypatch.setattr(
+        voice,
+        "_xai_creds",
+        lambda: {"provider": "xai", "api_key": "test-key", "base_url": "https://api.x.ai/v1"},
+    )
+    (tmp_path / "profiles" / "admin").mkdir(parents=True)
+    (tmp_path / "profiles" / "admin" / "retinue-agent.json").write_text(
+        '{"slug":"admin","voice":"editor"}',
+        encoding="utf-8",
+    )
+    seen = {}
+
+    def fake_post(url, **kwargs):
+        seen["json"] = kwargs.get("json_body")
+        return _FakeResp(content=b"ID3fake-mp3")
+
+    monkeypatch.setattr(voice, "_http_post", fake_post)
+    voice.synthesize("hello", "admin", home_dir=str(tmp_path))
+    assert seen["json"]["voice_id"] == "eve"
 
 
 def test_openai_backend_uses_sidecar_urls(monkeypatch):

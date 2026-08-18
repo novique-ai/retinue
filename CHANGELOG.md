@@ -24,6 +24,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Hire / Edit Voice listed roster slugs as option values, so picking
+  `leo` stored `editor` and Speak replies 404'd at xAI. The picker now
+  uses `GET /voice.available` (narrator ids). A non-narrator stored or
+  env value is ignored; hire/patch of a staff slug is a 400. Closes #113.
 - Every hire SOUL (not only one senior) teaches: if you are the room
   lead, you write the itinerary fence; if you are not, you do not.
 - Sidebar **Rename** remints the team id from the new name (so a bar

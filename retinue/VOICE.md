@@ -42,9 +42,11 @@ member final text ──▶ TTS ──▶ browser playback (queued)
 
 - User speech becomes a normal room user line. `@mentions`, lead routing,
   budgets, and SSE stay as they are.
-- Each retainer can have its own voice id (see `STAFF_VOICES` /
-  `RETINUE_VOICE_MAP` in `voice.py`). The web client queues playback so a
-  later speaker does not talk over an earlier one.
+- Each retainer can have its own **narrator** id (see `STAFF_VOICES` /
+  `RETINUE_VOICE_MAP` / `AVAILABLE_VOICES` in `voice.py`). Hire and Edit
+  bind to `GET /voice.available`, not the roster map — a staff slug is
+  not a voice id. The web client queues playback so a later speaker does
+  not talk over an earlier one.
 - Voice I/O does not change turn budgets.
 - Configure Retinue voice via process env (below). Do not patch
   `tools/transcription_tools.py` for rooms.
@@ -76,6 +78,10 @@ Optional knobs (all read from env in `voice.py`):
 
 Built-in staff → voice map (overridable): `admin`→`eve`, `envoy`→`rigel`,
 `janitor`→`lux`, `scout`→`ursa`, `editor`→`leo`, `scribe`→`celeste`.
+A stored or env value that is not a narrator id (`eve`, `leo`, `rex`,
+`rigel`, `ursa`, `celeste`, `lux`, `iris`, plus `helix` for env/API) is
+ignored and the next precedence step applies. Hire/patch of a non-narrator
+id is a 400.
 
 ### Flip to Track B (generic example)
 

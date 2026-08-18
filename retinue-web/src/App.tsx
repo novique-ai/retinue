@@ -1697,6 +1697,13 @@ function voiceLabel(id: string, voices: Record<string, string>): string {
   return voices[id] || id;
 }
 
+/** Fallback if a pre-#113 gateway omits `available`. Never use roster slugs. */
+const NARRATOR_VOICES = ["eve", "leo", "rex", "rigel", "ursa", "celeste", "lux", "iris"];
+
+function narratorOptions(available?: string[]): string[] {
+  return available && available.length > 0 ? available : NARRATOR_VOICES;
+}
+
 function ModelPicker({ model, models, onChange }: { model: string; models: ModelPreset[]; onChange: (v: string) => void }) {
   if (models.length === 0) return null;
   return (
@@ -1742,7 +1749,7 @@ function HirePanel({ onDone }: { onDone: (created?: AgentMeta) => void }) {
   const [voice, setVoice] = useState("");
   const [persona, setPersona] = useState<Persona>(PERSONA_DEFAULT);
   const [palette, setPalette] = useState<string[]>([]);
-  const [voices, setVoices] = useState<Record<string, string>>({});
+  const [availableVoices, setAvailableVoices] = useState<string[]>(NARRATOR_VOICES);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState("");
   useEffect(() => {
@@ -1756,8 +1763,8 @@ function HirePanel({ onDone }: { onDone: (created?: AgentMeta) => void }) {
       .catch(() => setPalette([]));
     api
       .voiceStatus()
-      .then((v) => setVoices(v.voices))
-      .catch(() => setVoices({}));
+      .then((v) => setAvailableVoices(narratorOptions(v.available)))
+      .catch(() => setAvailableVoices(NARRATOR_VOICES));
   }, []);
   const trimmedEmoji = avatarEmoji.trim();
   const previewIdentity =
@@ -1819,9 +1826,9 @@ function HirePanel({ onDone }: { onDone: (created?: AgentMeta) => void }) {
         Voice
         <select value={voice} onChange={(e) => setVoice(e.target.value)}>
           <option value="">Auto (assigned from the name)</option>
-          {Object.entries(voices).map(([id, label]) => (
+          {availableVoices.map((id) => (
             <option key={id} value={id}>
-              {label}
+              {id}
             </option>
           ))}
         </select>
@@ -2237,12 +2244,14 @@ function EditAgentPanel({
   models,
   palette,
   voices,
+  availableVoices,
   onDone,
 }: {
   agent: AgentMeta;
   models: ModelPreset[];
   palette: string[];
   voices: Record<string, string>;
+  availableVoices: string[];
   onDone: (updated?: AgentMeta) => void;
 }) {
   const [name, setName] = useState(agent.display_name || agent.slug);
@@ -2331,9 +2340,9 @@ function EditAgentPanel({
         Voice
         <select value={voice} onChange={(e) => setVoice(e.target.value)}>
           <option value="">{`Auto (currently sounds like ${voiceLabel(agent.voice_resolved, voices)})`}</option>
-          {Object.entries(voices).map(([id, label]) => (
+          {availableVoices.map((id) => (
             <option key={id} value={id}>
-              {label}
+              {id}
             </option>
           ))}
         </select>
@@ -2731,6 +2740,7 @@ export default function App() {
   const [models, setModels] = useState<ModelPreset[]>([]);
   const [palette, setPalette] = useState<string[]>([]);
   const [voices, setVoices] = useState<Record<string, string>>({});
+  const [availableVoices, setAvailableVoices] = useState<string[]>(NARRATOR_VOICES);
   const [routineList, setRoutineList] = useState<RoutineMeta[]>([]);
   const [workspaceInfo, setWorkspaceInfo] = useState<WorkspaceStatus | null>(null);
   const [layout, setLayout] = useState<SidebarLayout>({ rooms: [], items: [] });
@@ -2775,7 +2785,10 @@ export default function App() {
       // keeps the hire/edit panels' pickers off a running gateway rather
       // than a second hardcoded copy (CONTRACT-identity.md).
       api.getPalette().then((p) => setPalette(p.colors)).catch(() => {});
-      api.voiceStatus().then((v) => setVoices(v.voices)).catch(() => {});
+      api.voiceStatus().then((v) => {
+        setVoices(v.voices);
+        setAvailableVoices(narratorOptions(v.available));
+      }).catch(() => {});
       try {
         setLayout(await api.getSidebar());
       } catch {
@@ -3724,6 +3737,7 @@ export default function App() {
                 models={models}
                 palette={palette}
                 voices={voices}
+                availableVoices={availableVoices}
                 onDone={(updated) => {
                   setModal(null);
                   setEditingAgent(null);
