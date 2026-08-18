@@ -41,7 +41,7 @@ from gateway.platforms.base import (
     SendResult,
 )
 
-from . import attachments, auth, cronjobs, engine, hire, ide, identity, itinerary, keepalive, principal, projects, routines, sidebar, skilldraft, voice, workspace
+from . import attachments, auth, cronjobs, crossroom, engine, hire, ide, identity, itinerary, keepalive, principal, projects, routines, sidebar, skilldraft, voice, workspace
 from .engine import KIND_AGENT, KIND_SYSTEM, KIND_USER, Room, RoomMessage
 from .store import RoomStore
 
@@ -1279,8 +1279,13 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         # the gateway for the full 1800s turn timeout (#67). Per-room
         # serialization still applies, via _room_lock in the caller.
         attachments.sync_uploads_into_room(self._home_dir(), room)
+        # Bind the room id for the whole cycle so the cross-room tools know
+        # where the turn is speaking from without trusting a tool argument
+        # (see crossroom.in_room). Nested inside the workspace overlay for
+        # the same per-task propagation guarantees.
         with ide.apply_room_workspace(room, self._home_dir()):
-            await self._run_cycle_workspace(room, user_message)
+            with crossroom.in_room(room.id):
+                await self._run_cycle_workspace(room, user_message)
 
     async def _run_cycle_workspace(self, room: Room, user_message: RoomMessage) -> None:
         room_id = room.id
@@ -1406,6 +1411,9 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             ],
             principal_about=str(me.get("about") or "") or None,
             principal_name=str(me.get("display_name") or "") or None,
+            other_rooms=crossroom.other_rooms(
+                self.store.list_rooms(), member, room.id
+            ),
         )
 
         speaker_display = (
