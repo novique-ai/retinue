@@ -59,20 +59,24 @@ def validate_config(_config) -> bool:
 
 def register(ctx) -> None:
     """Plugin entry point — called by the Hermes plugin system."""
-    # 1) Cross-room tools. Registered even when the inbound adapter is
-    #    deferred or declines (secondary profile scope), because a member's
-    #    turn runs in exactly that scope — the retainer that needs
-    #    rooms_post is never the process that owns the rooms port. Discovery
-    #    also pre-registers these from plugin.yaml's `provides_tools`; this
-    #    call is what covers the process that loads the plugin for real.
+    # Client tools register even when the inbound adapter is deferred
+    # (secondary profile scope). A member's turn runs in that scope —
+    # rooms_post / mail_list are needed there, not in the process that
+    # owns the rooms port.
     try:
         from .tools import register_tools
 
         register_tools(ctx)
     except Exception:
         logger.warning("Retinue rooms: failed to register cross-room tools", exc_info=True)
+    try:
+        from .jmap_tools import register_tools as register_jmap_tools
 
-    # 2) Inbound platform adapter.
+        register_jmap_tools(ctx)
+    except Exception:
+        logger.warning("Retinue rooms: failed to register mail tools", exc_info=True)
+
+    # Inbound platform adapter.
     try:
         from .adapter import RetinueRoomsAdapter
 
