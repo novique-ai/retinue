@@ -18,6 +18,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `@Patty` then speaking posts `@Patty …` and Patty takes the turn.
   The voice bar shows “Will send to @Patty” (or “Will include typed
   text”). Empty draft still goes to the lead. Closes #118.
+- Spoken “at Claude” / “hey Ellie” / “Hi, Patty” / “Claude,” at the
+  start of a voice take is rewritten to a live `@Handle` on the
+  transcript so that member takes the turn. Mid-sentence “look at
+  Patty” is left alone. A composer `@` still wins. Closes #121.
 
 - The room **lead** writes the itinerary (fenced `itinerary` block in
   their reply). The right pane is the user’s view and can still edit.

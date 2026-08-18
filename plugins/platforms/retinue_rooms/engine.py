@@ -282,6 +282,98 @@ def join_draft_and_speech(draft: str, speech: str) -> str:
     return f"{left} {right}"
 
 
+# Spoken vocative → a real @token. Only the start of the line, and only
+# after the composer prefix is already on it. A live @mention (including
+# a tap-to-talk draft) wins and is left alone. Unique prefixes shorter
+# than this many characters are ignored so "at Ed" does not steal Editor.
+_SPOKEN_MIN_PREFIX = 4
+_SPOKEN_AT_ROOM = re.compile(r"(?is)^(at|hey|yo)\s+room\b[,:]?\s*")
+_SPOKEN_AT_NAME = re.compile(
+    r"(?is)^(at|hey|yo)\s+(" + _TOKEN_RE.pattern + r")[,:]?\s*"
+)
+_SPOKEN_HI_NAME = re.compile(
+    r"(?is)^(hi|hello)\s*,?\s+(" + _TOKEN_RE.pattern + r")\b"
+)
+_SPOKEN_NAME_COMMA = re.compile(
+    r"(?is)^(" + _TOKEN_RE.pattern + r")[,:]\s+"
+)
+
+
+def resolve_spoken_name(
+    token: str, index: Dict[str, str]
+) -> Optional[str]:
+    """Exact roster alias, else a unique prefix of length >= 4."""
+    key = (token or "").lower()
+    if not key or key == ROOM_BROADCAST_TOKEN:
+        return None
+    if key in index:
+        return index[key]
+    if len(key) < _SPOKEN_MIN_PREFIX:
+        return None
+    return resolve_mention(token, index)
+
+
+def rewrite_spoken_address(
+    text: str,
+    candidates: List[str],
+    display_names: Optional[Dict[str, str]] = None,
+) -> str:
+    """Turn a leading spoken vocative into a live ``@Handle``.
+
+    STT writes "at Patty" / "hey Claude" / "Hi, Ellie", never ``@``.
+    The turn engine only looks at ``@`` tokens, so without this rewrite
+    every hands-free take goes to the lead. The transcript is rewritten
+    — there is no hidden voice recipient.
+
+    Patterns (start of line only):
+
+    * ``at|hey|yo NAME`` — replaced with ``@Handle``
+    * ``at|hey|yo room`` — replaced with ``@room``
+    * ``hi|hello NAME`` — ``@Handle`` is prepended; the greeting stays
+    * ``NAME,`` / ``NAME:`` — replaced with ``@Handle``
+
+    A line that already has a live @mention is unchanged (the v1
+    composer prefix wins). Mid-sentence "look at Patty" is unchanged.
+    """
+    body = (text or "").strip()
+    if not body:
+        return text or ""
+    if parse_mentions(body, candidates, display_names) or has_room_broadcast(body):
+        return text
+    names = display_names or {}
+    index = mention_index(candidates, names)
+
+    match = _SPOKEN_AT_ROOM.match(body)
+    if match:
+        rest = body[match.end() :]
+        return f"@room {rest}".strip() if rest else "@room"
+
+    match = _SPOKEN_AT_NAME.match(body)
+    if match:
+        slug = resolve_spoken_name(match.group(2), index)
+        if slug:
+            handle = mention_handle(slug, names.get(slug), candidates, names)
+            rest = body[match.end() :]
+            return f"@{handle} {rest}".strip() if rest else f"@{handle}"
+
+    match = _SPOKEN_HI_NAME.match(body)
+    if match:
+        slug = resolve_spoken_name(match.group(2), index)
+        if slug:
+            handle = mention_handle(slug, names.get(slug), candidates, names)
+            return f"@{handle} {body}".strip()
+
+    match = _SPOKEN_NAME_COMMA.match(body)
+    if match:
+        slug = resolve_spoken_name(match.group(1), index)
+        if slug:
+            handle = mention_handle(slug, names.get(slug), candidates, names)
+            rest = body[match.end() :]
+            return f"@{handle} {rest}".strip() if rest else f"@{handle}"
+
+    return text
+
+
 def plan_user_turns(
     room: Room,
     text: str,

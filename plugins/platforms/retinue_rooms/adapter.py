@@ -923,10 +923,17 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
 
         ``draft`` is the composer prefix (usually an ``@Name``). It is
         joined onto the transcript so mention routing sees the same
-        text the user typed, then spoke.
+        text the user typed, then spoke. A leading spoken vocative
+        (``at Claude``) is rewritten to ``@Claude`` when the line has
+        no live @mention yet.
         """
         spoken = voice.transcribe_dispatch(data, filename)
         text = engine.join_draft_and_speech(draft, spoken)
+        room = self.store.get(room_id)
+        if room is not None:
+            text = engine.rewrite_spoken_address(
+                text, room.members, self._display_names(room)
+            )
         result = self.post_user_message(room_id, text, from_name)
         result["text"] = text
         return result
