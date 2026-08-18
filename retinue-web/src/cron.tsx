@@ -66,6 +66,36 @@ export function fmtRunAt(value: string | null | undefined): string {
   return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString();
 }
 
+/** User-facing retainer label. API owner stays the profile slug. */
+export function ownerLabel(slug: string, names?: Record<string, string>): string {
+  const label = (names?.[slug] || "").trim();
+  return label || slug;
+}
+
+function compareByOwnerLabel(a: string, b: string, names?: Record<string, string>): number {
+  return (
+    ownerLabel(a, names).localeCompare(ownerLabel(b, names), undefined, { sensitivity: "base" }) ||
+    a.localeCompare(b)
+  );
+}
+
+export function sortOwnerSlugs(owners: string[], names?: Record<string, string>): string[] {
+  return [...owners].sort((a, b) => compareByOwnerLabel(a, b, names));
+}
+
+export function sortJobsByOwner(
+  jobs: CronJobRow[],
+  names?: Record<string, string>,
+): CronJobRow[] {
+  return [...jobs].sort((a, b) => {
+    const byOwner = compareByOwnerLabel(a.owner, b.owner, names);
+    if (byOwner) return byOwner;
+    return (
+      a.name.localeCompare(b.name, undefined, { sensitivity: "base" }) || a.id.localeCompare(b.id)
+    );
+  });
+}
+
 export type CronAction = {
   key: "pause" | "resume" | "run" | "delete";
   label: string;
@@ -137,6 +167,7 @@ export async function submitSaveRoutine(form: SaveRoutineFormState) {
 export function ScheduledSection(props: {
   jobs: CronJobRow[];
   owners: string[];
+  ownerNames?: Record<string, string>;
   rooms: { id: string; name: string }[];
   timezone: string;
   filterOwner: string;
@@ -146,10 +177,14 @@ export function ScheduledSection(props: {
   onEdit: (job: CronJobRow | null) => void;
   onChanged: () => void;
 }): ReactElement {
-  const visible = props.jobs.filter(
-    (job) =>
-      (!props.filterOwner || job.owner === props.filterOwner) &&
-      (!props.filterRoom || job.room === props.filterRoom),
+  const owners = sortOwnerSlugs(props.owners, props.ownerNames);
+  const visible = sortJobsByOwner(
+    props.jobs.filter(
+      (job) =>
+        (!props.filterOwner || job.owner === props.filterOwner) &&
+        (!props.filterRoom || job.room === props.filterRoom),
+    ),
+    props.ownerNames,
   );
   return (
     <div className="section cron-section" data-testid="cron-section">
@@ -166,8 +201,8 @@ export function ScheduledSection(props: {
           onChange={(event) => props.onFilterOwner(event.target.value)}
         >
           <option value="">All retainers</option>
-          {props.owners.map((owner) => (
-            <option key={owner} value={owner}>{owner}</option>
+          {owners.map((owner) => (
+            <option key={owner} value={owner}>{ownerLabel(owner, props.ownerNames)}</option>
           ))}
         </select>
         <select
@@ -190,7 +225,7 @@ export function ScheduledSection(props: {
               <span data-testid="cron-kind" className="cron-kind">{job.kind}</span>
             </div>
             <div className="nav-sub">
-              <span data-testid="cron-owner">{job.owner}</span>
+              <span data-testid="cron-owner">{ownerLabel(job.owner, props.ownerNames)}</span>
               {" · "}<span data-testid="cron-room">{job.room_name || job.room || "—"}</span>
               {" · "}<span data-testid="cron-state">{job.state}</span>
             </div>
@@ -256,6 +291,7 @@ function ScheduleFields(props: {
 export function CronJobModal(props: {
   form: CronFormState;
   owners: string[];
+  ownerNames?: Record<string, string>;
   rooms: { id: string; name: string }[];
   timezone: string;
   onChange: (form: CronFormState) => void;
@@ -277,7 +313,7 @@ export function CronJobModal(props: {
       }}
     >
       <h3>{props.form.jobId ? "Edit scheduled job" : "New scheduled job"}</h3>
-      <label>Retainer<select data-testid="cron-form-owner" disabled={props.form.jobId !== null} value={props.form.owner} onChange={(event) => props.onChange({ ...props.form, owner: event.target.value })}>{props.owners.map((owner) => <option key={owner} value={owner}>{owner}</option>)}</select></label>
+      <label>Retainer<select data-testid="cron-form-owner" disabled={props.form.jobId !== null} value={props.form.owner} onChange={(event) => props.onChange({ ...props.form, owner: event.target.value })}>{sortOwnerSlugs(props.owners, props.ownerNames).map((owner) => <option key={owner} value={owner}>{ownerLabel(owner, props.ownerNames)}</option>)}</select></label>
       <label>Name<input value={props.form.name} onChange={(event) => props.onChange({ ...props.form, name: event.target.value })} /></label>
       <ScheduleFields {...props.form} onChange={(values) => props.onChange({ ...props.form, ...values })} />
       <label>Destination room<select data-testid="cron-form-room" value={props.form.room} onChange={(event) => props.onChange({ ...props.form, room: event.target.value })}><option value="">— none (leave the destination unchanged) —</option>{props.rooms.map((room) => <option key={room.id} value={room.id}>{room.name}</option>)}</select></label>
@@ -296,6 +332,7 @@ export function CronJobModal(props: {
 export function SaveRoutineModal(props: {
   form: SaveRoutineFormState;
   owners: string[];
+  ownerNames?: Record<string, string>;
   timezone: string;
   onChange: (form: SaveRoutineFormState) => void;
   onClose: () => void;
@@ -314,7 +351,7 @@ export function SaveRoutineModal(props: {
     >
       <h3>Save routine</h3>
       <label>Name<input required value={props.form.name} onChange={(event) => props.onChange({ ...props.form, name: event.target.value })} /></label>
-      <label>Retainer<select data-testid="save-routine-owner" value={props.form.owner} onChange={(event) => props.onChange({ ...props.form, owner: event.target.value })}>{props.owners.map((owner) => <option key={owner} value={owner}>{owner}</option>)}</select></label>
+      <label>Retainer<select data-testid="save-routine-owner" value={props.form.owner} onChange={(event) => props.onChange({ ...props.form, owner: event.target.value })}>{sortOwnerSlugs(props.owners, props.ownerNames).map((owner) => <option key={owner} value={owner}>{ownerLabel(owner, props.ownerNames)}</option>)}</select></label>
       <label className="section-toggle"><input data-testid="save-routine-scheduled" type="checkbox" checked={props.form.scheduled} onChange={(event) => props.onChange({ ...props.form, scheduled: event.target.checked })} />Schedule this routine</label>
       {props.form.scheduled && <ScheduleFields {...props.form} onChange={(values) => props.onChange({ ...props.form, ...values })} />}
       <p className="note">Leave scheduling off to save the skill draft without a clock. Times are in {props.timezone || "local"}.</p>

@@ -3058,6 +3058,7 @@ export default function App() {
     .filter((r) => showArchived || !r.archived)
     .filter((r) => (r.project_id ?? "") === selectedProjectId);
   const agentsBySlug = Object.fromEntries(agents.map((a) => [a.slug, a]));
+  const ownerNames = Object.fromEntries(agents.map((a) => [a.slug, agentLabel(a)]));
   const visibleCast = agents.filter((a) => !a.archived);
 
   const archiveRoom = async (room: RoomMeta) => {
@@ -3680,6 +3681,7 @@ export default function App() {
         <ScheduledSection
           jobs={cronJobs}
           owners={cronOwners}
+          ownerNames={ownerNames}
           rooms={rooms}
           timezone={cronTimezone}
           filterOwner={cronFilterOwner}
@@ -3979,6 +3981,7 @@ export default function App() {
               <CronJobModal
                 form={cronForm}
                 owners={cronOwners}
+                ownerNames={ownerNames}
                 rooms={rooms}
                 timezone={cronTimezone}
                 onChange={setCronForm}
@@ -3993,6 +3996,7 @@ export default function App() {
               <SaveRoutineModal
                 form={saveRoutineForm}
                 owners={cronOwners}
+                ownerNames={ownerNames}
                 timezone={cronTimezone}
                 onChange={setSaveRoutineForm}
                 onClose={() => {

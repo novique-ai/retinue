@@ -63,7 +63,9 @@ one-shot completes after firing; intervals and cron expressions recur. “Run no
 the job for the next ticker pass rather than running an agent on the HTTP request thread.
 The editor shows the configured Hermes timezone and both the next and last run times.
 
-The Scheduled list is the gateway's served profile set, not a directory scan. Multiplex
+The Scheduled list is the gateway's served profile set, not a directory scan. The
+rooms UI labels each owner with the hired display name and sorts by that name;
+the job store and API keep the real profile slug. Multiplex
 mode includes the root `default` profile and every named profile allowed by
 `gateway.multiplex_profile_allowlist`. A gateway launched on a named profile still lists
 the root and sibling profiles returned by `profiles_to_serve`, each under its real slug.

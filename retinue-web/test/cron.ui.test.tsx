@@ -8,9 +8,12 @@ import {
   CronJobModal,
   fmtRunAt,
   formFromRow,
+  ownerLabel,
   SaveRoutineModal,
   ScheduledSection,
   scheduleFromForm,
+  sortJobsByOwner,
+  sortOwnerSlugs,
   submitCronJob,
   submitSaveRoutine,
 } from "../src/cron";
@@ -89,6 +92,23 @@ function textOf(value: unknown): string {
   return textOf(node.props?.children);
 }
 
+function flattenChildren(value: unknown, output: unknown[] = []): unknown[] {
+  if (value === null || value === undefined || typeof value === "boolean") return output;
+  if (Array.isArray(value)) {
+    value.forEach((item) => flattenChildren(item, output));
+    return output;
+  }
+  output.push(value);
+  return output;
+}
+
+function optionsOf(select: Node): Array<{ value: string; text: string }> {
+  return flattenChildren(select.props?.children).map((child) => {
+    const node = child as Node;
+    return { value: String(node.props?.value ?? ""), text: textOf(node) };
+  });
+}
+
 function job(overrides: Partial<CronJobRow> = {}): CronJobRow {
   return {
     id: "job-1",
@@ -135,8 +155,56 @@ test("renders one row per job with next and last run", () => {
   const second = job({ id: "job-2", owner: "editor", last_run_at: "2026-08-18T09:00:00Z" });
   const nodes = render(ScheduledSection as never, sectionProps([job(), second]));
   assert.equal(allTestId(nodes, "cron-row").length, 2);
-  assert.equal(textOf(allTestId(nodes, "cron-last-run")[0]), "—");
+  const lasts = allTestId(nodes, "cron-last-run").map(textOf);
+  assert.ok(lasts.includes("—"));
+  assert.ok(lasts.includes(fmtRunAt("2026-08-18T09:00:00Z")));
   assert.equal(textOf(allTestId(nodes, "cron-next-run")[0]), fmtRunAt(job().next_run_at));
+});
+
+const OWNER_NAMES = { sally: "Sally", editor: "Eddie", janitor: "Julio", scribe: "Scottie" };
+
+test("ownerLabel uses the hired name and falls back to the slug", () => {
+  assert.equal(ownerLabel("janitor", OWNER_NAMES), "Julio");
+  assert.equal(ownerLabel("scribe", OWNER_NAMES), "Scottie");
+  assert.equal(ownerLabel("default", OWNER_NAMES), "default");
+  assert.equal(ownerLabel("janitor"), "janitor");
+});
+
+test("sortOwnerSlugs and sortJobsByOwner order by display name", () => {
+  assert.deepEqual(sortOwnerSlugs(["janitor", "sally", "editor"], OWNER_NAMES), [
+    "editor",
+    "janitor",
+    "sally",
+  ]);
+  const ordered = sortJobsByOwner(
+    [
+      job({ id: "job-j", owner: "janitor", name: "Patrol" }),
+      job({ id: "job-s", owner: "sally", name: "Brief" }),
+      job({ id: "job-e", owner: "editor", name: "Edit" }),
+    ],
+    OWNER_NAMES,
+  );
+  assert.deepEqual(ordered.map((row) => row.owner), ["editor", "janitor", "sally"]);
+});
+
+test("scheduled rows and retainer filter show display names, keep slug values", () => {
+  const rows = [
+    job({ id: "job-j", owner: "janitor", name: "Patrol" }),
+    job({ id: "job-s", owner: "sally", name: "Brief" }),
+    job({ id: "job-e", owner: "editor", name: "Edit" }),
+  ];
+  const nodes = render(ScheduledSection as never, {
+    ...sectionProps(rows),
+    owners: ["janitor", "sally", "editor"],
+    ownerNames: OWNER_NAMES,
+  });
+  assert.deepEqual(allTestId(nodes, "cron-owner").map(textOf), ["Eddie", "Julio", "Sally"]);
+  assert.deepEqual(optionsOf(byTestId(nodes, "cron-filter-owner")), [
+    { value: "", text: "All retainers" },
+    { value: "editor", text: "Eddie" },
+    { value: "janitor", text: "Julio" },
+    { value: "sally", text: "Sally" },
+  ]);
 });
 
 test("owner and room filters filter rows", () => {
@@ -220,6 +288,32 @@ function modalProps(form = blankCronForm("sally")) {
     onSaved: () => undefined,
   };
 }
+
+test("cron and save-routine owner pickers show display names", () => {
+  const names = { sally: "Sally", janitor: "Julio" };
+  const cronNodes = render(CronJobModal as never, {
+    ...modalProps(),
+    owners: ["janitor", "sally"],
+    ownerNames: names,
+  });
+  assert.deepEqual(optionsOf(byTestId(cronNodes, "cron-form-owner")), [
+    { value: "janitor", text: "Julio" },
+    { value: "sally", text: "Sally" },
+  ]);
+  const saveNodes = render(SaveRoutineModal as never, {
+    form: { name: "Demo", room: "room-a", owner: "sally", scheduled: false, mode: "every" as const, at: "", every: "1", unit: "d" as const, expr: "" },
+    owners: ["janitor", "sally"],
+    ownerNames: names,
+    timezone: "UTC",
+    onChange: () => {},
+    onClose: () => {},
+    onSaved: () => {},
+  });
+  assert.deepEqual(optionsOf(byTestId(saveNodes, "save-routine-owner")), [
+    { value: "janitor", text: "Julio" },
+    { value: "sally", text: "Sally" },
+  ]);
+});
 
 test("modal create submits owner room and schedule", async () => {
   const form = { ...blankCronForm("sally"), room: "room-a", prompt: "go", every: "2", unit: "h" as const };
