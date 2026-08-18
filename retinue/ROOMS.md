@@ -42,9 +42,68 @@ user ──HTTP──▶ RetinueRoomsAdapter ──MessageEvent(profile=member)�
   on the existing Reauth banner. Disable with `RETINUE_XAI_KEEPALIVE_SECONDS=0`.
 - **Hermes cron → room**: a member can schedule a one-shot with the inherited
   `cronjob` tool (`deliver=origin`). The multiplex ticker fires that
-  profile's cron store. The rooms adapter appends the reply to the
+  profile's cron store. A resolved live rooms adapter delivers even when that
+  profile's `config.yaml` has no `platforms:` block; the narrow carried patch is
+  recorded in [FORK-POLICY.md](FORK-POLICY.md). The rooms adapter appends the reply to the
   transcript as the member (`thread_id`). It does not start a new mention
   cycle. Progress sends without `job_id` stay off the transcript.
+
+## Routines and scheduled jobs
+
+A routine combines a captured room demonstration with a per-retainer skill draft and,
+optionally, a Hermes cron job. The routine record keeps `name`, `slug`, `source_room`,
+`messages`, `steps`, `owner`, `skill`, `expected_output`, `job_id`, `schema`, and
+`created_at`. The linked job stores its Retinue fields in a `retinue` metadata block:
+`kind`, destination `room`, `skill`, `routine_slug`, `owner`, and registration-error
+details. There is no second scheduler or parallel job store.
+
+Schedules accept a one-shot timestamp or duration (`2026-09-01T09:00:00`, `30m`), a
+recurring interval (`every 2h`), or a five-field cron expression (`0 9 * * 1-5`). A
+one-shot completes after firing; intervals and cron expressions recur. “Run now” queues
+the job for the next ticker pass rather than running an agent on the HTTP request thread.
+The editor shows the configured Hermes timezone and both the next and last run times.
+
+The Scheduled list is the gateway's served profile set, not a directory scan. Multiplex
+mode includes the root `default` profile and every named profile allowed by
+`gateway.multiplex_profile_allowlist`. A gateway launched on a named profile still lists
+the root and sibling profiles returned by `profiles_to_serve`, each under its real slug.
+Non-multiplex mode on a named profile lists exactly that real slug. If the resolved pairs
+map to no addressable store, the list and owner set stay empty; Retinue does not invent a
+default store. Skills are regular per-retainer copies under
+`profiles/<slug>/skills/<routine>/SKILL.md`, never shared live mounts or symlinks.
+
+The cron job is authoritative for name, prompt, skill, schedule, enabled state, and
+destination. The routine JSON is authoritative for the captured demonstration and holds
+the job link. `SKILL.md` is a write-once draft: editing a linked job mirrors name and skill
+to the routine record but never regenerates or renames the draft. Deleting a job clears
+the routine's `job_id` and keeps both authored artifacts. Deleting a routine keeps any
+linked job.
+
+An external scheduler registration failure is a persisted partial success. The job,
+routine, and skill stay in place; `registration_error` remains visible after refresh and
+is cleared only after a later explicit edit, pause, resume, or run successfully re-drives
+the provider. Retinue skips the immediate provider re-drive on that partial-create path.
+If the later Retinue metadata stamp fails, creation rolls back that exact job id before
+the error propagates.
+
+`room` is optional while editing. Jobs created outside Retinue may have no destination;
+their edits omit `room` and preserve the existing origin and delivery fields. A supplied
+room must be a real room id, and an empty string is rejected. Prompt and skill differ:
+an explicit empty string clears either field, provided the result still has a prompt,
+skill, or script to execute.
+
+Generated drafts use deterministic frontmatter, a fixed short description, and the
+modern authoring section order. They use no platform-bound primitives. The repository's
+rules for shipped skill scripts, `tests/skills/`, and `.env.example` blocks do not apply
+to runtime drafts written into a user's profile; the remaining skill-authoring rules do.
+Routine JSON lives at `retinue_rooms/routines/<slug>.json`; cron jobs live in the root
+`cron/jobs.json` or `profiles/<slug>/cron/jobs.json` with their `retinue` metadata.
+
+Run the executed web behavior suite with:
+
+```bash
+node retinue-web/test/run-ui-tests.mjs
+```
 
 ## Live membership (invite / remove)
 
@@ -123,6 +182,7 @@ convention: no `RETINUE_ROOMS_API_KEY` → localhost-only):
 | `POST /rooms/{id}/members` | invite one agent (`{member}`) → 201. Seeds `last_seen` so a first-time invitee sees only the last 20 messages (and the join notice). A re-invite keeps their existing cursor. |
 | `DELETE /rooms/{id}/members/{slug}` | remove one agent → 200. `last_seen` is kept so a later re-invite resumes where they left off. Refuses the last remaining member. |
 | `GET /rooms/{id}/routines` | routines whose `source_room` is this room |
+| `GET /rooms/{id}/cron/jobs` | scheduled jobs targeting this room |
 | `GET/PUT /rooms/{id}/itinerary` | living outline. The **lead** authors it (fenced `itinerary` block in their reply). The user can view/edit the right pane. |
 | `GET/PUT /sidebar` | room order + team separators + agent order (`{rooms[], items:[{kind:team,id,label}|{kind:agent,slug}]}`) |
 | `POST /rooms/{id}/messages` | user speaks (`{text, from?}`) → 202, cycle runs async |
@@ -130,9 +190,16 @@ convention: no `RETINUE_ROOMS_API_KEY` → localhost-only):
 | `GET /rooms/{id}/transcript?since=N&wait=S` | poll (optionally long-poll) the transcript — CLI / fallback |
 | `GET /rooms/{id}/stream?since=N` | SSE transcript (`event: messages`); `access_token` query accepted |
 | `GET /rooms/{id}/files?path=` | Bytes of a `/workspace/…` file from that room's computer (images inline in the UI) |
-| `GET/POST /routines` | list / save a demonstration (`{name, room, since?, until?}`). `source_room` is set on save; the room chrome lists matching routines. |
+| `GET/POST /routines` | list / save a demonstration (`{name, room, since?, until?, owner?, schedule?}`). `source_room` is set on save; the room chrome lists matching routines. |
 | `GET/DELETE /routines/{slug}` | inspect / remove |
 | `POST /routines/{slug}/run` | replay the prompts into `{room}` (waits each cycle) |
+| `GET /cron/jobs` | list all served jobs; optional `owner` and `room` query filters |
+| `POST /cron/jobs` | create `{owner, name, schedule, room, prompt?, skill?}` |
+| `PATCH /cron/jobs/{id}` | edit optional name, prompt, skill, schedule, room, or enabled state |
+| `POST /cron/jobs/{id}/pause` | pause a job |
+| `POST /cron/jobs/{id}/resume` | resume a job |
+| `POST /cron/jobs/{id}/run` | queue a job for the next ticker pass |
+| `DELETE /cron/jobs/{id}` | delete the job while preserving linked routine artifacts |
 | `GET /workspace` | workspace-computer status + attach command + shared-folder report (`shared_dir`, `shared_mount`, `shared_error`) |
 | `GET /voice` | STT/TTS backend status (`xai` or OpenAI-compat sidecar). `voices` is the roster (`slug →` resolved narrator); `available` is the narrator ids a hire/edit picker may store. |
 | `POST /rooms/{id}/audio` | hold-to-talk: raw audio → STT → same cycle as `/messages` |

@@ -22,6 +22,7 @@ import hmac
 import json
 import logging
 import os
+import shutil
 import threading
 import time
 from pathlib import Path
@@ -40,7 +41,7 @@ from gateway.platforms.base import (
     SendResult,
 )
 
-from . import attachments, auth, engine, hire, ide, identity, itinerary, keepalive, principal, projects, routines, sidebar, voice, workspace
+from . import attachments, auth, cronjobs, engine, hire, ide, identity, itinerary, keepalive, principal, projects, routines, sidebar, skilldraft, voice, workspace
 from .engine import KIND_AGENT, KIND_SYSTEM, KIND_USER, Room, RoomMessage
 from .store import RoomStore
 
@@ -924,14 +925,103 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         return result
 
     def save_routine_from_room(
-        self, name: str, room_id: str, since: int = 0, until: Optional[int] = None
+        self,
+        name: str,
+        room_id: str,
+        since: int = 0,
+        until: Optional[int] = None,
+        *,
+        owner: Optional[str] = None,
+        schedule: Optional[str] = None,
+        room_for_schedule: Optional[str] = None,
     ) -> Dict[str, Any]:
-        if self.store.get(room_id) is None:
+        room = self.store.get(room_id)
+        if room is None:
             raise KeyError(room_id)
+        messages = self.store.read_since(room_id, 0)
         prompts = routines.user_prompts_from_messages(
-            self.store.read_since(room_id, 0), since=since, until=until
+            messages, since=since, until=until
         )
-        return routines.save_routine(self._home_dir(), name, prompts, source_room=room_id)
+        if not prompts:
+            raise ValueError("a routine needs at least one user prompt")
+        home = self._home_dir()
+        owners = cronjobs.served_owners(home)
+        selected_owner = str(owner or "").strip()
+        if not selected_owner:
+            if room.lead and room.lead in owners:
+                selected_owner = room.lead
+            else:
+                selected_owner = next((member for member in room.members if member in owners), "")
+        if not selected_owner:
+            raise cronjobs.UnknownOwner("")
+        cronjobs.owner_home(home, selected_owner)
+
+        slug = routines.slugify(name)
+        if not slug:
+            raise ValueError(f"cannot derive a routine id from {name!r}")
+        draft_dir = skilldraft.skill_dir(home, selected_owner, slug)
+        if routines.get_routine(home, slug) is not None or os.path.exists(draft_dir):
+            raise FileExistsError(slug)
+        expected_output = ""
+        for message in messages:
+            if message.kind != KIND_AGENT or message.seq <= since:
+                continue
+            if until is not None and message.seq > until:
+                continue
+            expected_output = (message.text or "").strip()[:800]
+
+        record = routines.save_routine(
+            home,
+            name,
+            prompts,
+            source_room=room_id,
+            owner=selected_owner,
+            skill=slug,
+            expected_output=expected_output,
+        )
+        try:
+            skilldraft.write_skill_draft(
+                home,
+                selected_owner,
+                slug=slug,
+                name=name,
+                steps=prompts,
+                expected_output=expected_output,
+                source_room=room_id,
+            )
+        except Exception:
+            routines.delete_routine(home, slug)
+            raise
+
+        if schedule:
+            try:
+                job = cronjobs.create_job(
+                    home,
+                    selected_owner,
+                    name=name,
+                    schedule=schedule,
+                    room=room_for_schedule or room_id,
+                    skill=slug,
+                    kind="routine",
+                    routine_slug=slug,
+                    room_name=room.name,
+                    rooms=self._cron_rooms(),
+                )
+            except Exception:
+                shutil.rmtree(draft_dir, ignore_errors=True)
+                routines.delete_routine(home, slug)
+                raise
+            try:
+                record = routines.update_routine(home, slug, {"job_id": job["id"]})
+            except Exception:
+                logger.warning(
+                    "Routine %s was scheduled as job %s but its link could not be saved",
+                    slug,
+                    job["id"],
+                    exc_info=True,
+                )
+            return {**record, "job": job}
+        return record
 
     def run_routine(self, slug: str, room_id: str) -> Dict[str, Any]:
         meta = routines.get_routine(self._home_dir(), slug)
@@ -939,6 +1029,10 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             raise KeyError(slug)
         if self.store.get(room_id) is None:
             raise KeyError(room_id)
+        if not meta.get("messages"):
+            raise ValueError(
+                f"routine {slug!r} has no replay prompts; use its linked skill or cron job"
+            )
         speaker = f"routine:{slug}"
         ran = []
         for prompt in meta.get("messages") or []:
@@ -946,6 +1040,63 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
                 self.post_user_message(room_id, prompt, speaker, wait=True)
             )
         return {"slug": slug, "room": room_id, "steps": ran}
+
+    def _cron_rooms(self) -> Dict[str, str]:
+        return {room.id: room.name for room in self.store.list_rooms()}
+
+    def list_cron_jobs(
+        self, owner: Optional[str] = None, room: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        return cronjobs.list_jobs(
+            self._home_dir(), owner=owner, room=room, rooms=self._cron_rooms()
+        )
+
+    def list_room_cron_jobs(self, room_id: str) -> List[Dict[str, Any]]:
+        if self.store.get(room_id) is None:
+            raise KeyError(room_id)
+        return self.list_cron_jobs(room=room_id)
+
+    def create_cron_job(self, body: Dict[str, Any]) -> Dict[str, Any]:
+        room_id = str(body.get("room") or "")
+        room = self.store.get(room_id)
+        if not room_id:
+            raise ValueError("a scheduled job needs a destination room")
+        if room is None:
+            raise KeyError(room_id)
+        return cronjobs.create_job(
+            self._home_dir(),
+            str(body.get("owner") or ""),
+            name=str(body.get("name") or ""),
+            schedule=str(body.get("schedule") or ""),
+            room=room_id,
+            prompt=str(body.get("prompt") or ""),
+            skill=str(body.get("skill") or ""),
+            kind=str(body.get("kind") or "reminder"),
+            routine_slug=str(body.get("routine_slug") or "") or None,
+            room_name=room.name,
+            rooms=self._cron_rooms(),
+        )
+
+    def patch_cron_job(self, job_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
+        if "room" in body:
+            room_id = body.get("room")
+            if not isinstance(room_id, str) or not room_id:
+                raise ValueError("room must be a room id")
+            if self.store.get(room_id) is None:
+                raise KeyError(room_id)
+        return cronjobs.patch_job(
+            self._home_dir(), job_id, body, rooms=self._cron_rooms()
+        )
+
+    def set_cron_job_enabled(self, job_id: str, enabled: bool) -> Dict[str, Any]:
+        operation = cronjobs.resume_job if enabled else cronjobs.pause_job
+        return operation(self._home_dir(), job_id, rooms=self._cron_rooms())
+
+    def run_cron_job(self, job_id: str) -> Dict[str, Any]:
+        return cronjobs.run_job(self._home_dir(), job_id, rooms=self._cron_rooms())
+
+    def delete_cron_job(self, job_id: str) -> Dict[str, Any]:
+        return cronjobs.delete_job(self._home_dir(), job_id)
 
     # ── the turn cycle (runs on the gateway loop) ────────────────────────
 
@@ -1386,6 +1537,7 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
         "models",
         "health",
         "routines",
+        "cron",
         "workspace",
         "voice",
         "tts",
@@ -1433,6 +1585,24 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
             return self._json(200, {"models": adapter.list_model_presets()})
         if parts == ["routines"]:
             return self._json(200, {"routines": routines.list_routines(adapter._home_dir())})
+        if parts == ["cron", "jobs"]:
+            query = parse_qs(parsed.query)
+            owner = (query.get("owner") or [None])[0]
+            room = (query.get("room") or [None])[0]
+            try:
+                jobs = adapter.list_cron_jobs(owner=owner, room=room)
+            except ValueError as e:
+                return self._json(400, {"error": str(e)})
+            except cronjobs.UnknownOwner:
+                return self._json(404, {"error": "no such retainer"})
+            return self._json(
+                200,
+                {
+                    "jobs": jobs,
+                    "owners": cronjobs.served_owners(adapter._home_dir()),
+                    "timezone": cronjobs.timezone_display(),
+                },
+            )
         if len(parts) == 2 and parts[0] == "routines":
             meta = routines.get_routine(adapter._home_dir(), parts[1])
             if meta is None:
@@ -1506,6 +1676,14 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
                 if r.get("source_room") == parts[1]
             ]
             return self._json(200, {"routines": owned})
+        if len(parts) == 3 and parts[0] == "rooms" and parts[2] == "cron":
+            return self._json(404, {"error": "not found"})
+        if len(parts) == 4 and parts[0] == "rooms" and parts[2:] == ["cron", "jobs"]:
+            try:
+                jobs = adapter.list_room_cron_jobs(parts[1])
+            except KeyError:
+                return self._json(404, {"error": "no such room"})
+            return self._json(200, {"jobs": jobs})
         if len(parts) == 3 and parts[0] == "rooms" and parts[2] == "itinerary":
             room = adapter.store.get(parts[1])
             if room is None:
@@ -1732,7 +1910,11 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
                     room_id=str(body.get("room") or body.get("room_id") or ""),
                     since=int(body.get("since") or 0),
                     until=(int(body["until"]) if body.get("until") is not None else None),
+                    owner=(str(body.get("owner") or "") or None),
+                    schedule=(str(body.get("schedule") or "") or None),
                 )
+            except cronjobs.UnknownOwner:
+                return self._json(404, {"error": "no such retainer"})
             except KeyError:
                 return self._json(404, {"error": "no such room"})
             except ValueError as e:
@@ -1740,6 +1922,32 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
             except FileExistsError as e:
                 return self._json(409, {"error": f"a routine named '{e}' already exists"})
             return self._json(201, payload)
+        if parts == ["cron", "jobs"]:
+            try:
+                payload = adapter.create_cron_job(body)
+            except cronjobs.UnknownOwner:
+                return self._json(404, {"error": "no such retainer"})
+            except KeyError:
+                return self._json(404, {"error": "no such room"})
+            except ValueError as e:
+                return self._json(400, {"error": str(e)})
+            return self._json(201, payload)
+        if len(parts) == 4 and parts[:2] == ["cron", "jobs"]:
+            action = parts[3]
+            try:
+                if action == "pause":
+                    payload = adapter.set_cron_job_enabled(parts[2], False)
+                elif action == "resume":
+                    payload = adapter.set_cron_job_enabled(parts[2], True)
+                elif action == "run":
+                    payload = adapter.run_cron_job(parts[2])
+                else:
+                    return self._json(404, {"error": "not found"})
+            except cronjobs.UnknownJob:
+                return self._json(404, {"error": "no such job"})
+            except ValueError as e:
+                return self._json(400, {"error": str(e)})
+            return self._json(200, payload)
         if len(parts) == 3 and parts[0] == "routines" and parts[2] == "run":
             try:
                 payload = adapter.run_routine(
@@ -1747,6 +1955,8 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
                 )
             except KeyError as e:
                 return self._json(404, {"error": f"not found: {e}"})
+            except ValueError as e:
+                return self._json(400, {"error": str(e)})
             except RuntimeError as e:
                 return self._json(503, {"error": str(e)})
             return self._json(202, payload)
@@ -1792,6 +2002,16 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
                 payload = adapter.patch_project(parts[1], body)
             except KeyError:
                 return self._json(404, {"error": "no such project"})
+            except ValueError as e:
+                return self._json(400, {"error": str(e)})
+            return self._json(200, payload)
+        if len(parts) == 3 and parts[:2] == ["cron", "jobs"]:
+            try:
+                payload = adapter.patch_cron_job(parts[2], body)
+            except cronjobs.UnknownJob:
+                return self._json(404, {"error": "no such job"})
+            except KeyError:
+                return self._json(404, {"error": "no such room"})
             except ValueError as e:
                 return self._json(400, {"error": str(e)})
             return self._json(200, payload)
@@ -1858,6 +2078,12 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
             if routines.delete_routine(self.server.adapter._home_dir(), parts[1]):
                 return self._json(200, {"deleted": parts[1]})
             return self._json(404, {"error": "no such routine"})
+        if len(parts) == 3 and parts[:2] == ["cron", "jobs"]:
+            try:
+                payload = self.server.adapter.delete_cron_job(parts[2])
+            except cronjobs.UnknownJob:
+                return self._json(404, {"error": "no such job"})
+            return self._json(200, payload)
         if len(parts) == 2 and parts[0] == "projects":
             try:
                 payload = self.server.adapter.delete_project(parts[1])

@@ -199,8 +199,40 @@ export interface RoutineMeta {
   name: string;
   slug: string;
   source_room?: string;
-  messages: string[];
+  messages?: string[];
+  steps?: string[];
+  owner?: string;
+  skill?: string;
+  expected_output?: string;
+  job_id?: string | null;
+  schema?: number;
   created_at?: number;
+}
+
+export interface CronJobRow {
+  id: string;
+  owner: string;
+  name: string;
+  prompt: string;
+  skill: string | null;
+  kind: "routine" | "reminder" | string;
+  routine_slug: string | null;
+  schedule: Record<string, unknown>;
+  schedule_display: string;
+  schedule_input: string;
+  next_run_at: string | null;
+  last_run_at: string | null;
+  last_status: string | null;
+  last_error: string | null;
+  last_delivery_error: string | null;
+  registration_error: string | null;
+  state: string;
+  enabled: boolean;
+  deliver: string;
+  room: string | null;
+  room_name: string;
+  repeat: Record<string, unknown>;
+  timezone: string;
 }
 
 export interface IdeFolder {
@@ -451,8 +483,17 @@ export const api = {
   listRoutines: () => req<{ routines: RoutineMeta[] }>("GET", "/routines"),
   listRoomRoutines: (roomId: string) =>
     req<{ routines: RoutineMeta[] }>("GET", `/rooms/${roomId}/routines`),
-  saveRoutine: (name: string, room: string) =>
-    req<RoutineMeta>("POST", "/routines", { name, room }),
+  saveRoutine: (
+    name: string,
+    room: string,
+    opts?: { owner?: string; schedule?: string },
+  ) =>
+    req<RoutineMeta & { job?: CronJobRow }>("POST", "/routines", {
+      name,
+      room,
+      ...(opts?.owner ? { owner: opts.owner } : {}),
+      ...(opts?.schedule ? { schedule: opts.schedule } : {}),
+    }),
   runRoutine: (slug: string, room: string) =>
     req<{ slug: string; room: string; steps: unknown[] }>(
       "POST",
@@ -460,6 +501,33 @@ export const api = {
       { room },
     ),
   deleteRoutine: (slug: string) => req<{ deleted: string }>("DELETE", `/routines/${slug}`),
+  listCronJobs: (params?: { owner?: string; room?: string }) => {
+    const query = new URLSearchParams();
+    if (params?.owner) query.set("owner", params.owner);
+    if (params?.room) query.set("room", params.room);
+    const suffix = query.toString();
+    return req<{ jobs: CronJobRow[]; owners: string[]; timezone: string }>(
+      "GET",
+      `/cron/jobs${suffix ? `?${suffix}` : ""}`,
+    );
+  },
+  listRoomCronJobs: (roomId: string) =>
+    req<{ jobs: CronJobRow[] }>("GET", `/rooms/${encodeURIComponent(roomId)}/cron/jobs`),
+  createCronJob: (body: Record<string, unknown>) =>
+    req<CronJobRow>("POST", "/cron/jobs", body),
+  patchCronJob: (id: string, body: Record<string, unknown>) =>
+    req<CronJobRow>("PATCH", `/cron/jobs/${encodeURIComponent(id)}`, body),
+  pauseCronJob: (id: string) =>
+    req<CronJobRow>("POST", `/cron/jobs/${encodeURIComponent(id)}/pause`, {}),
+  resumeCronJob: (id: string) =>
+    req<CronJobRow>("POST", `/cron/jobs/${encodeURIComponent(id)}/resume`, {}),
+  runCronJob: (id: string) =>
+    req<CronJobRow>("POST", `/cron/jobs/${encodeURIComponent(id)}/run`, {}),
+  deleteCronJob: (id: string) =>
+    req<{ deleted: string; routine_slug: string | null }>(
+      "DELETE",
+      `/cron/jobs/${encodeURIComponent(id)}`,
+    ),
   workspace: () => req<WorkspaceStatus>("GET", "/workspace"),
   listIdeFolders: (path?: string) =>
     req<IdeFolderListing>(

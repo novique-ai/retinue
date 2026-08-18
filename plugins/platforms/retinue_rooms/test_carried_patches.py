@@ -9,6 +9,10 @@ precedent), demonstrated to fail against the unpatched upstream text.
 from __future__ import annotations
 
 import os
+import re
+import subprocess
+
+import pytest
 
 REPO_ROOT = os.path.dirname(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -128,3 +132,64 @@ def test_media_path_translation_reads_the_room_volumes():
         "/workspace attachments will stop resolving to their host path. "
         "Reapply per retinue/FORK-POLICY.md."
     )
+
+
+def test_cron_delivery_live_transport_patch_present():
+    """A resolved live transport without a config block remains deliverable."""
+    src = _read("cron/scheduler.py")
+    region = src.split("def _deliver_result(", 1)[1].split("\ndef ", 1)[0]
+    gate = region[: region.index("elif not pconfig or not pconfig.enabled:")]
+    branch = gate[gate.rindex("if transport is not None") :]
+    assert branch.startswith("if transport is not None:"), (
+        "the deliver=origin carried patch was clobbered: the branch guarding "
+        "'elif not pconfig or not pconfig.enabled' is back to the upstream "
+        "relay-only form. Reapply it per retinue/FORK-POLICY.md — "
+        "novique-ai/retinue#112 and NousResearch/hermes-agent#89302."
+    )
+    assert "PlatformConfig(enabled=True)" in branch
+
+
+def test_cron_scheduler_patch_is_confined_to_deliver_result():
+    """The carried scheduler delta may not grow beyond _deliver_result."""
+    try:
+        diff = subprocess.run(
+            [
+                "git",
+                "diff",
+                "-U0",
+                "56516ec7faa075bab1b1c321962bde38ff79f292",
+                "--",
+                "cron/scheduler.py",
+            ],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        pytest.skip("git is unavailable")
+    if not diff.stdout:
+        pytest.skip("scheduler has no carried-patch diff")
+
+    lines = _read("cron/scheduler.py").splitlines()
+    start = next(i for i, line in enumerate(lines, 1) if line.startswith("def _deliver_result("))
+    end = next(
+        (
+            i
+            for i, line in enumerate(lines, 1)
+            if i > start and re.match(r"^(def |class |@)", line)
+        ),
+        len(lines) + 1,
+    )
+    hunks = [
+        (int(match.group(1)), int(match.group(2) or 1))
+        for match in re.finditer(
+            r"^@@ -\S+ \+(\d+)(?:,(\d+))? @@", diff.stdout, re.MULTILINE
+        )
+    ]
+    outside = [
+        (line, count)
+        for line, count in hunks
+        if line < start or line + max(count, 1) - 1 >= end
+    ]
+    assert not outside, f"cron scheduler hunks outside _deliver_result: {outside}"
