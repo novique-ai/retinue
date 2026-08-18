@@ -19,6 +19,28 @@ def _room(**kwargs) -> Room:
 # ── mentions ─────────────────────────────────────────────────────────────
 
 
+def test_join_draft_and_speech_prefixes_mentions():
+    assert engine.join_draft_and_speech("", "hello") == "hello"
+    assert engine.join_draft_and_speech("  ", "hello") == "hello"
+    assert engine.join_draft_and_speech("@Patty", "") == "@Patty"
+    assert (
+        engine.join_draft_and_speech("@Patty ", "I want you to file the invoice")
+        == "@Patty I want you to file the invoice"
+    )
+    assert (
+        engine.join_draft_and_speech("@Patty please look at", "the invoice")
+        == "@Patty please look at the invoice"
+    )
+
+
+def test_join_draft_and_speech_clips_a_long_prefix():
+    draft = "@Patty " + ("x" * (engine._MAX_AUDIO_DRAFT + 50))
+    got = engine.join_draft_and_speech(draft, "now")
+    assert got.startswith("@Patty ")
+    assert got.endswith(" now")
+    assert len(got) <= engine._MAX_AUDIO_DRAFT + len(" now")
+
+
 def test_mentions_in_order_deduped_case_insensitive():
     room = _room()
     got = engine.parse_mentions("@Editor then @scout, and @EDITOR again", room.members)

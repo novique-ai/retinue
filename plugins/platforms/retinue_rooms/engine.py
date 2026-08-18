@@ -259,6 +259,29 @@ def has_room_broadcast(text: str) -> bool:
     return False
 
 
+# Composer prefix on a voice take. Mentions live at the start of the
+# draft (``@Patty``), so a long prefix is clipped from the end.
+_MAX_AUDIO_DRAFT = 4000
+
+
+def join_draft_and_speech(draft: str, speech: str) -> str:
+    """Prefix the composer onto an STT line so @mentions stay live.
+
+    Hold-to-talk is a separate send path from typed Send. Without this,
+    tapping ``@Patty`` then speaking posts only the transcript and the
+    lead takes the turn. Empty draft is a no-op.
+    """
+    left = (draft or "").strip()
+    if len(left) > _MAX_AUDIO_DRAFT:
+        left = left[:_MAX_AUDIO_DRAFT].rstrip()
+    right = (speech or "").strip()
+    if not left:
+        return right
+    if not right:
+        return left
+    return f"{left} {right}"
+
+
 def plan_user_turns(
     room: Room,
     text: str,

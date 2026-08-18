@@ -1009,6 +1009,10 @@ select:focus {
   color: var(--text);
 }
 
+.voice-hint {
+  color: var(--text-dim);
+}
+
 /* ── panels / overlay ────────────────────────────────────── */
 
 .overlay {

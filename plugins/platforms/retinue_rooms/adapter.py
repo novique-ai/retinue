@@ -917,9 +917,16 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         *,
         filename: str = "speech.wav",
         from_name: str = _DEFAULT_USER_NAME,
+        draft: str = "",
     ) -> Dict[str, Any]:
-        """STT then the normal user-message cycle. Transcript is the room line."""
-        text = voice.transcribe_dispatch(data, filename)
+        """STT then the normal user-message cycle. Transcript is the room line.
+
+        ``draft`` is the composer prefix (usually an ``@Name``). It is
+        joined onto the transcript so mention routing sees the same
+        text the user typed, then spoke.
+        """
+        spoken = voice.transcribe_dispatch(data, filename)
+        text = engine.join_draft_and_speech(draft, spoken)
         result = self.post_user_message(room_id, text, from_name)
         result["text"] = text
         return result
@@ -1770,12 +1777,14 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
             return self._json(400, {"error": "invalid or oversized audio body"})
         query = parse_qs(parsed.query)
         from_name = (query.get("from") or [_DEFAULT_USER_NAME])[0] or _DEFAULT_USER_NAME
+        draft = (query.get("draft") or [""])[0]
         try:
             result = adapter.post_user_audio(
                 room_id,
                 raw,
                 filename=self._filename_for_audio(parsed),
                 from_name=from_name,
+                draft=draft,
             )
         except KeyError:
             return self._json(404, {"error": "no such room"})

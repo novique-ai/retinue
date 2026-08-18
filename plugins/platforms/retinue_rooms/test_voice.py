@@ -214,6 +214,58 @@ def test_post_user_audio_reuses_message_cycle(monkeypatch, tmp_path):
     assert captured["filename"] == "mic.wav"
 
 
+def test_post_user_audio_prefixes_composer_draft(monkeypatch, tmp_path):
+    from .adapter import RetinueRoomsAdapter
+
+    captured = {}
+
+    monkeypatch.setattr(
+        voice, "transcribe_fn", lambda data, filename: "I want you to file the invoice"
+    )
+
+    class _Cfg:
+        extra = {}
+
+    adapter = RetinueRoomsAdapter(_Cfg())
+    adapter._loop = object()
+
+    def fake_post(room_id, text, from_name, wait=False):
+        captured["text"] = text
+        return {"seq": 4, "planned": ["patty"]}
+
+    adapter.post_user_message = fake_post  # type: ignore[method-assign]
+    result = adapter.post_user_audio(
+        "r1",
+        b"wav",
+        filename="mic.wav",
+        from_name="Mark",
+        draft="@Patty ",
+    )
+    assert captured["text"] == "@Patty I want you to file the invoice"
+    assert result["text"] == captured["text"]
+    assert result["planned"] == ["patty"]
+
+
+def test_post_user_audio_empty_draft_is_unchanged(monkeypatch, tmp_path):
+    from .adapter import RetinueRoomsAdapter
+
+    captured = {}
+    monkeypatch.setattr(voice, "transcribe_fn", lambda data, filename: "just speech")
+
+    class _Cfg:
+        extra = {}
+
+    adapter = RetinueRoomsAdapter(_Cfg())
+    adapter._loop = object()
+    adapter.post_user_message = (  # type: ignore[method-assign]
+        lambda room_id, text, from_name, wait=False: captured.update(text=text)
+        or {"seq": 1, "planned": []}
+    )
+    result = adapter.post_user_audio("r1", b"wav", draft="   ")
+    assert captured["text"] == "just speech"
+    assert result["text"] == "just speech"
+
+
 def test_sidecar_status_without_binaries(monkeypatch):
     from . import voice_sidecar
 
