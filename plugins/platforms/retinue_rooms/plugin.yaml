@@ -25,6 +25,8 @@ author: Novique
 provides_tools:
   - rooms_list
   - rooms_post
+  - mail_list
+  - mail_read
 requires_env: []
 optional_env:
   - name: RETINUE_ROOMS_ENABLED
@@ -50,6 +52,14 @@ optional_env:
   - name: RETINUE_ROOMS_LOCAL_TURN_TIMEOUT
     description: "Seconds to wait for a local-LLM agent turn (default 1800). Parallel local turns share one llama-server, so this must cover queue + generation."
     prompt: "Local-LLM turn timeout seconds (default 1800)"
+    password: false
+  - name: RETINUE_FASTMAIL_TOKEN
+    description: "JMAP bearer token for read-only inbox access (mail_list / mail_read). Unset => the mail tools fail closed."
+    prompt: "JMAP API token for inbox read (or empty to disable mail)"
+    password: true
+  - name: RETINUE_FASTMAIL_SESSION
+    description: "JMAP session endpoint (default https://api.fastmail.com/jmap/session)."
+    prompt: "JMAP session URL (default https://api.fastmail.com/jmap/session)"
     password: false
   - name: RETINUE_IDE_ROOT
     description: "Host directory bind-mounted at /workspace for rooms with workspace=ide when the create/patch body omits ide_path."

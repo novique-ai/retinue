@@ -303,6 +303,37 @@ the room meta / `retinue-agent.json`; they hide an entry without deleting it.
 | `RETINUE_ROOMS_TURN_TIMEOUT` | `300` | seconds to wait for one **cloud** agent turn |
 | `RETINUE_ROOMS_LOCAL_TURN_TIMEOUT` | `1800` | seconds to wait for one **local-LLM** turn (covers a slow first token and a sibling queued on the same llama-server) |
 | `RETINUE_SHARED_DIR` | unset | absolute host path mounted at `/shared` in every room container. Unset = off (no mount, no directory created). Must already exist; a missing path is an error, not a silent create. |
+| `RETINUE_FASTMAIL_TOKEN` | unset | JMAP bearer token for inbox read. Unset = the mail tools fail closed. |
+| `RETINUE_FASTMAIL_SESSION` | `https://api.fastmail.com/jmap/session` | JMAP session endpoint |
+
+## Reading email from a room turn (JMAP)
+
+A room member can read the user's inbox during its turn. Two tools, both
+**read-only**:
+
+| Tool | Does |
+|---|---|
+| `mail_list(limit)` | inbox envelopes, newest first — sender, subject, date, preview, and an id (default 20, max 100). No bodies. |
+| `mail_read(id)` | one message by id, rendered as plain text |
+
+**Read only, by construction.** The module issues `Email/query` and
+`Email/get` and nothing else — there is no send, reply, draft, move, flag, or
+mailbox-create path in it. `mail_read` prefers the `text/plain` parts and falls
+back to the HTML part stripped to text, so a member sees a readable message
+rather than a raw MIME dump. Attachments are reported in the header but not
+fetched.
+
+**The token comes from the environment, never from the model.** Set
+`RETINUE_FASTMAIL_TOKEN` in the gateway environment. With no token the tools
+fail closed and make no network call at all. A tool call that tries to pass a
+token, an account id, or a session URL as an argument is **rejected**, not
+quietly ignored: room messages are untrusted input, and a credential the model
+can name is one it can be talked into changing.
+
+The inbox is resolved by JMAP mailbox *role*, not by display name, and the
+account id comes from the session object — so neither depends on a locale or on
+anything a member says. Transport is stdlib `urllib`, like the rest of the
+rooms plugin.
 
 ## The workspace computer (P3)
 
