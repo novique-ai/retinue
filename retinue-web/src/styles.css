@@ -772,6 +772,24 @@ body {
   font-size: 12.5px;
 }
 
+.msg-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.msg-time {
+  font-size: 10.5px;
+  font-weight: 400;
+  color: var(--text-dim);
+  letter-spacing: 0.01em;
+}
+
+.msg-row.mine .msg-head {
+  justify-content: flex-end;
+}
+
 .msg-text {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -803,6 +821,12 @@ body {
   color: var(--text-dim);
   font-size: 12.5px;
   font-style: italic;
+}
+
+.msg-system .msg-time {
+  display: block;
+  margin-top: 2px;
+  font-style: normal;
 }
 
 /* ── composer ────────────────────────────────────────────── */

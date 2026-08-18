@@ -14,6 +14,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Room messages show a tiny Discord-style stamp next to the speaker
+  (`Today at 3:14 PM`, `Yesterday at 11:08 PM`). Uses the existing
+  `ts`. Closes #126.
+
 - **Stop** in the room chrome (Escape too) cuts Speak Replies — the
   current clip and the queue — and aborts this room's in-flight cycle
   so the next line is a redirect. Unchecking Speak Replies also stops
