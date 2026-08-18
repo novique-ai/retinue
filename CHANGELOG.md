@@ -40,6 +40,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Hold to talk** is a real push-to-talk control. Android no longer
+  opens the browser long-press menu (Back / Forward / Reload / Download)
+  on a hold. The button captures the pointer so sliding off still stops
+  recording; blur, a hidden tab, pointer cancel, and leaving the room
+  also stop. Space holds PTT when you are not typing in the composer.
+  Right-click does not start a take. Closes #115.
 - Hire / Edit Voice listed roster slugs as option values, so picking
   `leo` stored `editor` and Speak replies 404'd at xAI. The picker now
   uses `GET /voice.available` (narrator ids). A non-narrator stored or
