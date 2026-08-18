@@ -1,5 +1,5 @@
 import { createRequire } from "node:module";
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -22,20 +22,28 @@ const require = createRequire(import.meta.url);
 const esbuild = require(join(modules, "esbuild"));
 const outputDir = join(tmpdir(), `retinue-ui-${process.pid}`);
 mkdirSync(outputDir, { recursive: true });
-const output = join(outputDir, "cron.ui.test.mjs");
+const entries = readdirSync(join(root, "test")).filter((name) => /\.test\.(ts|tsx)$/.test(name));
+if (entries.length === 0) {
+  throw new Error("no UI tests under test/*.test.ts(x)");
+}
 try {
-  esbuild.buildSync({
-    entryPoints: ["test/cron.ui.test.tsx"],
-    bundle: true,
-    format: "esm",
-    platform: "node",
-    jsx: "automatic",
-    absWorkingDir: root,
-    nodePaths: [modules],
-    outfile: output,
-  });
-  const test = spawnSync(process.execPath, ["--test", output], { stdio: "inherit" });
-  process.exitCode = test.status ?? 1;
+  let failed = false;
+  for (const name of entries) {
+    const output = join(outputDir, `${name}.mjs`);
+    esbuild.buildSync({
+      entryPoints: [`test/${name}`],
+      bundle: true,
+      format: "esm",
+      platform: "node",
+      jsx: "automatic",
+      absWorkingDir: root,
+      nodePaths: [modules],
+      outfile: output,
+    });
+    const test = spawnSync(process.execPath, ["--test", output], { stdio: "inherit" });
+    if ((test.status ?? 1) !== 0) failed = true;
+  }
+  process.exitCode = failed ? 1 : 0;
 } finally {
   rmSync(outputDir, { recursive: true, force: true });
 }

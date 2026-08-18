@@ -38,6 +38,7 @@ import {
   VoiceStatus,
   WorkspaceStatus,
 } from "./api";
+import { formatMessageTime, messageTimeMs } from "./time";
 import {
   blankCronForm,
   CronJobModal,
@@ -766,8 +767,19 @@ function MessageRow({
   roomId: string;
   agentsBySlug: Record<string, AgentMeta>;
 }) {
+  const when = formatMessageTime(msg.ts);
+  const whenMs = messageTimeMs(msg.ts);
+  const stamp = when ? (
+    <time className="msg-time" dateTime={whenMs ? new Date(whenMs).toISOString() : undefined}>
+      {when}
+    </time>
+  ) : null;
   if (msg.kind === "system") {
-    return <div className="msg-system">— {msg.text} —</div>;
+    return (
+      <div className="msg-system">
+        — {msg.text} —{stamp}
+      </div>
+    );
   }
   const mine = msg.kind === "user";
   return (
@@ -785,11 +797,14 @@ function MessageRow({
         />
       )}
       <div className={mine ? "bubble mine" : "bubble"}>
-        {!mine && (
-          <span className="chip" style={{ color: identityColor(agentsBySlug[msg.speaker]?.identity.color) }}>
-            {handleOf(msg.speaker) !== msg.speaker ? handleOf(msg.speaker) : msg.speaker}
-          </span>
-        )}
+        <div className="msg-head">
+          {!mine && (
+            <span className="chip" style={{ color: identityColor(agentsBySlug[msg.speaker]?.identity.color) }}>
+              {handleOf(msg.speaker) !== msg.speaker ? handleOf(msg.speaker) : msg.speaker}
+            </span>
+          )}
+          {stamp}
+        </div>
         <div className="msg-text">
           <MentionBody text={msg.text} members={members} handleOf={handleOf} agentsBySlug={agentsBySlug} />
         </div>
