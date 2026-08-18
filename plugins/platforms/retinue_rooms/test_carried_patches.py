@@ -144,7 +144,7 @@ def test_cron_delivery_live_transport_patch_present():
         "the deliver=origin carried patch was clobbered: the branch guarding "
         "'elif not pconfig or not pconfig.enabled' is back to the upstream "
         "relay-only form. Reapply it per retinue/FORK-POLICY.md — "
-        "novique-ai/retinue#112 and NousResearch/hermes-agent#84300."
+        "novique-ai/retinue#112 and NousResearch/hermes-agent#89302."
     )
     assert "PlatformConfig(enabled=True)" in branch
 
