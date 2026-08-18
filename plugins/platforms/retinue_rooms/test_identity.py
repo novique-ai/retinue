@@ -342,6 +342,27 @@ def test_get_voice_reflects_per_agent_override(tmp_path, monkeypatch):
         assert payload["voices"]["herald"] == "celeste"
         assert payload["voices"]["scout"] == "ursa"
         assert payload["voices"]["admin"] == "eve"
+        assert payload["available"] == list(voice.AVAILABLE_VOICES)
+        assert "editor" not in payload["available"]
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def test_patch_rejects_a_staff_slug_as_voice(tmp_path, monkeypatch):
+    monkeypatch.delenv("RETINUE_VOICE_MAP", raising=False)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("gateway.status.write_runtime_status", lambda **kw: None)
+    hire.scaffold_profile(str(tmp_path), "Herald", "announce", "")
+    httpd = _httpd(tmp_path, monkeypatch)
+    try:
+        status, payload = _call(httpd, "PATCH", "/agents/herald", {"voice": "editor"})
+        assert status == 400
+        err = str(payload.get("error") or "").lower()
+        assert "editor" in err or "voice" in err
+        listed = {a["slug"]: a for a in hire.list_agents(str(tmp_path))}
+        assert listed["herald"]["voice"] is None
+        assert listed["herald"]["voice_resolved"] == "rigel"
     finally:
         httpd.shutdown()
         httpd.server_close()

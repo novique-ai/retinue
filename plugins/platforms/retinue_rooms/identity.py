@@ -122,7 +122,15 @@ def normalize_voice(value: Any) -> Optional[str]:
         return None
     if not _VOICE_RE.fullmatch(text):
         raise ValueError("voice must be a short voice id or null")
-    return text.lower()
+    text = text.lower()
+    # Imported lazily: voice.py calls stable_index from this module.
+    from .voice import is_narrator
+
+    if not is_narrator(text):
+        raise ValueError(
+            f"invalid voice {value!r} (must be a narrator id or null)"
+        )
+    return text
 
 
 def normalize_persona(value: Any) -> Dict[str, str]:

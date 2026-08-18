@@ -230,7 +230,10 @@ export interface VoiceStatus {
   backend: string;
   ready: boolean;
   detail: string;
+  /** Roster: agent slug → resolved narrator id. Not a picker catalog. */
   voices: Record<string, string>;
+  /** Narrator ids the hire/edit picker may store. */
+  available?: string[];
 }
 
 const KEY_STORAGE = "retinue.apiKey";

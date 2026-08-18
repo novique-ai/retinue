@@ -42,9 +42,20 @@ STAFF_VOICES: Dict[str, str] = {
 
 # Available narrator ids for derivation. Collisions are accepted —
 # stability beats distinctness: an agent's voice must not change because
-# somebody else was hired.
+# somebody else was hired. Do not reorder or grow this tuple — Auto
+# voices are index-into-this-list.
 AVAILABLE_VOICES = ("eve", "leo", "rex", "rigel", "ursa", "celeste", "lux", "iris")
 _FALLBACK_VOICES = AVAILABLE_VOICES
+
+# Extra narrator ids accepted on hire / patch / RETINUE_VOICE_MAP (docs
+# and tests use helix) that are not in the derivation tuple.
+_EXTRA_NARRATORS = ("helix",)
+NARRATOR_VOICES = frozenset(AVAILABLE_VOICES) | frozenset(_EXTRA_NARRATORS)
+
+
+def is_narrator(voice_id: str) -> bool:
+    """True when *voice_id* is a provider narrator, not a staff slug."""
+    return bool(voice_id) and voice_id.strip().lower() in NARRATOR_VOICES
 
 
 class VoiceError(ValueError):
@@ -83,13 +94,14 @@ def voice_for(
 
     slug = (speaker or "").strip().lower()
     override = _voice_map_override()
-    if slug in override:
-        return override[slug]
+    mapped = override.get(slug)
+    if is_narrator(mapped or ""):
+        return mapped.strip().lower()
     chosen = stored
     if chosen is None and home_dir and slug:
         chosen = _read_stored_voice(slug, home_dir)
-    if isinstance(chosen, str) and chosen.strip():
-        return chosen.strip()
+    if isinstance(chosen, str) and is_narrator(chosen):
+        return chosen.strip().lower()
     if slug in STAFF_VOICES:
         return STAFF_VOICES[slug]
     if not slug:
@@ -167,6 +179,7 @@ def status(home_dir: Optional[str] = None) -> Dict[str, Any]:
         "ready": ready,
         "detail": detail,
         "voices": voices,
+        "available": list(AVAILABLE_VOICES),
     }
 
 
