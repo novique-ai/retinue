@@ -30,6 +30,7 @@ import {
   ItineraryItem,
   ItineraryStatus,
   RoutineMeta,
+  CronJobRow,
   setApiKey,
   SidebarItem,
   SidebarLayout,
@@ -37,6 +38,15 @@ import {
   VoiceStatus,
   WorkspaceStatus,
 } from "./api";
+import {
+  blankCronForm,
+  CronJobModal,
+  formFromRow,
+  SaveRoutineModal,
+  ScheduledSection,
+  type CronFormState,
+  type SaveRoutineFormState,
+} from "./cron";
 import { LOGO_SRC, YOU_SRC, agentIcon } from "./icons";
 import { includeBusyThinkers, remainingThinkers, remainingThinkersAfter } from "./thinking";
 
@@ -779,6 +789,8 @@ function RoomView({
   onRoomUpdate,
   sidebarCollapsed,
   onToggleSidebar,
+  onSaveRoutine,
+  routineRefreshToken,
 }: {
   room: RoomMeta;
   userName: string;
@@ -789,6 +801,8 @@ function RoomView({
   onRoomUpdate: (updated: RoomMeta) => void;
   sidebarCollapsed: boolean;
   onToggleSidebar: () => void;
+  onSaveRoutine: () => void;
+  routineRefreshToken: number;
 }) {
   const [messages, setMessages] = useState<RoomMsg[]>([]);
   const [draft, setDraft] = useState("");
@@ -830,7 +844,7 @@ function RoomView({
     } catch {
       setItineraryOpen(false);
     }
-  }, [room.id]);
+  }, [room.id, routineRefreshToken]);
   const handleOf = useCallback(
     (slug: string) => mentionHandle(slug, agents, room.members),
     [agents, room.members],
@@ -1118,17 +1132,7 @@ function RoomView({
           </button>
           <button
             className="mini wide"
-            onClick={async () => {
-              const name = window.prompt("Save this room's user prompts as a routine named:");
-              if (!name) return;
-              try {
-                const created = await api.saveRoutine(name, room.id);
-                refreshRoomRoutines();
-                alert(`Saved routine "${created.name}" (${created.messages.length} steps)`);
-              } catch (e) {
-                alert(String(e));
-              }
-            }}
+            onClick={onSaveRoutine}
           >
             Save routine
           </button>
@@ -1141,7 +1145,8 @@ function RoomView({
               {rt.name}
               <span className="nav-sub">
                 {" "}
-                · {rt.messages.length} step{rt.messages.length === 1 ? "" : "s"}
+                · {rt.messages?.length ?? rt.steps?.length ?? 0} step
+                {(rt.messages?.length ?? rt.steps?.length ?? 0) === 1 ? "" : "s"}
               </span>
               <button
                 className="mini"
@@ -2720,7 +2725,7 @@ function KeyPanel({ onDone }: { onDone: () => void }) {
 
 // ── shell ────────────────────────────────────────────────────────────────
 
-type Modal = "hire" | "room" | "key" | "edit-room" | "edit-agent" | "reauth" | "settings" | null;
+type Modal = "hire" | "room" | "key" | "edit-room" | "edit-agent" | "reauth" | "settings" | "cron-job" | "save-routine" | null;
 type DragPayload = { list: "rooms" | "items"; id: string };
 type DropHint = { list: "rooms" | "items"; id: string; place: "before" | "after" } | null;
 
@@ -2742,6 +2747,14 @@ export default function App() {
   const [voices, setVoices] = useState<Record<string, string>>({});
   const [availableVoices, setAvailableVoices] = useState<string[]>(NARRATOR_VOICES);
   const [routineList, setRoutineList] = useState<RoutineMeta[]>([]);
+  const [cronJobs, setCronJobs] = useState<CronJobRow[]>([]);
+  const [cronOwners, setCronOwners] = useState<string[]>([]);
+  const [cronTimezone, setCronTimezone] = useState("");
+  const [cronFilterOwner, setCronFilterOwner] = useState("");
+  const [cronFilterRoom, setCronFilterRoom] = useState("");
+  const [cronForm, setCronForm] = useState<CronFormState | null>(null);
+  const [saveRoutineForm, setSaveRoutineForm] = useState<SaveRoutineFormState | null>(null);
+  const [routineRefreshToken, setRoutineRefreshToken] = useState(0);
   const [workspaceInfo, setWorkspaceInfo] = useState<WorkspaceStatus | null>(null);
   const [layout, setLayout] = useState<SidebarLayout>({ rooms: [], items: [] });
   const [current, setCurrent] = useState<RoomMeta | null>(null);
@@ -2766,13 +2779,14 @@ export default function App() {
 
   const refresh = useCallback(async () => {
     try {
-      const [r, p, a, m, rt, ws] = await Promise.all([
+      const [r, p, a, m, rt, ws, cron] = await Promise.all([
         api.listRooms(),
         api.listProjects(),
         api.listAgents(),
         api.listModels(),
         api.listRoutines(),
         api.workspace(),
+        api.listCronJobs().catch(() => ({ jobs: [], owners: [], timezone: "" })),
       ]);
       setRooms(r.rooms);
       setProjects(p.projects);
@@ -2781,6 +2795,9 @@ export default function App() {
       setModels(m.models);
       setRoutineList(rt.routines);
       setWorkspaceInfo(ws);
+      setCronJobs(cron.jobs);
+      setCronOwners(cron.owners);
+      setCronTimezone(cron.timezone);
       // Rarely change; harmless to refresh alongside everything else, and
       // keeps the hire/edit panels' pickers off a running gateway rather
       // than a second hardcoded copy (CONTRACT-identity.md).
@@ -3524,14 +3541,32 @@ export default function App() {
           />
           Show archived
         </label>
+        <ScheduledSection
+          jobs={cronJobs}
+          owners={cronOwners}
+          rooms={rooms}
+          timezone={cronTimezone}
+          filterOwner={cronFilterOwner}
+          filterRoom={cronFilterRoom}
+          onFilterOwner={setCronFilterOwner}
+          onFilterRoom={setCronFilterRoom}
+          onChanged={() => void refresh()}
+          onEdit={(job) => {
+            setCronForm(
+              job
+                ? formFromRow(job, cronOwners[0] ?? "default")
+                : blankCronForm(cronOwners[0] ?? "default"),
+            );
+            setModal("cron-job");
+          }}
+        />
         <div className="section">
-          <div className="section-head">
-            <span>Routines</span>
-          </div>
+          <div className="section-head"><span>Saved routines</span></div>
           {routineList.map((rt) => (
             <div key={rt.slug} className="agent-item">
               <span className="nav-sub">
-                {rt.name} · {rt.messages.length} step{rt.messages.length === 1 ? "" : "s"}
+                {rt.name} · {rt.messages?.length ?? rt.steps?.length ?? 0} step
+                {(rt.messages?.length ?? rt.steps?.length ?? 0) === 1 ? "" : "s"}
               </span>
               <button
                 className="mini"
@@ -3598,6 +3633,24 @@ export default function App() {
             }}
             sidebarCollapsed={sidebarCollapsed}
             onToggleSidebar={toggleSidebar}
+            routineRefreshToken={routineRefreshToken}
+            onSaveRoutine={() => {
+              const lead = current.lead && cronOwners.includes(current.lead)
+                ? current.lead
+                : current.members.find((member) => cronOwners.includes(member));
+              setSaveRoutineForm({
+                name: "",
+                room: current.id,
+                owner: lead ?? cronOwners[0] ?? "default",
+                scheduled: false,
+                mode: "every",
+                at: "",
+                every: "1",
+                unit: "d",
+                expr: "0 9 * * *",
+              });
+              setModal("save-routine");
+            }}
           />
         ) : visibleCast.length === 0 ? (
           <div className="welcome empty-state">
@@ -3685,6 +3738,8 @@ export default function App() {
             setModal(null);
             setEditingRoom(null);
             setEditingAgent(null);
+            setCronForm(null);
+            setSaveRoutineForm(null);
             setSettingsDirty(false);
           }}
         >
@@ -3780,6 +3835,36 @@ export default function App() {
                 onDone={() => {
                   setModal(null);
                   setSettingsDirty(false);
+                  void refresh();
+                }}
+              />
+            )}
+            {modal === "cron-job" && cronForm && (
+              <CronJobModal
+                form={cronForm}
+                owners={cronOwners}
+                rooms={rooms}
+                timezone={cronTimezone}
+                onChange={setCronForm}
+                onClose={() => {
+                  setCronForm(null);
+                  setModal(null);
+                }}
+                onSaved={() => void refresh()}
+              />
+            )}
+            {modal === "save-routine" && saveRoutineForm && (
+              <SaveRoutineModal
+                form={saveRoutineForm}
+                owners={cronOwners}
+                timezone={cronTimezone}
+                onChange={setSaveRoutineForm}
+                onClose={() => {
+                  setSaveRoutineForm(null);
+                  setModal(null);
+                }}
+                onSaved={() => {
+                  setRoutineRefreshToken((value) => value + 1);
                   void refresh();
                 }}
               />
