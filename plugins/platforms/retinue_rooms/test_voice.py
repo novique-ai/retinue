@@ -214,6 +214,129 @@ def test_post_user_audio_reuses_message_cycle(monkeypatch, tmp_path):
     assert captured["filename"] == "mic.wav"
 
 
+def test_post_user_audio_prefixes_composer_draft(monkeypatch, tmp_path):
+    from .adapter import RetinueRoomsAdapter
+
+    captured = {}
+
+    monkeypatch.setattr(
+        voice, "transcribe_fn", lambda data, filename: "I want you to file the invoice"
+    )
+
+    class _Cfg:
+        extra = {}
+
+    adapter = RetinueRoomsAdapter(_Cfg())
+    adapter._loop = object()
+
+    def fake_post(room_id, text, from_name, wait=False):
+        captured["text"] = text
+        return {"seq": 4, "planned": ["patty"]}
+
+    adapter.post_user_message = fake_post  # type: ignore[method-assign]
+    result = adapter.post_user_audio(
+        "r1",
+        b"wav",
+        filename="mic.wav",
+        from_name="Mark",
+        draft="@Patty ",
+    )
+    assert captured["text"] == "@Patty I want you to file the invoice"
+    assert result["text"] == captured["text"]
+    assert result["planned"] == ["patty"]
+
+
+def test_post_user_audio_empty_draft_is_unchanged(monkeypatch, tmp_path):
+    from .adapter import RetinueRoomsAdapter
+
+    captured = {}
+    monkeypatch.setattr(voice, "transcribe_fn", lambda data, filename: "just speech")
+
+    class _Cfg:
+        extra = {}
+
+    adapter = RetinueRoomsAdapter(_Cfg())
+    adapter._loop = object()
+    adapter.post_user_message = (  # type: ignore[method-assign]
+        lambda room_id, text, from_name, wait=False: captured.update(text=text)
+        or {"seq": 1, "planned": []}
+    )
+    result = adapter.post_user_audio("r1", b"wav", draft="   ")
+    assert captured["text"] == "just speech"
+    assert result["text"] == "just speech"
+
+
+def test_post_user_audio_rewrites_spoken_vocative(monkeypatch, tmp_path):
+    from .adapter import RetinueRoomsAdapter
+    from .engine import Room
+    from .store import RoomStore
+
+    captured = {}
+    monkeypatch.setattr(
+        voice, "transcribe_fn", lambda data, filename: "at Claude how are you doing"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    class _Cfg:
+        extra = {}
+
+    adapter = RetinueRoomsAdapter(_Cfg())
+    adapter._loop = object()
+    adapter.store = RoomStore(base_dir=str(tmp_path / "rooms"))
+    adapter.store.create(
+        Room(
+            id="r1",
+            name="Voice",
+            members=["claude", "ellie", "admin"],
+            lead="admin",
+        )
+    )
+    adapter._display_names = lambda room: {  # type: ignore[method-assign]
+        "claude": "Claude",
+        "ellie": "Ellie",
+        "admin": "Carlos",
+    }
+    adapter.post_user_message = (  # type: ignore[method-assign]
+        lambda room_id, text, from_name, wait=False: captured.update(text=text)
+        or {"seq": 5, "planned": ["claude"]}
+    )
+    result = adapter.post_user_audio("r1", b"wav")
+    assert captured["text"] == "@Claude how are you doing"
+    assert result["text"] == captured["text"]
+
+
+def test_post_user_audio_draft_wins_over_spoken_vocative(monkeypatch, tmp_path):
+    from .adapter import RetinueRoomsAdapter
+    from .engine import Room
+    from .store import RoomStore
+
+    captured = {}
+    monkeypatch.setattr(
+        voice, "transcribe_fn", lambda data, filename: "at Claude ignore this"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    class _Cfg:
+        extra = {}
+
+    adapter = RetinueRoomsAdapter(_Cfg())
+    adapter._loop = object()
+    adapter.store = RoomStore(base_dir=str(tmp_path / "rooms"))
+    adapter.store.create(
+        Room(id="r1", name="Voice", members=["claude", "ellie"], lead="ellie")
+    )
+    adapter._display_names = lambda room: {  # type: ignore[method-assign]
+        "claude": "Claude",
+        "ellie": "Ellie",
+    }
+    adapter.post_user_message = (  # type: ignore[method-assign]
+        lambda room_id, text, from_name, wait=False: captured.update(text=text)
+        or {"seq": 6, "planned": ["ellie"]}
+    )
+    adapter.post_user_audio("r1", b"wav", draft="@Ellie ")
+    assert captured["text"] == "@Ellie at Claude ignore this"
+
+
 def test_sidecar_status_without_binaries(monkeypatch):
     from . import voice_sidecar
 

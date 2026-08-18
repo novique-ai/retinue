@@ -19,6 +19,147 @@ def _room(**kwargs) -> Room:
 # ── mentions ─────────────────────────────────────────────────────────────
 
 
+def test_join_draft_and_speech_prefixes_mentions():
+    assert engine.join_draft_and_speech("", "hello") == "hello"
+    assert engine.join_draft_and_speech("  ", "hello") == "hello"
+    assert engine.join_draft_and_speech("@Patty", "") == "@Patty"
+    assert (
+        engine.join_draft_and_speech("@Patty ", "I want you to file the invoice")
+        == "@Patty I want you to file the invoice"
+    )
+    assert (
+        engine.join_draft_and_speech("@Patty please look at", "the invoice")
+        == "@Patty please look at the invoice"
+    )
+
+
+def test_rewrite_spoken_address_at_and_hey():
+    members = ["patty", "ellie", "claude", "admin"]
+    names = {
+        "patty": "Patty",
+        "ellie": "Ellie",
+        "claude": "Claude",
+        "admin": "Carlos",
+    }
+    assert (
+        engine.rewrite_spoken_address(
+            "at Patty, I want you to file the invoice", members, names
+        )
+        == "@Patty I want you to file the invoice"
+    )
+    assert (
+        engine.rewrite_spoken_address("hey Ellie how are you", members, names)
+        == "@Ellie how are you"
+    )
+    assert (
+        engine.rewrite_spoken_address("yo Claude check this", members, names)
+        == "@Claude check this"
+    )
+    # STT often inserts a comma after Hey (Voice Testing 1, seq 84).
+    assert (
+        engine.rewrite_spoken_address("Hey, Dave, how are you doing?", ["dave"], {"dave": "Dave"})
+        == "@Dave how are you doing?"
+    )
+
+
+def test_rewrite_spoken_address_greeting_is_kept():
+    members = ["ellie", "claude", "admin"]
+    names = {"ellie": "Ellie", "claude": "Claude", "admin": "Carlos"}
+    assert (
+        engine.rewrite_spoken_address(
+            "Hi, Ellie. This is a voice test. How are you doing?",
+            members,
+            names,
+        )
+        == "@Ellie Hi, Ellie. This is a voice test. How are you doing?"
+    )
+    assert (
+        engine.rewrite_spoken_address("hello Claude this is a test", members, names)
+        == "@Claude hello Claude this is a test"
+    )
+
+
+def test_rewrite_spoken_address_name_comma_and_room():
+    members = ["claude", "ellie"]
+    names = {"claude": "Claude", "ellie": "Ellie"}
+    assert (
+        engine.rewrite_spoken_address("Claude, review the patch", members, names)
+        == "@Claude review the patch"
+    )
+    assert engine.rewrite_spoken_address("at room stand by", members, names) == (
+        "@room stand by"
+    )
+    assert engine.rewrite_spoken_address("hey room", members, names) == "@room"
+
+
+def test_rewrite_spoken_address_does_not_steal():
+    members = ["patty", "ellie", "editor", "sally", "scout"]
+    names = {
+        "patty": "Patty",
+        "ellie": "Ellie",
+        "editor": "Editor",
+        "sally": "Sally",
+        "scout": "Scout",
+    }
+    assert (
+        engine.rewrite_spoken_address("look at Patty later", members, names)
+        == "look at Patty later"
+    )
+    assert (
+        engine.rewrite_spoken_address("@Ellie already tapped", members, names)
+        == "@Ellie already tapped"
+    )
+    assert (
+        engine.rewrite_spoken_address("at the invoice", members, names)
+        == "at the invoice"
+    )
+    assert engine.rewrite_spoken_address("at S what now", members, names) == (
+        "at S what now"
+    )
+    assert engine.rewrite_spoken_address("at Ed please", members, names) == (
+        "at Ed please"
+    )
+
+
+def test_rewrite_spoken_address_stt_near_miss():
+    members = ["mangus", "dave", "admin"]
+    names = {"mangus": "Mangus", "dave": "Dave", "admin": "Carlos"}
+    # Voice Testing 1 seq 79: STT wrote Mingus for Mangus.
+    assert (
+        engine.rewrite_spoken_address(
+            "Hey, Mingus, how are you doing today?", members, names
+        )
+        == "@Mangus how are you doing today?"
+    )
+    assert (
+        engine.rewrite_spoken_address("at Mingus stand by", members, names)
+        == "@Mangus stand by"
+    )
+    # Two one-edit hits must not steal a turn.
+    members = ["patty", "petty"]
+    names = {"patty": "Patty", "petty": "Petty"}
+    assert engine.rewrite_spoken_address("at Potty hello", members, names) == (
+        "at Potty hello"
+    )
+
+
+def test_rewrite_spoken_address_unique_prefix():
+    members = ["claude", "ellie"]
+    names = {"claude": "Claude", "ellie": "Ellie"}
+    assert (
+        engine.rewrite_spoken_address("at Claud how are you", members, names)
+        == "@Claude how are you"
+    )
+
+
+def test_join_draft_and_speech_clips_a_long_prefix():
+    draft = "@Patty " + ("x" * (engine._MAX_AUDIO_DRAFT + 50))
+    got = engine.join_draft_and_speech(draft, "now")
+    assert got.startswith("@Patty ")
+    assert got.endswith(" now")
+    assert len(got) <= engine._MAX_AUDIO_DRAFT + len(" now")
+
+
 def test_mentions_in_order_deduped_case_insensitive():
     room = _room()
     got = engine.parse_mentions("@Editor then @scout, and @EDITOR again", room.members)

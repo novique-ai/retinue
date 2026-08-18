@@ -279,6 +279,26 @@ function resolveTypedMention(
   return hits.length === 1 ? hits[0] : null;
 }
 
+/** Live @addressees in the composer, in order. Used for the PTT hint. */
+function draftAddressees(
+  text: string,
+  members: string[],
+  handleOf: (slug: string) => string,
+): string[] {
+  const unfenced = blankFences(text);
+  const re = /@([A-Za-z0-9_][A-Za-z0-9_-]*)/g;
+  const seen: string[] = [];
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(unfenced))) {
+    const slug = isRoomBroadcastToken(match[1])
+      ? ROOM_BROADCAST
+      : resolveTypedMention(match[1], members, handleOf);
+    if (!slug || seen.includes(slug)) continue;
+    seen.push(slug);
+  }
+  return seen;
+}
+
 function mentionPartial(text: string, caret: number): { start: number; query: string } | null {
   const head = text.slice(0, caret);
   const match = /(?:^|[\s([{])@([A-Za-z0-9_-]*)$/.exec(head);
@@ -824,6 +844,8 @@ function RoomView({
   // guard the transcript yanks back down while you read a long note.
   const stickToBottomRef = useRef(true);
   const draftRef = useRef<HTMLTextAreaElement>(null);
+  const draftTextRef = useRef(draft);
+  draftTextRef.current = draft;
   const micRef = useRef<{ stop: () => Promise<Blob> } | null>(null);
   const [caret, setCaret] = useState(0);
   const [mentionPick, setMentionPick] = useState(0);
@@ -871,6 +893,14 @@ function RoomView({
         }),
       ]
     : [];
+  const voiceTargets = draftAddressees(draft, room.members, handleOf);
+  const voiceDraftHint = voiceTargets.length
+    ? `Will send to ${voiceTargets
+        .map((slug) => (slug === ROOM_BROADCAST ? "@room" : `@${handleOf(slug)}`))
+        .join(", ")}`
+    : draft.trim()
+      ? "Will include typed text"
+      : "";
   useEffect(() => {
     if (mentionPick >= mentionChoices.length) setMentionPick(0);
   }, [mentionChoices.length, mentionPick]);
@@ -1040,15 +1070,23 @@ function RoomView({
     micRef.current = null;
     setHolding(false);
     if (!rec) return;
+    const prefix = draftTextRef.current.trim();
     stickToBottomRef.current = true;
     setSending(true);
     setVoiceNote("transcribing…");
     try {
       const blob = await rec.stop();
-      const { planned, text } = await api.sendAudio(room.id, blob, userName);
+      const { planned, text } = await api.sendAudio(room.id, blob, userName, {
+        draft: prefix,
+      });
       if (roomRef.current !== room.id) return;
       setThinking(remainingThinkersAfter(planned, messagesRef.current));
       setVoiceNote(text ? `Heard: ${text}` : "");
+      if (prefix) {
+        setDraft("");
+        setCaret(0);
+        setMentionOff(false);
+      }
     } catch (e) {
       setVoiceNote(String(e));
     } finally {
@@ -1414,6 +1452,9 @@ function RoomView({
               ? `${voice.backend}${voice.ready ? "" : " (not ready)"}`
               : "voice…"}
           </span>
+          {voiceDraftHint && !voiceNote && (
+            <span className="voice-hint">{voiceDraftHint}</span>
+          )}
           {voiceNote && <span className="voice-note">{voiceNote}</span>}
         </div>
       </div>

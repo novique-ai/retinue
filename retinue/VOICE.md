@@ -20,13 +20,19 @@ Plugin-shaped voice is live in `retinue-web/` and
 | Hold-to-talk | `retinue-web/src/App.tsx` | `getUserMedia` + ScriptProcessor → WAV blob; pointer-down records, pointer-up uploads |
 | Speak replies | same | Sequential `POST /tts` + `Audio` playback queue when “Speak replies” is on |
 | Backend status | `GET /voice` | `{ backend, ready, detail, voices }` from `voice.status()` |
-| Audio in | `POST /rooms/{id}/audio` | Raw body + query `from` / `filename` → STT → normal user-message cycle → **202** `{ seq, planned, text }` |
+| Audio in | `POST /rooms/{id}/audio` | Raw body + query `from` / `filename` / optional `draft` → STT → `draft + speech` → leading spoken vocative (`at Claude`) rewritten to `@Claude` when the line has no live @mention → normal user-message cycle → **202** `{ seq, planned, text }` |
 | TTS out | `POST /tts` | JSON `{ text, speaker }` (or `voice`) → `audio/wav` or `audio/mpeg` bytes |
 
 Web client: `api.voiceStatus()`, `api.sendAudio()`, `api.speak()` in
 `retinue-web/src/api.ts`. Room UI shows a “Hold to talk” button, a backend
 label (`xai` / `openai`, plus “not ready” when applicable), and a short
-“Heard: …” note after transcription.
+“Heard: …” note after transcription. A composer draft (typically
+`@Patty` from the mention bar) is sent as `draft` and prefixed onto the
+spoken line so the mention engine routes it. Empty draft still goes to
+the lead unless the spoken line starts with a vocative (`at Claude`,
+`hey Ellie`, `Hi, Patty`, `Claude,`) — that is rewritten to a live
+`@Handle` on the transcript. A tap still wins: if the draft already
+has an `@`, the spoken “at …” is left as words.
 
 Default backend is **Track A** (`RETINUE_VOICE_BACKEND` unset → `xai`).
 `ready` is true when xAI credentials resolve, or when the OpenAI-compatible

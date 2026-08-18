@@ -552,13 +552,23 @@ export const api = {
     if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
     return data as { name: string; path: string; bytes: number; image: boolean };
   },
-  sendAudio: async (id: string, blob: Blob, from: string, filename = "speech.wav") => {
+  sendAudio: async (
+    id: string,
+    blob: Blob,
+    from: string,
+    opts?: { filename?: string; draft?: string },
+  ) => {
     const headers: Record<string, string> = {
       "Content-Type": blob.type || "audio/wav",
     };
     const key = getApiKey();
     if (key) headers.Authorization = `Bearer ${key}`;
-    const params = new URLSearchParams({ from, filename });
+    const params = new URLSearchParams({
+      from,
+      filename: opts?.filename || "speech.wav",
+    });
+    const draft = (opts?.draft || "").trim();
+    if (draft) params.set("draft", draft);
     const resp = await fetch(`/rooms/${id}/audio?${params.toString()}`, {
       method: "POST",
       headers,
