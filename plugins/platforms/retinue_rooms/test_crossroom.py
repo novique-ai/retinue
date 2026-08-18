@@ -430,8 +430,8 @@ def test_register_wires_the_tools_even_when_the_adapter_defers():
 
     register(_Ctx())
 
-    assert set(registered) == {"rooms_list", "rooms_post"}
-    assert {v["toolset"] for v in registered.values()} == {tools.TOOLSET}
+    assert {"rooms_list", "rooms_post"} <= set(registered)
+    assert registered["rooms_list"]["toolset"] == tools.TOOLSET
     assert registered["rooms_post"]["handler"] is tools.rooms_post
 
 
@@ -449,4 +449,6 @@ def test_plugin_manifest_declares_exactly_the_registered_tools():
         if not m:
             break
         declared.append(m.group(1))
-    assert set(declared) == set(tools._HANDLERS)
+    from . import jmap_tools
+
+    assert set(declared) == set(tools._HANDLERS) | set(jmap_tools._HANDLERS)

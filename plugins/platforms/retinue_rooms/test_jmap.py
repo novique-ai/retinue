@@ -464,7 +464,7 @@ class TestRegistration:
 
         register(_Ctx())
 
-        assert set(registered) == {"mail_list", "mail_read"}
+        assert {"mail_list", "mail_read"} <= set(registered)
 
     def test_handlers_accept_the_registry_dispatch_convention(self, monkeypatch):
         """registry.dispatch calls handler(args_dict) positionally."""
