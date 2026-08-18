@@ -287,9 +287,9 @@ def join_draft_and_speech(draft: str, speech: str) -> str:
 # a tap-to-talk draft) wins and is left alone. Unique prefixes shorter
 # than this many characters are ignored so "at Ed" does not steal Editor.
 _SPOKEN_MIN_PREFIX = 4
-_SPOKEN_AT_ROOM = re.compile(r"(?is)^(at|hey|yo)\s+room\b[,:]?\s*")
+_SPOKEN_AT_ROOM = re.compile(r"(?is)^(at|hey|yo)\s*,?\s+room\b[,:]?\s*")
 _SPOKEN_AT_NAME = re.compile(
-    r"(?is)^(at|hey|yo)\s+(" + _TOKEN_RE.pattern + r")[,:]?\s*"
+    r"(?is)^(at|hey|yo)\s*,?\s+(" + _TOKEN_RE.pattern + r")[,:]?\s*"
 )
 _SPOKEN_HI_NAME = re.compile(
     r"(?is)^(hi|hello)\s*,?\s+(" + _TOKEN_RE.pattern + r")\b"
@@ -299,10 +299,37 @@ _SPOKEN_NAME_COMMA = re.compile(
 )
 
 
+def _one_edit_apart(left: str, right: str) -> bool:
+    """True when *left* and *right* differ by a single insert/delete/replace."""
+    if left == right:
+        return False
+    a, b = left, right
+    if len(a) > len(b):
+        a, b = b, a
+    if len(b) - len(a) > 1:
+        return False
+    if len(a) == len(b):
+        return sum(x != y for x, y in zip(a, b)) == 1
+    i = 0
+    skipped = False
+    for ch in b:
+        if i < len(a) and a[i] == ch:
+            i += 1
+            continue
+        if skipped:
+            return False
+        skipped = True
+    return True
+
+
 def resolve_spoken_name(
     token: str, index: Dict[str, str]
 ) -> Optional[str]:
-    """Exact roster alias, else a unique prefix of length >= 4."""
+    """Exact roster alias, unique prefix (>=4), or unique one-edit near-miss.
+
+    STT routinely writes ``Mingus`` for Mangus. A single-character
+    misspelling is accepted only when it maps to exactly one alias.
+    """
     key = (token or "").lower()
     if not key or key == ROOM_BROADCAST_TOKEN:
         return None
@@ -310,7 +337,13 @@ def resolve_spoken_name(
         return index[key]
     if len(key) < _SPOKEN_MIN_PREFIX:
         return None
-    return resolve_mention(token, index)
+    prefixed = resolve_mention(token, index)
+    if prefixed:
+        return prefixed
+    hits = {slug for alias, slug in index.items() if _one_edit_apart(key, alias)}
+    if len(hits) == 1:
+        return hits.pop()
+    return None
 
 
 def rewrite_spoken_address(
@@ -328,6 +361,7 @@ def rewrite_spoken_address(
     Patterns (start of line only):
 
     * ``at|hey|yo NAME`` — replaced with ``@Handle``
+      (optional comma after the cue: STT often writes ``Hey, Dave``)
     * ``at|hey|yo room`` — replaced with ``@room``
     * ``hi|hello NAME`` — ``@Handle`` is prepended; the greeting stays
     * ``NAME,`` / ``NAME:`` — replaced with ``@Handle``

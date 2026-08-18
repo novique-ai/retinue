@@ -55,6 +55,11 @@ def test_rewrite_spoken_address_at_and_hey():
         engine.rewrite_spoken_address("yo Claude check this", members, names)
         == "@Claude check this"
     )
+    # STT often inserts a comma after Hey (Voice Testing 1, seq 84).
+    assert (
+        engine.rewrite_spoken_address("Hey, Dave, how are you doing?", ["dave"], {"dave": "Dave"})
+        == "@Dave how are you doing?"
+    )
 
 
 def test_rewrite_spoken_address_greeting_is_kept():
@@ -113,6 +118,28 @@ def test_rewrite_spoken_address_does_not_steal():
     )
     assert engine.rewrite_spoken_address("at Ed please", members, names) == (
         "at Ed please"
+    )
+
+
+def test_rewrite_spoken_address_stt_near_miss():
+    members = ["mangus", "dave", "admin"]
+    names = {"mangus": "Mangus", "dave": "Dave", "admin": "Carlos"}
+    # Voice Testing 1 seq 79: STT wrote Mingus for Mangus.
+    assert (
+        engine.rewrite_spoken_address(
+            "Hey, Mingus, how are you doing today?", members, names
+        )
+        == "@Mangus how are you doing today?"
+    )
+    assert (
+        engine.rewrite_spoken_address("at Mingus stand by", members, names)
+        == "@Mangus stand by"
+    )
+    # Two one-edit hits must not steal a turn.
+    members = ["patty", "petty"]
+    names = {"patty": "Patty", "petty": "Petty"}
+    assert engine.rewrite_spoken_address("at Potty hello", members, names) == (
+        "at Potty hello"
     )
 
 

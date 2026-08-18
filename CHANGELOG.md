@@ -22,6 +22,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   start of a voice take is rewritten to a live `@Handle` on the
   transcript so that member takes the turn. Mid-sentence “look at
   Patty” is left alone. A composer `@` still wins. Closes #121.
+  ``Hey, Dave`` (comma after the cue) and a unique one-letter STT
+  miss (`Mingus` → Mangus) also resolve.
 
 - The room **lead** writes the itinerary (fenced `itinerary` block in
   their reply). The right pane is the user’s view and can still edit.
