@@ -797,6 +797,10 @@ function RoomView({
   const sinceRef = useRef(0);
   const messagesRef = useRef<RoomMsg[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
+  // Follow new lines only while the user is at (or near) the bottom.
+  // The 2s agent poll rebuilds `visibleThinking` every tick; without this
+  // guard the transcript yanks back down while you read a long note.
+  const stickToBottomRef = useRef(true);
   const draftRef = useRef<HTMLTextAreaElement>(null);
   const micRef = useRef<{ stop: () => Promise<Blob> } | null>(null);
   const [caret, setCaret] = useState(0);
@@ -866,6 +870,7 @@ function RoomView({
   // SSE transcript stream; long-poll is the fallback (see api.watchTranscript).
   useEffect(() => {
     sinceRef.current = 0;
+    stickToBottomRef.current = true;
     setMessages([]);
     messagesRef.current = [];
     setThinking([]);
@@ -890,8 +895,20 @@ function RoomView({
     return () => ctl.abort();
   }, [room.id]);
 
+  const onTranscriptScroll = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const slack = 80;
+    stickToBottomRef.current =
+      el.scrollHeight - el.scrollTop - el.clientHeight <= slack;
+  };
+
   useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+    if (!stickToBottomRef.current) return;
+    scrollRef.current?.scrollTo({
+      top: scrollRef.current.scrollHeight,
+      behavior: "smooth",
+    });
   }, [messages, visibleThinking]);
 
   // Self-heal: a no-reply system line (or a cycle abort) must drop the
@@ -958,6 +975,7 @@ function RoomView({
   const send = useCallback(async () => {
     const text = draft.trim();
     if ((!text && pendingFiles.length === 0) || sending) return;
+    stickToBottomRef.current = true;
     setSending(true);
     try {
       const paths: string[] = [];
@@ -994,6 +1012,7 @@ function RoomView({
     micRef.current = null;
     setHolding(false);
     if (!rec) return;
+    stickToBottomRef.current = true;
     setSending(true);
     setVoiceNote("transcribing…");
     try {
@@ -1128,7 +1147,7 @@ function RoomView({
       )}
       <div className="room-body">
       <div className="room-chat">
-      <div className="messages" ref={scrollRef}>
+      <div className="messages" ref={scrollRef} onScroll={onTranscriptScroll}>
         {messages.length === 0 && (
           <div className="empty-hint">
             Say something — no @mention goes to the lead{room.lead ? ` (@${handleOf(room.lead)})` : ""}.
