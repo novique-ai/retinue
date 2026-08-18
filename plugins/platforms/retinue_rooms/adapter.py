@@ -1321,8 +1321,13 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             member = wave[0]
             if self._stop_event(room_id).is_set():
                 break
-            self._post_system(room_id, engine.turn_started_notice(names.get(member, member)))
             room = self.store.get(room_id) or room
+            # Queued for a message it has already read. Announcing the turn
+            # and then reporting that it did not reply is pure noise, so
+            # skip before the room says anything at all.
+            if not self._unseen_delta(room, member):
+                continue
+            self._post_system(room_id, engine.turn_started_notice(names.get(member, member)))
             ok, reply = await self._agent_turn(room, member)
             if self._stop_event(room_id).is_set():
                 break
@@ -1349,12 +1354,22 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             if published:
                 reply = attachments.with_published_paths(reply if ok else "", published)
                 ok = True
-            if not ok or not (reply or "").strip():
-                reply = engine.fallback_reply(ask)
-            self.store.append(
-                room_id,
-                RoomMessage(seq=0, ts=0, kind=KIND_AGENT, speaker=member, text=reply),
-            )
+            if not ok:
+                # A turn that never produced an answer — it timed out, was
+                # superseded, or had nothing to read — is reported by the
+                # room, not spoken in the member's voice. Speaking it made
+                # every one of those look like the retainer apologising for
+                # failing at the work. The notice also clears the thinking
+                # indicator (engine.turn_concludes_waiter parses it).
+                self._post_system(room_id, engine.did_not_reply_notice(member, reply))
+                reply = ""
+            else:
+                if not (reply or "").strip():
+                    reply = engine.fallback_reply(ask)
+                self.store.append(
+                    room_id,
+                    RoomMessage(seq=0, ts=0, kind=KIND_AGENT, speaker=member, text=reply),
+                )
             queue.extend(
                 engine.merge_followups(
                     engine.with_members(room, cycle_members),
@@ -1366,27 +1381,39 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
                 )
             )
 
-    async def _agent_turn(self, room: Room, member: str) -> tuple[bool, str]:
-        """Deliver the unseen transcript to ``member`` and await its reply."""
-        delta = [
+    def _unseen(self, room: Room, member: str) -> tuple[list, list]:
+        """(readable, respondable) transcript slices for *member*.
+
+        Both exclude the member's own lines — they are already in its
+        session history. *respondable* additionally drops a trailing
+        "X is on it." notice, which is the room announcing this very turn:
+        left in, a member ends up answering its own turn announcement.
+        The cursor advances over *readable* so the announcement is not
+        re-delivered later.
+        """
+        readable = [
             m
             for m in self.store.read_since(room.id, room.last_seen.get(member, 0))
-            # A member never re-reads its own lines; they are already in its
-            # session history from the turn that produced them.
             if not (m.kind == KIND_AGENT and m.speaker == member)
         ]
-        if not delta:
-            return False, "nothing new to respond to"
-        delivered_through = delta[-1].seq
+        if not readable:
+            return readable, readable
         turn_started = engine.turn_started_notice(self._display_names(room).get(member, member))
-        if (
-            delta[-1].kind == KIND_SYSTEM
-            and delta[-1].speaker == "room"
-            and delta[-1].text == turn_started
-        ):
-            delta = delta[:-1]
+        last = readable[-1]
+        if last.kind == KIND_SYSTEM and last.speaker == "room" and last.text == turn_started:
+            return readable, readable[:-1]
+        return readable, readable
+
+    def _unseen_delta(self, room: Room, member: str) -> list:
+        """What *member* actually has to respond to. Empty means no-op turn."""
+        return self._unseen(room, member)[1]
+
+    async def _agent_turn(self, room: Room, member: str) -> tuple[bool, str]:
+        """Deliver the unseen transcript to ``member`` and await its reply."""
+        readable, delta = self._unseen(room, member)
         if not delta:
             return False, "nothing new to respond to"
+        delivered_through = readable[-1].seq
         trigger = delta[-1]
         context_block = engine.format_lines(delta[:-1]) if len(delta) > 1 else None
 
@@ -1495,7 +1522,9 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         finally:
             _turn_member.reset(token)
 
-        budget = hire.turn_timeout_for(self._home_dir(), member)
+        budget = hire.turn_timeout_for(
+            self._home_dir(), member, room.workspace or "sandbox"
+        )
         try:
             return await asyncio.wait_for(asyncio.wrap_future(fut), timeout=budget)
         except asyncio.TimeoutError:

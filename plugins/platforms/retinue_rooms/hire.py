@@ -150,6 +150,11 @@ def _summarize_model_block(block: str) -> str:
 
 _CLOUD_TURN_DEFAULT = 300.0
 _LOCAL_TURN_DEFAULT = 1800.0
+# An IDE room is attached to a real project tree, so a turn is not one
+# model call — it is terminal work: reading files, running bd, editing a
+# skill. Five minutes is a sandbox chat budget and it cuts that work off
+# mid-flight. Sandbox rooms keep the cloud default.
+_IDE_TURN_DEFAULT = 900.0
 _LOCAL_PROVIDERS = {
     "custom",
     "local",
@@ -246,9 +251,18 @@ def local_turn_timeout() -> float:
     return max(_LOCAL_TURN_DEFAULT, cloud_turn_timeout())
 
 
-def turn_timeout_for(home_dir: str, slug: str) -> float:
+def ide_turn_timeout() -> float:
+    raw = (os.getenv("RETINUE_ROOMS_IDE_TURN_TIMEOUT") or "").strip()
+    if raw:
+        return _env_timeout("RETINUE_ROOMS_IDE_TURN_TIMEOUT", _IDE_TURN_DEFAULT)
+    return max(_IDE_TURN_DEFAULT, cloud_turn_timeout())
+
+
+def turn_timeout_for(home_dir: str, slug: str, workspace: str = "") -> float:
     if profile_uses_local_llm(home_dir, slug):
         return local_turn_timeout()
+    if (workspace or "") == "ide":
+        return ide_turn_timeout()
     return cloud_turn_timeout()
 
 
