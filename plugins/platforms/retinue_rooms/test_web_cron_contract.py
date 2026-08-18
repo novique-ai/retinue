@@ -96,7 +96,8 @@ def test_app_wires_scheduled_and_save_routine_modals():
 def test_ui_runner_exists_and_package_manifest_is_unchanged():
     runner = _read("retinue-web/test/run-ui-tests.mjs")
     suite = _read("retinue-web/test/cron.ui.test.tsx")
-    assert "esbuild" in runner and '"--test"' in runner and "cron.ui.test.tsx" in runner
+    assert "esbuild" in runner and '"--test"' in runner
+    assert "readdirSync" in runner and r"\.test\.(ts|tsx)$" in runner
     for marker in (
         "node:test", "node:assert", "../src/cron", "fetch", "cron-last-run",
         "cron-next-run", "cron-filter-owner", "cron-action-delete",
