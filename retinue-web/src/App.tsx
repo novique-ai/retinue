@@ -202,6 +202,12 @@ function agentLabel(a: AgentMeta): string {
 }
 
 const MENTION_TOKEN = /^[A-Za-z0-9_][A-Za-z0-9_-]*$/;
+/** User-only broadcast token. Must match engine.ROOM_BROADCAST_TOKEN. */
+const ROOM_BROADCAST = "room";
+
+function isRoomBroadcastToken(token: string): boolean {
+  return token.toLowerCase() === ROOM_BROADCAST;
+}
 
 function mentionHandle(slug: string, agents: AgentMeta[], members: string[]): string {
   const bySlug = Object.fromEntries(agents.map((a) => [a.slug, a]));
@@ -652,7 +658,9 @@ function MentionBody({
   let last = 0;
   let match: RegExpExecArray | null;
   while ((match = re.exec(unfenced))) {
-    const slug = resolveTypedMention(match[1], members, handleOf);
+    const slug = isRoomBroadcastToken(match[1])
+      ? ROOM_BROADCAST
+      : resolveTypedMention(match[1], members, handleOf);
     if (!slug) continue;
     if (match.index > last) parts.push(text.slice(last, match.index));
     parts.push(
@@ -660,7 +668,7 @@ function MentionBody({
         key={match.index}
         className="live-mention"
         style={{ color: identityColor(agentsBySlug[slug]?.identity.color) }}
-        title={`@${handleOf(slug)}`}
+        title={slug === ROOM_BROADCAST ? "@room — everyone in this room" : `@${handleOf(slug)}`}
       >
         {text.slice(match.index, match.index + match[0].length)}
       </span>,
@@ -837,11 +845,17 @@ function RoomView({
   );
   const mentionQuery = mentionOff ? null : mentionPartial(draft, caret);
   const mentionChoices = mentionQuery
-    ? room.members.filter((m) => {
-        const q = mentionQuery.query.toLowerCase();
-        const handle = handleOf(m).toLowerCase();
-        return handle.startsWith(q) || m.toLowerCase().startsWith(q);
-      })
+    ? [
+        ...(ROOM_BROADCAST.startsWith(mentionQuery.query.toLowerCase())
+          ? [ROOM_BROADCAST]
+          : []),
+        ...room.members.filter((m) => {
+          if (m.toLowerCase() === ROOM_BROADCAST) return false;
+          const q = mentionQuery.query.toLowerCase();
+          const handle = handleOf(m).toLowerCase();
+          return handle.startsWith(q) || m.toLowerCase().startsWith(q);
+        }),
+      ]
     : [];
   useEffect(() => {
     if (mentionPick >= mentionChoices.length) setMentionPick(0);
@@ -1150,7 +1164,7 @@ function RoomView({
       <div className="messages" ref={scrollRef} onScroll={onTranscriptScroll}>
         {messages.length === 0 && (
           <div className="empty-hint">
-            Say something — no @mention goes to the lead{room.lead ? ` (@${handleOf(room.lead)})` : ""}.
+            Say something — no @mention goes to the lead{room.lead ? ` (@${handleOf(room.lead)})` : ""}. @room messages everyone.
           </div>
         )}
         {messages.map((m) => (
@@ -1204,6 +1218,17 @@ function RoomView({
         }}
       >
         <div className="mention-bar">
+          <button
+            className="mention-btn"
+            title="@room — everyone in this room"
+            onClick={() => {
+              const token = "@room ";
+              setDraft((d) => `${d}${token}`);
+              setCaret((c) => c + token.length);
+            }}
+          >
+            @room
+          </button>
           {room.members.map((m) => (
             <button
               key={m}
@@ -1271,16 +1296,22 @@ function RoomView({
                       e.preventDefault();
                       const q = mentionQuery;
                       if (!q) return;
-                      const token = `@${handleOf(m)} `;
+                      const token = m === ROOM_BROADCAST ? "@room " : `@${handleOf(m)} `;
                       const next = draft.slice(0, q.start) + token + draft.slice(caret);
                       setDraft(next);
                       setCaret(q.start + token.length);
                       setMentionPick(0);
                     }}
                   >
+                    {m === ROOM_BROADCAST ? (
+                      <>@room<span className="nav-sub"> everyone</span></>
+                    ) : (
+                      <>
                     <AgentAvatar identity={agentsBySlug[m]?.identity} slug={m} fallback={m} label={handleOf(m)} size={16} />
                     @{handleOf(m)}
                     {handleOf(m) !== m ? <span className="nav-sub"> @{m}</span> : null}
+                      </>
+                    )}
                   </button>
                 ))}
               </div>
@@ -1313,7 +1344,7 @@ function RoomView({
                     const m = mentionChoices[mentionPick] || mentionChoices[0];
                     const q = mentionQuery;
                     if (!q || !m) return;
-                    const token = `@${handleOf(m)} `;
+                    const token = m === ROOM_BROADCAST ? "@room " : `@${handleOf(m)} `;
                     const next = draft.slice(0, q.start) + token + draft.slice(caret);
                     setDraft(next);
                     setCaret(q.start + token.length);

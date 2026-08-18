@@ -145,6 +145,37 @@ def test_user_message_without_mentions_goes_to_lead():
     assert engine.plan_user_turns(room, "what do you all think?") == ["editor"]
 
 
+def test_room_broadcast_plans_every_member():
+    room = _room(lead="editor")
+    assert engine.plan_user_turns(room, "Hello @room") == [
+        "scout",
+        "editor",
+        "critic",
+    ]
+
+
+def test_room_broadcast_keeps_explicit_mentions_first():
+    room = _room()
+    assert engine.plan_user_turns(room, "@critic look at this @room") == [
+        "critic",
+        "scout",
+        "editor",
+    ]
+
+
+def test_fenced_room_broadcast_is_not_live():
+    room = _room(lead="editor")
+    text = "```\nHello @room\n```\n"
+    assert engine.has_room_broadcast(text) is False
+    assert engine.plan_user_turns(room, text) == ["editor"]
+
+
+def test_agent_followup_room_does_not_fan_out():
+    room = _room()
+    got = engine.plan_agent_followups(room, "scout", "thanks @room", [], 5)
+    assert got == []
+
+
 def test_no_lead_falls_back_to_first_member():
     room = _room(lead=None)
     assert engine.plan_user_turns(room, "hello") == ["scout"]
