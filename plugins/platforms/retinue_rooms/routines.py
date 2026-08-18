@@ -2,8 +2,8 @@
 
 A routine is the user's half of a demonstration — the prompts that produced
 a useful agent run. Replaying posts those prompts into a room in order and
-waits for each cycle to finish (the agents redo the work). Scheduling is
-left to Hermes cron calling POST /routines/{slug}/run.
+waits for each cycle to finish (the agents redo the work). A schema-2 routine
+may also link to a profile-scoped Hermes cron job and generated skill draft.
 """
 
 from __future__ import annotations
@@ -58,6 +58,11 @@ def save_routine(
     name: str,
     messages: List[str],
     source_room: str = "",
+    *,
+    owner: str = "",
+    skill: str = "",
+    expected_output: str = "",
+    job_id: str | None = None,
 ) -> Dict[str, Any]:
     name = (name or "").strip()
     if not name:
@@ -77,6 +82,12 @@ def save_routine(
         "slug": slug,
         "source_room": source_room,
         "messages": prompts,
+        "steps": list(prompts),
+        "owner": str(owner or ""),
+        "skill": str(skill or ""),
+        "expected_output": str(expected_output or ""),
+        "job_id": job_id,
+        "schema": 2,
         "created_at": time.time(),
     }
     tmp = path + ".tmp"
@@ -84,6 +95,33 @@ def save_routine(
         json.dump(meta, f, indent=2)
     os.replace(tmp, path)
     return meta
+
+
+def _normalise(meta: Dict[str, Any]) -> Dict[str, Any]:
+    record = dict(meta)
+    messages = record.get("messages")
+    steps = record.get("steps")
+    record["messages"] = list(messages) if isinstance(messages, list) else []
+    record["steps"] = list(steps) if isinstance(steps, list) else list(record["messages"])
+    record.setdefault("owner", "")
+    record.setdefault("skill", "")
+    record.setdefault("expected_output", "")
+    record.setdefault("job_id", None)
+    record.setdefault("schema", 1)
+    return record
+
+
+def update_routine(home_dir: str, slug: str, updates: Dict[str, Any]) -> Dict[str, Any]:
+    current = get_routine(home_dir, slug)
+    if current is None:
+        raise KeyError(slug)
+    updated = {**current, **dict(updates)}
+    path = _path(home_dir, slug)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as handle:
+        json.dump(updated, handle, indent=2)
+    os.replace(tmp, path)
+    return _normalise(updated)
 
 
 def list_routines(home_dir: str) -> List[Dict[str, Any]]:
@@ -101,7 +139,7 @@ def list_routines(home_dir: str) -> List[Dict[str, Any]]:
         except (OSError, ValueError):
             continue
         if isinstance(meta, dict) and meta.get("slug"):
-            out.append(meta)
+            out.append(_normalise(meta))
     return out
 
 
@@ -111,7 +149,7 @@ def get_routine(home_dir: str, slug: str) -> Optional[Dict[str, Any]]:
             meta = json.load(f)
     except (OSError, ValueError):
         return None
-    return meta if isinstance(meta, dict) else None
+    return _normalise(meta) if isinstance(meta, dict) else None
 
 
 def delete_routine(home_dir: str, slug: str) -> bool:
