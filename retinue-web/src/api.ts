@@ -433,6 +433,13 @@ export const api = {
   ) => watchTranscript(id, since, onMessages, signal),
   send: (id: string, text: string, from: string) =>
     req<{ seq: number; planned: string[] }>("POST", `/rooms/${id}/messages`, { text, from }),
+  /** Abort this room's cycle and cut queued Speak Replies on the client. */
+  stop: (id: string, from: string) =>
+    req<{ stopped: boolean; idle?: boolean; already?: boolean; seq?: number | null; notice?: string }>(
+      "POST",
+      `/rooms/${id}/stop`,
+      { from },
+    ),
   listAgents: () => req<{ agents: AgentMeta[] }>("GET", "/agents"),
   listModels: () => req<{ models: ModelPreset[] }>("GET", "/models"),
   /**

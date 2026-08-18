@@ -110,6 +110,8 @@ class _PendingTurn:
     room_id: str
     member: str
     future: Future  # resolves to (ok: bool, text: str)
+    session_key: str = ""
+    source: Any = None
 
 
 class RetinueRoomsAdapter(BasePlatformAdapter):
@@ -139,6 +141,7 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         self._room_locks: Dict[str, asyncio.Lock] = {}
         self._pending: Dict[tuple[str, str], _PendingTurn] = {}  # (room, member)
         self._pending_lock = threading.Lock()
+        self._cycle_stops: Dict[str, threading.Event] = {}
         self._xai_keepalive: Optional[keepalive.XaiKeepalive] = None
 
     def _live_runner(self):
@@ -261,6 +264,7 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
                 if not pending.future.done():
                     pending.future.set_result((False, "rooms adapter shutting down"))
             self._pending.clear()
+        self._cycle_stops.clear()
 
     # ── reply capture (A2A pattern) ──────────────────────────────────────
 
@@ -938,6 +942,141 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         result["text"] = text
         return result
 
+    def _stop_event(self, room_id: str) -> threading.Event:
+        ev = self._cycle_stops.get(room_id)
+        if ev is None:
+            ev = self._cycle_stops[room_id] = threading.Event()
+        return ev
+
+    def _cycle_active(self, room_id: str) -> bool:
+        lock = self._room_locks.get(room_id)
+        if lock is not None and lock.locked():
+            return True
+        with self._pending_lock:
+            return any(rid == room_id for rid, _member in self._pending)
+
+    def _session_key_for(self, source: Any) -> str:
+        try:
+            from gateway.session import build_session_key
+
+            store = getattr(self, "_session_store", None)
+            profile = None
+            if store is not None:
+                try:
+                    profile = store._resolve_profile_for_key(source)
+                except Exception:
+                    profile = getattr(source, "profile", None)
+            return build_session_key(
+                source,
+                group_sessions_per_user=bool(
+                    self.config.extra.get("group_sessions_per_user", True)
+                ),
+                thread_sessions_per_user=bool(
+                    self.config.extra.get("thread_sessions_per_user", False)
+                ),
+                profile=profile,
+            )
+        except Exception:
+            return ""
+
+    def stop_cycle(self, room_id: str, from_name: str = _DEFAULT_USER_NAME) -> Dict[str, Any]:
+        """Abort this room's in-flight cycle. Other rooms are untouched.
+
+        Idle stop is a no-op (the web client still cuts leftover TTS).
+        """
+        if self.store.get(room_id) is None:
+            raise KeyError(room_id)
+        if not self._cycle_active(room_id):
+            return {"stopped": False, "idle": True}
+        if self._loop is None:
+            raise RuntimeError("gateway loop not ready")
+        fut = asyncio.run_coroutine_threadsafe(
+            self._stop_cycle(room_id, from_name), self._loop
+        )
+        return fut.result(timeout=15)
+
+    async def _stop_cycle(self, room_id: str, from_name: str) -> Dict[str, Any]:
+        if self.store.get(room_id) is None:
+            raise KeyError(room_id)
+        already = self._stop_event(room_id).is_set()
+        active = self._cycle_active(room_id)
+        if not active and already:
+            return {"stopped": True, "already": True}
+        if not active:
+            return {"stopped": False, "idle": True}
+        self._stop_event(room_id).set()
+        with self._pending_lock:
+            pending_here = [
+                pending
+                for (rid, _member), pending in list(self._pending.items())
+                if rid == room_id
+            ]
+        for pending in pending_here:
+            try:
+                await self._interrupt_turn(pending)
+            except Exception:
+                logger.debug(
+                    "Retinue rooms: interrupt of %s/%s failed",
+                    room_id,
+                    pending.member,
+                    exc_info=True,
+                )
+            self._resolve_pending(
+                room_id, ok=False, text="stopped", member=pending.member
+            )
+        notice_text = engine.cycle_stopped_notice(
+            principal.speaker_name(self._home_dir(), from_name)
+        )
+        notice = None if already else self._post_system(room_id, notice_text)
+        return {
+            "stopped": True,
+            "already": already,
+            "seq": notice.seq if notice else None,
+            "notice": notice_text,
+        }
+
+    async def _interrupt_turn(self, pending: _PendingTurn) -> None:
+        """Cancel the in-flight model call for one pending room turn."""
+        key = pending.session_key
+        runner = self._live_runner()
+        interrupt_fn = getattr(runner, "_interrupt_and_clear_session", None) if runner else None
+        if callable(interrupt_fn) and key and pending.source is not None:
+            try:
+                from gateway.run import _INTERRUPT_REASON_STOP
+
+                await interrupt_fn(
+                    key,
+                    pending.source,
+                    interrupt_reason=_INTERRUPT_REASON_STOP,
+                    invalidation_reason="retinue_room_stop",
+                )
+                return
+            except Exception:
+                logger.debug(
+                    "Retinue rooms: gateway session interrupt failed", exc_info=True
+                )
+        if key:
+            try:
+                await self.interrupt_session_activity(key, pending.room_id)
+            except Exception:
+                logger.debug(
+                    "Retinue rooms: adapter session interrupt failed", exc_info=True
+                )
+            pending_map = getattr(self, "_pending_messages", None)
+            if isinstance(pending_map, dict):
+                pending_map.pop(key, None)
+        if runner is None or not key:
+            return
+        try:
+            from agent.interrupt_compat import request_hard_interrupt
+            from gateway.run import _AGENT_PENDING_SENTINEL
+
+            agent = (getattr(runner, "_running_agents", None) or {}).get(key)
+            if agent and agent is not _AGENT_PENDING_SENTINEL:
+                request_hard_interrupt(agent, "Stopped.")
+        except Exception:
+            logger.debug("Retinue rooms: hard interrupt failed", exc_info=True)
+
     def save_routine_from_room(
         self,
         name: str,
@@ -1145,6 +1284,7 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
 
     async def _run_cycle_workspace(self, room: Room, user_message: RoomMessage) -> None:
         room_id = room.id
+        self._stop_event(room_id).clear()
         budget = room.max_agent_turns
         # Snapshot the roster for this user-message cycle. Invite/remove
         # updates stored members immediately (and posts a system line) but
@@ -1161,6 +1301,8 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         spoken: List[str] = []
         turns_taken = 0
         while queue:
+            if self._stop_event(room_id).is_set():
+                break
             if turns_taken >= budget:
                 self._post_system(
                     room_id, engine.cycle_budget_notice(budget, queue)
@@ -1172,9 +1314,13 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             # One speaker at a time. Their reply is on the transcript
             # before the next member starts, so reviewers see the draft.
             member = wave[0]
+            if self._stop_event(room_id).is_set():
+                break
             self._post_system(room_id, engine.turn_started_notice(names.get(member, member)))
             room = self.store.get(room_id) or room
             ok, reply = await self._agent_turn(room, member)
+            if self._stop_event(room_id).is_set():
+                break
             turns_taken += 1
             spoken.append(member)
             ask = user_message.text or ""
@@ -1290,7 +1436,12 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             if stale is not None and not stale.future.done():
                 stale.future.set_result((False, "superseded by a newer turn"))
             self._pending[key] = _PendingTurn(
-                task_id=task_id, room_id=room.id, member=member, future=fut
+                task_id=task_id,
+                room_id=room.id,
+                member=member,
+                future=fut,
+                session_key=self._session_key_for(source),
+                source=source,
             )
 
         media_urls, media_types = attachments.host_media_for_text(
@@ -1919,6 +2070,17 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
             except RuntimeError as e:
                 return self._json(503, {"error": str(e)})
             return self._json(202, result)
+        if len(parts) == 3 and parts[0] == "rooms" and parts[2] == "stop":
+            try:
+                result = adapter.stop_cycle(
+                    parts[1],
+                    from_name=str(body.get("from") or _DEFAULT_USER_NAME),
+                )
+            except KeyError:
+                return self._json(404, {"error": "no such room"})
+            except RuntimeError as e:
+                return self._json(503, {"error": str(e)})
+            return self._json(200, result)
         if parts == ["routines"]:
             try:
                 payload = adapter.save_routine_from_room(

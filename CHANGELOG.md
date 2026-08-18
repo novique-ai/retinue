@@ -14,6 +14,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Stop** in the room chrome (Escape too) cuts Speak Replies — the
+  current clip and the queue — and aborts this room's in-flight cycle
+  so the next line is a redirect. Unchecking Speak Replies also stops
+  the clip that is already playing. Closes #120.
+
 - Hold to talk includes the composer draft as a prefix, so tapping
   `@Patty` then speaking posts `@Patty …` and Patty takes the turn.
   The voice bar shows “Will send to @Patty” (or “Will include typed

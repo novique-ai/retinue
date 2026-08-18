@@ -18,15 +18,17 @@ Plugin-shaped voice is live in `retinue-web/` and
 | Piece | Where | Behavior |
 |---|---|---|
 | Hold-to-talk | `retinue-web/src/App.tsx` | `getUserMedia` + ScriptProcessor → WAV blob; pointer-down records, pointer-up uploads |
-| Speak replies | same | Sequential `POST /tts` + `Audio` playback queue when “Speak replies” is on |
+| Speak replies | same | Sequential `POST /tts` + `Audio` playback queue when “Speak replies” is on. Stop (room chrome / Esc) or unchecking the toggle cuts the current clip and drops the queue. |
 | Backend status | `GET /voice` | `{ backend, ready, detail, voices }` from `voice.status()` |
 | Audio in | `POST /rooms/{id}/audio` | Raw body + query `from` / `filename` / optional `draft` → STT → `draft + speech` → leading spoken vocative (`at Claude`) rewritten to `@Claude` when the line has no live @mention → normal user-message cycle → **202** `{ seq, planned, text }` |
 | TTS out | `POST /tts` | JSON `{ text, speaker }` (or `voice`) → `audio/wav` or `audio/mpeg` bytes |
 
-Web client: `api.voiceStatus()`, `api.sendAudio()`, `api.speak()` in
+Web client: `api.voiceStatus()`, `api.sendAudio()`, `api.speak()`, `api.stop()` in
 `retinue-web/src/api.ts`. Room UI shows a “Hold to talk” button, a backend
 label (`xai` / `openai`, plus “not ready” when applicable), and a short
-“Heard: …” note after transcription. A composer draft (typically
+“Heard: …” note after transcription. **Stop** (header + Escape) cuts Speak
+Replies immediately and aborts this room’s turn cycle so the next line is a
+redirect. A composer draft (typically
 `@Patty` from the mention bar) is sent as `draft` and prefixed onto the
 spoken line so the mention engine routes it. Empty draft still goes to
 the lead unless the spoken line starts with a vocative (`at Claude`,
