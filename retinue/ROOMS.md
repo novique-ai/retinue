@@ -138,6 +138,33 @@ alive behind it.
   already running. Model-switch uses `AgentBusy` because it would evict
   a running agent; membership does not, so invite/remove do not 409.
 
+## Cross-room post (`rooms_list` / `rooms_post`)
+
+A retainer invited to two rooms can say one line into the other one. The
+briefing names the rooms they are also in; `rooms_list` shows them and
+`rooms_post(room=…, message=…)` delivers.
+
+- **Membership is the whole gate.** The caller's identity comes from the
+  runtime scope (`HERMES_HOME` → the member's profile), never from a tool
+  argument, so a model that types someone else's slug into the payload
+  does not borrow their membership. A destination the caller is not in
+  fails closed, and the refusal is not a membership oracle — an unknown
+  room and a room they were not invited to read the same.
+- **The destination does not start a cycle.** Delivery is a plain
+  transcript append attributed to the retainer, prefixed `(from #Source)`.
+  Turn cycles begin at `post_user_message` only, so the line schedules
+  nobody in the destination. Live `@mentions` are defanged on the way in
+  (the name survives, the trigger does not): a handoff nobody can honour
+  must not look like one on the other room's transcript.
+- **Ambiguity is a refusal.** Room id, exact name, or a unique name
+  prefix. A token matching two of the caller's rooms refuses rather than
+  picking one — same rule as `@mention` resolution.
+- **Deliberately narrow.** Dedicated tools rather than Hermes'
+  general `send_message`: a retainer that should be able to say one line
+  to the room next door does not need every connected platform as a side
+  effect. Text only in v1 — no attachments, and no reading another
+  room's transcript.
+
 ## Turn-taking (v1)
 
 1. A user message mentions members with `@name` → each mentioned member responds, in

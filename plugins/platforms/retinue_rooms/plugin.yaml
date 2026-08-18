@@ -13,6 +13,18 @@ description: >
   Requires the gateway to run with `gateway.multiplex_profiles: true` so room
   members' profiles are served in-process. Pure stdlib transport.
 author: Novique
+# Cross-room post (novique-ai/retinue#128). Declaring the tools here is what
+# asks plugin discovery to import `tools.py` in processes where this platform
+# is otherwise deferred — without it the tools would never register and a
+# retainer in two rooms could not reach the second one. The adapter itself
+# stays deferred; only this submodule is imported.
+#
+# Deliberately NOT Hermes' general `send_message`: a retainer that should be
+# able to say one line to the room next door does not need every connected
+# platform as a side effect.
+provides_tools:
+  - rooms_list
+  - rooms_post
 requires_env: []
 optional_env:
   - name: RETINUE_ROOMS_ENABLED

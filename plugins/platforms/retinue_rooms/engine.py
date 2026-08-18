@@ -666,6 +666,7 @@ def room_briefing(
     artifacts: Optional[List[str]] = None,
     principal_about: Optional[str] = None,
     principal_name: Optional[str] = None,
+    other_rooms: Optional[List["Room"]] = None,
 ) -> str:
     """Per-turn channel prompt: who you are, who is here, how to behave."""
     names = display_names or {}
@@ -766,6 +767,16 @@ def room_briefing(
                 "Read from it; you cannot write there. Your own work still "
                 "goes under /workspace."
             )
+    # Membership in another room is a capability, and a capability nobody
+    # is told about is one nobody uses. Only the rooms this member actually
+    # belongs to are named — the briefing shows exactly what the gate
+    # allows, never a room they cannot reach.
+    if other_rooms:
+        from .crossroom import briefing_rooms_line
+
+        line = briefing_rooms_line(other_rooms)
+        if line:
+            parts.append(line)
     if itinerary:
         from .itinerary import briefing_lines
 
