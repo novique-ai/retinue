@@ -25,6 +25,15 @@ reference an upstream issue and be dropped when upstream fixes it. Current list:
 | `tools/environments/docker.py` | `TERMINAL_DOCKER_SHARED_CONTAINER_KEY` — opt-in workspace key replacing the per-profile container identity, so every room member attaches to one shared "workspace computer" container | [NousResearch/hermes-agent#84671](https://github.com/NousResearch/hermes-agent/issues/84671) |
 | `tools/terminal_tool.py` | Key the `_active_environments` cache by `TERMINAL_DOCKER_SHARED_CONTAINER_KEY` instead of collapsing to `"default"`. Identity already uses that key at creation, so a single `"default"` cache entry handed the first workspace's container to every later turn — a sandbox room's container served an IDE room ([#16](https://github.com/novique-ai/retinue/issues/16)) | [NousResearch/hermes-agent#84671](https://github.com/NousResearch/hermes-agent/issues/84671) |
 | `tools/terminal_tool.py`, `tools/environments/docker.py`, `gateway/platforms/base.py` | Read the workspace key and volume list through `tools/workspace_context.py` (a **new** file, not an upstream edit) instead of `os.getenv`. The values are per-room; carrying them in process env forced the rooms adapter to serialize every cycle behind one lock, so one turn blocked every room for up to the local-model timeout ([#67](https://github.com/novique-ai/retinue/issues/67)). With no overlay bound these read plain `os.environ`, so non-room callers are unchanged | [NousResearch/hermes-agent#84671](https://github.com/NousResearch/hermes-agent/issues/84671) |
+| `cron/scheduler.py` | `_deliver_result`: a resolved live transport with no platform config block means "live adapter, no config", not "disabled". Upstream applied that rule to relay transports only, so `deliver=origin` jobs to a plugin platform under a profile with no `platforms:` block failed with `platform '<name>' not configured/enabled` ([#112](https://github.com/novique-ai/retinue/issues/112)) | [NousResearch/hermes-agent#84300](https://github.com/NousResearch/hermes-agent/issues/84300) |
+
+**Upstream report:** This carried patch is linked to the real upstream reference above;
+this change did not file a new third-party issue. The reproduction is in
+`cron/scheduler.py::_deliver_result`: `resolve_delivery_transport` returns a live native
+transport when its config block is absent, but the following
+`elif not pconfig or not pconfig.enabled` rejected it. Removing
+`and transport.is_relay` from the immediately preceding branch applies the existing
+`PlatformConfig(enabled=True)` normalization to both resolved transport kinds.
 
 ### Retired patches
 

@@ -19,9 +19,11 @@ origin, no CORS), with:
 - Optional stricter mode: per-agent containers.
 
 ## Phase 4 — Routines + workspace take-over (v1)
-- **Routines**: save a room's user prompts as a named demonstration
-  (`POST /routines`) and replay them into a room (`POST /routines/{slug}/run`).
-  Schedule via Hermes cron hitting the run endpoint.
+- **Routines = skill + schedule**: saving a room demonstration creates a
+  per-retainer skill (the how) and can attach an editable Hermes cron job (the
+  when, who, and destination). The rooms UI lists every served profile's jobs,
+  including raw reminders, with edit, pause, resume, run-now, and delete controls.
+  The clock remains the existing Hermes cron store and multiplex ticker.
 - **Workspace take-over (status)**: `GET /workspace` reports the shared
   podman/docker computer (label `hermes-profile=<TERMINAL_DOCKER_SHARED_CONTAINER_KEY>`)
   and the attach command. Full noVNC screen take-over is the next increment.
