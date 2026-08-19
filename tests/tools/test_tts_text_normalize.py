@@ -47,3 +47,25 @@ def test_prepare_spoken_text_polish_edge_cases():
     assert "and/or" in prepare_spoken_text("choose and/or option")
     assert "N/A" in prepare_spoken_text("status N/A here")
     assert "2026/06/02" in prepare_spoken_text("due 2026/06/02 ok")
+
+
+def test_underscore_emphasis_only_applies_at_a_word_boundary():
+    """Snake_case identifiers and paths are content, not emphasis (#158)."""
+    raw = (
+        "Code: libs/email_automation/urgency.py, "
+        "bank at config/urgency_phrase_bank.yaml."
+    )
+
+    spoken = prepare_spoken_text(raw)
+
+    assert "email_automation" in spoken
+    assert "urgency_phrase_bank" in spoken
+    assert "emailautomation" not in spoken
+
+
+def test_underscore_emphasis_still_strips_real_emphasis():
+    spoken = prepare_spoken_text("That is _really_ the point, and __very__ clear.")
+
+    assert "_" not in spoken
+    assert "really" in spoken
+    assert "very" in spoken

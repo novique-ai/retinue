@@ -23,9 +23,15 @@ _MD_LINK_RE = re.compile(r"\[([^\]]+)\]\((?:[^()]|\([^)]*\))*\)")
 _MD_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\((?:[^()]|\([^)]*\))*\)")
 _MD_INLINE_CODE_RE = re.compile(r"`([^`]+)`")
 _MD_BOLD_RE = re.compile(r"\*\*(.+?)\*\*", flags=re.DOTALL)
-_MD_UNDERSCORE_BOLD_RE = re.compile(r"__(.+?)__", flags=re.DOTALL)
+# Underscore emphasis only counts at a word boundary.  Without the flanking
+# guards an intra-word underscore opened a span that ran to the next
+# underscore anywhere in the text, so "libs/email_automation/urgency.py ...
+# config/urgency_phrase_bank.yaml" was spoken as "emailautomation" and
+# "urgencyphrasebank".  Snake_case identifiers and file paths are ordinary
+# content in a room turn, not emphasis.
+_MD_UNDERSCORE_BOLD_RE = re.compile(r"(?<!\w)__(?!_)(?!\s)(.+?)(?<![\s_])__(?!\w)", flags=re.DOTALL)
 _MD_ITALIC_RE = re.compile(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)", flags=re.DOTALL)
-_MD_UNDERSCORE_ITALIC_RE = re.compile(r"(?<!_)_(?!_)(.+?)(?<!_)_(?!_)", flags=re.DOTALL)
+_MD_UNDERSCORE_ITALIC_RE = re.compile(r"(?<!\w)_(?!_)(?!\s)(.+?)(?<![\s_])_(?!\w)", flags=re.DOTALL)
 _MD_STRIKE_RE = re.compile(r"~~(.+?)~~", flags=re.DOTALL)
 _MD_HEADING_LINE_RE = re.compile(r"^[ \t]{0,3}#{1,6}[ \t]+(.+?)[ \t]*#*[ \t]*$", flags=re.MULTILINE)
 _MD_BLOCKQUOTE_RE = re.compile(r"^\s*>\s?", flags=re.MULTILINE)

@@ -1037,6 +1037,7 @@ function RoomView({
           if (gen !== speakGenRef.current) return;
           const blob = await api.speak(msg.text, msg.speaker);
           if (gen !== speakGenRef.current) return;
+          if (!blob) return; // nothing speakable in this turn (#158)
           const url = URL.createObjectURL(blob);
           try {
             await new Promise<void>((resolve, reject) => {

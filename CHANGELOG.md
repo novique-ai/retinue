@@ -44,6 +44,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Speak Replies reads a spoken script, not raw chat Markdown. The rooms
+  `POST /tts` path was the one TTS surface that never called
+  `tools.tts_text_normalize.prepare_spoken_text`, so every turn was read
+  aloud with its ```` ```itinerary ```` card — title, where, and each
+  `[doing]`/`[todo]`/`[done]` line. Since the card is a running recap of
+  the whole thread, a normal cycle sounded like the room being read back
+  from the beginning. A turn that is only a card now returns `204` and
+  plays nothing instead of surfacing a TTS error. Closes #158.
+- Underscore emphasis in the shared TTS cleaner now requires a word
+  boundary, so `libs/email_automation/urgency.py` is no longer spoken as
+  `emailautomation`. Affected every TTS path, not just rooms.
+
 - **Hold to talk** is a real push-to-talk control. Android no longer
   opens the browser long-press menu (Back / Forward / Reload / Download)
   on a hold. The button captures the pointer so sliding off still stops

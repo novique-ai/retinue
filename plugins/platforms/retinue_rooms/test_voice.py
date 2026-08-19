@@ -363,3 +363,124 @@ def test_provider_error_is_voice_error(monkeypatch):
     )
     with pytest.raises(voice.VoiceError, match="402"):
         voice.transcribe(b"data", "x.wav")
+
+
+# ── Speak Replies gets a spoken script, not raw chat Markdown (#158) ─────
+
+
+ITINERARY_TURN = """```itinerary
+title: Content-classification gap
+where: .7 detector is in agent-cloud and tested.
+- [doing] infra-2lr0.7 code in tree
+- [todo] infra-2lr0.8 localhost send_room
+- [done] V1 lock
+```
+
+Started `.7`. The list raises a hand; it does not file.
+
+Code: `libs/email_automation/urgency.py`, bank at `config/urgency_phrase_bank.yaml`.
+"""
+
+ITINERARY_ONLY = ITINERARY_TURN.split("\n\nStarted")[0] + "\n"
+
+
+class _StubTTSHandler:
+    """Exercise _post_tts without standing up the HTTP server."""
+
+    from .adapter import _RoomsRequestHandler as _Real
+
+    _post_tts = _Real._post_tts
+    del _Real
+
+    def __init__(self, adapter, body):
+        self._body = body
+        self.sent = None
+        self.server = type("_Server", (), {"adapter": adapter})()
+
+    def _read_body(self):
+        return self._body
+
+    def _json(self, status, payload):
+        self.sent = (status, payload)
+
+    def _bytes(self, status, payload, ctype):
+        self.sent = (status, ctype)
+
+    def _no_content(self, status=204):
+        self.sent = (status, None)
+
+
+def _capture_tts(monkeypatch):
+    monkeypatch.setenv("RETINUE_VOICE_BACKEND", "xai")
+    monkeypatch.setattr(
+        voice,
+        "_xai_creds",
+        lambda: {"provider": "xai", "api_key": "test-key", "base_url": "https://api.x.ai/v1"},
+    )
+    seen = {}
+
+    def fake_post(url, **kwargs):
+        seen["json"] = kwargs.get("json_body")
+        return _FakeResp(content=b"ID3fake-mp3")
+
+    monkeypatch.setattr(voice, "_http_post", fake_post)
+    return seen
+
+
+def test_synthesize_does_not_speak_the_itinerary_card(monkeypatch):
+    """The itinerary is a UI card; read aloud it recites the whole thread."""
+    seen = _capture_tts(monkeypatch)
+    voice.synthesize(ITINERARY_TURN, "mangus")
+    spoken = seen["json"]["text"]
+    assert "```" not in spoken
+    assert "itinerary" not in spoken
+    assert "[doing]" not in spoken
+    assert "[todo]" not in spoken
+    assert "[done]" not in spoken
+    assert "Content-classification gap" not in spoken
+    assert "The list raises a hand" in spoken
+
+
+def test_synthesize_keeps_underscores_in_identifiers(monkeypatch):
+    """An intra-word underscore is not Markdown emphasis (#158)."""
+    seen = _capture_tts(monkeypatch)
+    voice.synthesize(ITINERARY_TURN, "mangus")
+    spoken = seen["json"]["text"]
+    assert "email_automation" in spoken
+    assert "urgency_phrase_bank" in spoken
+    assert "emailautomation" not in spoken
+
+
+def test_spoken_text_drops_a_card_only_turn_and_keeps_prose():
+    assert voice.spoken_text(ITINERARY_ONLY) == ""
+    assert voice.spoken_text("Plain words.") == "Plain words."
+
+
+def test_post_tts_returns_204_when_there_is_nothing_to_speak(tmp_path):
+    """Silence must not reach Speak Replies as a TTS failure."""
+    from .adapter import RetinueRoomsAdapter
+
+    adapter = RetinueRoomsAdapter.__new__(RetinueRoomsAdapter)
+    adapter._home_dir = lambda: str(tmp_path)
+
+    handler = _StubTTSHandler(adapter, {"text": ITINERARY_ONLY, "speaker": "mangus"})
+    handler._post_tts()
+    assert handler.sent == (204, None)
+
+
+def test_synthesize_dispatch_hands_an_override_the_spoken_script(monkeypatch):
+    """Swapping the synthesiser must not smuggle raw Markdown to a provider."""
+    seen = {}
+
+    def fake_synth(text, speaker):
+        seen["text"] = text
+        return b"ID3fake-mp3"
+
+    monkeypatch.setattr(voice, "synthesize_fn", fake_synth)
+    voice.synthesize_dispatch(ITINERARY_TURN, "mangus")
+    assert "```" not in seen["text"]
+    assert "[doing]" not in seen["text"]
+    assert "The list raises a hand" in seen["text"]
+
+    with pytest.raises(voice.VoiceError, match="empty text"):
+        voice.synthesize_dispatch(ITINERARY_ONLY, "mangus")
