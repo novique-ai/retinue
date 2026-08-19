@@ -172,16 +172,34 @@ briefing names the rooms they are also in; `rooms_list` shows them and
 2. An agent reply is scanned for `@name` mentions of other members → they are appended to
    the turn queue (self-mentions and already-queued members are skipped).
 3. **Budget**: at most `max_agent_turns` agent turns per user message (default 8). On
-   exhaustion the room posts a system notice and waits for the user.
+   exhaustion the room posts a system notice and waits for the user. This is the hard
+   ceiling; follow-up rounds below cannot exceed it.
 4. **Turns are sequential.** The queue is mention order, then follow-up
    `@mention`s from each reply. A speaker finishes and their reply is on the
    transcript before the next speaker starts, so a reviewer sees the draft.
    One user-message cycle still holds the room lock, so a second user message
    queues behind the current cycle. An explicit "run these in parallel"
    control is later; it is not the default.
-5. Reply capture is per `(room, member)` so two in-flight speakers cannot
+5. **Speak or pass.** A member whose turn adds nothing can pass explicitly.
+   A pass produces no transcript message — not an agent line, and not the
+   system `did not reply (...)` notice. That notice stays for failed turns
+   (timeout, dispatch error). Empty-delta no-op turns are still skipped
+   silently before the model is called. The pass signal is a structured
+   contract at the engine boundary: the entire reply must be the JSON object
+   `{"pass": true}`. Surrounding prose, `(pass)` in a sentence, and the word
+   "pass" in ordinary English are spoken replies. The per-turn briefing
+   tells members how to pass; the engine matches the payload deterministically
+   (no regex over free-form output).
+6. **Round settling.** After the user message and the first planned wave
+   (mentions, or the lead), remaining members get a bounded number of
+   speak-or-pass follow-up rounds (`max_followup_rounds`, default 3; `0`
+   disables). The room settles when a full round adds no speech. A speech
+   re-opens a round so others can react; the round cap and the turn budget
+   both stop the loop. First-round routing (`@mentions`, lead default) is
+   unchanged.
+7. Reply capture is per `(room, member)` so two in-flight speakers cannot
    steal each other's notify.
-6. **Rooms run concurrently with each other.** Sequencing is per room, not
+8. **Rooms run concurrently with each other.** Sequencing is per room, not
    gateway-wide: a slow turn in one room no longer blocks the others. Each
    cycle binds its workspace (container key + mounts) to a ContextVar rather
    than to process env — see `tools/workspace_context.py` — so overlapping
@@ -189,7 +207,7 @@ briefing names the rooms they are also in; `rooms_list` shows them and
    travelled through `os.environ` and every cycle had to serialize behind one
    process-wide lock, which meant a single local-model turn could hold the
    whole gateway for the full turn timeout.
-7. **Stop** (`POST /rooms/{id}/stop`, room chrome, Escape) aborts this room's
+9. **Stop** (`POST /rooms/{id}/stop`, room chrome, Escape) aborts this room's
    cycle: do not start the next queued member, cancel the current model call
    if the gateway can, and post `Stopped. {name} stopped this turn.` A new
    user line after that is a normal redirect. Idle stop is a no-op. Speak
@@ -211,8 +229,8 @@ convention: no `RETINUE_ROOMS_API_KEY` → localhost-only):
 | `GET/POST /agents` | roster / hire (`{name, job, how, model?}` — `model` names a preset) |
 | `GET/PATCH /agents/{slug}` | inspect / edit (`{name?, job?, how?, model?, archived?}`) — SOUL rewrite in place; `model` still switches the preset. No restart. |
 | `DELETE /agents/{slug}` | remove `profiles/<slug>/` (never `default`); evicts the live registration |
-| `GET/POST /rooms` | list / create (`{name, members[], lead?, max_agent_turns?, workspace?, ide_path?, shared_mode?}`) — `workspace` is `sandbox` (default) or `ide`; `shared_mode` is `rw` (default) or `ro`. List is sidebar-ordered and includes `archived` |
-| `GET/PATCH/DELETE /rooms/{id}` | inspect / edit (`{name?, members?, lead?, archived?, max_agent_turns?, workspace?, ide_path?, shared_mode?}`) / remove. Archive hides without wiping the transcript. Full-array `members` restaffs wholesale; members it adds or drops get the same join/leave notices and `last_seen` seeding as the incremental endpoints. |
+| `GET/POST /rooms` | list / create (`{name, members[], lead?, max_agent_turns?, max_followup_rounds?, workspace?, ide_path?, shared_mode?}`) — `workspace` is `sandbox` (default) or `ide`; `shared_mode` is `rw` (default) or `ro`. List is sidebar-ordered and includes `archived`. `max_followup_rounds` is the speak-or-pass settle cap (default 3, `0` disables). |
+| `GET/PATCH/DELETE /rooms/{id}` | inspect / edit (`{name?, members?, lead?, archived?, max_agent_turns?, max_followup_rounds?, workspace?, ide_path?, shared_mode?}`) / remove. Archive hides without wiping the transcript. Full-array `members` restaffs wholesale; members it adds or drops get the same join/leave notices and `last_seen` seeding as the incremental endpoints. |
 | `POST /rooms/{id}/members` | invite one agent (`{member}`) → 201. Seeds `last_seen` so a first-time invitee sees only the last 20 messages (and the join notice). A re-invite keeps their existing cursor. |
 | `DELETE /rooms/{id}/members/{slug}` | remove one agent → 200. `last_seen` is kept so a later re-invite resumes where they left off. Refuses the last remaining member. |
 | `GET /rooms/{id}/routines` | routines whose `source_room` is this room |
