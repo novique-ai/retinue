@@ -150,14 +150,31 @@ def test_cron_delivery_live_transport_patch_present():
 
 
 def test_cron_scheduler_patch_is_confined_to_deliver_result():
-    """The carried scheduler delta may not grow beyond _deliver_result."""
+    """The carried scheduler delta may not grow beyond _deliver_result.
+
+    The baseline below is THE UPSTREAM BASE — the commit whose
+    ``cron/scheduler.py`` the carried patch is applied on top of — so the diff
+    it takes is exactly the fork's delta for that file. It is therefore
+    sync-versioned: bump it to the newly merged upstream sha as part of every
+    upstream sync, or the guard measures upstream's churn instead of ours and
+    fails for a reason that has nothing to do with drift.
+
+    It was pinned to a fork commit (56516ec7) before the 13ce0c5c6 sync; that
+    commit's ``cron/scheduler.py`` was byte-identical to the then-current
+    upstream base 00c12dac6, so this is the same measurement, not a weaker one.
+    A hardcoded sha rather than the ``retinue-base-*`` tag on purpose: the
+    merged upstream commit is always present in a checkout that contains the
+    merge, whereas a missing tag would make ``git diff`` fail, leave stdout
+    empty, and silently skip the guard.
+    """
     try:
         diff = subprocess.run(
             [
                 "git",
                 "diff",
                 "-U0",
-                "56516ec7faa075bab1b1c321962bde38ff79f292",
+                # Upstream base merged by the 13ce0c5c6 sync (issue #135).
+                "13ce0c5c675e843af70d19c9e5144249cd51c8d1",
                 "--",
                 "cron/scheduler.py",
             ],
