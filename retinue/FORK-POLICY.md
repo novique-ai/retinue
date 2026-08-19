@@ -57,7 +57,8 @@ contributor-health files: it is upstream *governance*, not upstream *branding*. 
 requires a maintainer-applied `ci-reviewed` label whenever CI-sensitive files change,
 which an upstream sync does by definition — so every sync PR would block on a label
 only we could apply to our own merge. That is ceremony, not review. Our replacement
-keeps the call interface byte-compatible so `ci.yml` stays pristine and keeps receiving
+keeps the call interface byte-compatible so `ci.yaml` (renamed from `ci.yml` upstream in
+the 13ce0c5c6 sync) stays pristine and keeps receiving
 upstream improvements, and it still logs which areas tripped the gate.
 
 The sibling `contributor-check.yml` is deliberately NOT owned. Its data is cheap, it
