@@ -1326,17 +1326,30 @@ export async function resolveStoredSession(storedSessionId: string): Promise<Ses
     // Not on the active profile — fall through to the cross-profile probe.
   }
 
-  // Multi-profile only: probe each other profile by id (still one cheap lookup
+  // Multi-profile only: probe each profile by id (still one cheap lookup
   // each) rather than pulling every profile's recent sessions. The first hit
   // carries its owning `profile`, which routes the resume to the right backend.
+  //
+  // The ACTIVE profile is probed too, and first. The unscoped rung above does
+  // NOT cover it: Electron routes a profile-less /api/sessions GET to the
+  // PRIMARY backend, not the active gateway's, so a session owned by the
+  // active non-primary profile 404s there. Skipping the active key then left
+  // it as the ONE profile never probed — a hidden Bot Mode chat (never in the
+  // sidebar cache) owned by the focused bot resolved to undefined on every
+  // switch, the transcript prefetch went unscoped to the primary, and the
+  // thread painted empty until an explicitly-profiled row (right-click →
+  // Sessions) seeded the cache.
   const activeKey = normalizeProfileKey($activeGatewayProfile.get())
 
-  const otherProfiles = $profiles
-    .get()
-    .map(profile => normalizeProfileKey(profile.name))
-    .filter(key => key !== activeKey)
+  const probeProfiles = [
+    activeKey,
+    ...$profiles
+      .get()
+      .map(profile => normalizeProfileKey(profile.name))
+      .filter(key => key !== activeKey)
+  ]
 
-  for (const profile of otherProfiles) {
+  for (const profile of probeProfiles) {
     try {
       const session = await getSession(storedSessionId, profile)
 
@@ -1575,6 +1588,33 @@ export function isSessionGoneError(err: unknown): boolean {
   const message = err instanceof Error ? err.message : String(err ?? '')
 
   return message.includes('404') || /session not found/i.test(message)
+}
+
+/**
+ * What to do when a resume's RPC and REST fallback BOTH came back
+ * gone-looking (#88540).
+ *
+ * A 404 is only proof of deletion when it came from the backend that owns
+ * the session. During (or moments after) a profile/connection switch the
+ * request can land on a backend that has never heard of the id — the
+ * cross-profile Bots-pane open is the reproducer: the route is written
+ * correctly, the resume races the gateway swap, both lookups 404 on the
+ * wrong backend, and the "genuinely gone" branch yanks the window to the
+ * blank new-chat route while the target session is perfectly alive.
+ *
+ * `'retry'` keeps the route and arms the bounded auto-retry (which re-runs
+ * the resume once the swap settles); `'draft'` is reserved for a session
+ * that is verifiably gone in calm conditions.
+ */
+export function goneSessionVerdict(options: {
+  /** The session was created by this window in this run — never discard. */
+  createdThisRun: boolean
+  /** A post-failure re-resolve still finds the row on SOME profile. */
+  stillListed: boolean
+  /** A profile swap or connection switch is in flight (or just targeted). */
+  switchInFlight: boolean
+}): 'draft' | 'retry' {
+  return options.createdThisRun || options.stillListed || options.switchInFlight ? 'retry' : 'draft'
 }
 
 /**

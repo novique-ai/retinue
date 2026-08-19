@@ -145,6 +145,10 @@ _methods: dict[str, callable] = {}
 _pending: dict[str, tuple[str, threading.Event]] = {}
 _pending_prompt_payloads: dict[str, tuple[str, dict]] = {}
 _answers: dict[str, str] = {}
+# Batch clarify accumulators: rid → {"qids": [...], "answers": {qid: answer}}.
+# Written by clarify.respond (per-question lock, update-in-place), read out by
+# _block on resolution/timeout so locked answers survive the deadline.
+_batch_clarify: dict[str, dict] = {}
 _db = None
 _db_error: str | None = None
 _stdout_lock = threading.Lock()
@@ -1760,6 +1764,7 @@ def _compute_host_turn_frame(
     text: Any,
     image_paths: list[str] | None = None,
     queued_prompt_generation: int | None = None,
+    display_kind: str | None = None,
 ) -> dict:
     with session["history_lock"]:
         history = list(session.get("history", []))
@@ -1775,6 +1780,7 @@ def _compute_host_turn_frame(
         "request_id": rid,
         "session_key": session.get("session_key") or sid,
         "text": text,
+        **({"display_kind": display_kind} if display_kind else {}),
         "history": history,
         "history_version": history_version,
         "cols": int(session.get("cols", 80) or 80),
@@ -1863,6 +1869,7 @@ def _submit_prompt_to_compute_host(
     text: Any,
     image_paths: list[str] | None = None,
     queued_prompt_generation: int | None = None,
+    display_kind: str | None = None,
 ) -> dict:
     cfg = _load_dashboard_process_isolation_config()
     frame = _compute_host_turn_frame(
@@ -1872,6 +1879,7 @@ def _submit_prompt_to_compute_host(
         text,
         image_paths=image_paths,
         queued_prompt_generation=queued_prompt_generation,
+        display_kind=display_kind,
     )
 
     def _complete(done: dict) -> None:
@@ -1948,7 +1956,14 @@ def _pending_clarify_request_payload(sid: str) -> dict | None:
                 continue
             event, prompt_payload = _pending_prompt_payloads.get(rid, ("", {}))
             if event == "clarify.request":
-                return dict(prompt_payload)
+                snapshot = dict(prompt_payload)
+                # Batch clarify: replay the answers locked so far, so a
+                # reconnecting client restores its per-question ✓ state
+                # instead of presenting every question as unanswered.
+                batch = _batch_clarify.get(rid)
+                if batch is not None and batch["answers"]:
+                    snapshot["answers"] = dict(batch["answers"])
+                return snapshot
     return None
 
 
@@ -2374,6 +2389,14 @@ def _start_agent_build(sid: str, session: dict) -> None:
                 agent = _make_agent(sid, key, **kw)
             finally:
                 _clear_session_context(tokens)
+
+            # Bot Mode gate hint: the DB title lands post-first-turn
+            # (pending_title), but the system prompt builds at turn START —
+            # hand the agent its intended title so the "Bot Chat" protocol
+            # gate (agent/system_prompt.py) doesn't depend on write order.
+            _title_hint = str(current.get("pending_title") or "").strip()
+            if _title_hint:
+                agent._session_title_hint = _title_hint
 
             # Session DB row deferred to first run_conversation() call.
             # pending_title applied post-first-message (see cli.exec handler).
@@ -3457,16 +3480,28 @@ def _enable_gateway_prompts() -> None:
 # ── Blocking prompt factory ──────────────────────────────────────────
 
 
-def _block(event: str, sid: str, payload: dict, timeout: float | None = 300) -> str:
+def _block(
+    event: str,
+    sid: str,
+    payload: dict,
+    timeout: float | None = 300,
+    batch_qids: list[str] | None = None,
+) -> str:
     rid = uuid.uuid4().hex[:8]
     ev = threading.Event()
     with _prompt_lock:
         _pending[rid] = (sid, ev)
         payload["request_id"] = rid
         _pending_prompt_payloads[rid] = (event, dict(payload))
+        if batch_qids:
+            # Multi-question clarify: per-question answers accumulate here
+            # (update-in-place until every qid is locked). Locked answers
+            # survive a timeout — see the batch read-out below.
+            _batch_clarify[rid] = {"qids": list(batch_qids), "answers": {}}
     answered = False
     answer = ""
     answer_present = False
+    batch_answers: dict | None = None
     try:
         _emit(event, sid, payload)
         # Natural Event semantics: None → wait forever (clarify configured with
@@ -3479,6 +3514,27 @@ def _block(event: str, sid: str, payload: dict, timeout: float | None = 300) -> 
             _pending_prompt_payloads.pop(rid, None)
             answer_present = rid in _answers
             answer = _answers.pop(rid, "")
+            batch_state = _batch_clarify.pop(rid, None)
+            if batch_state is not None:
+                batch_answers = dict(batch_state["answers"])
+
+    if batch_qids is not None:
+        # Cancel-all (respond with no question_id) resolves via _answers with
+        # an empty string — that stays a plain cancel, not a partial result.
+        if answer_present:
+            return answer
+        result: dict[str, object] = {"answers": batch_answers or {}}
+        if not answered:
+            # Deadline hit: keep whatever was locked, tell the tool the rest
+            # are absences (not skips), and still fire the expire
+            # notification so live cards tear down.
+            result["timed_out"] = True
+            _emit(
+                f"{event.removesuffix('.request')}.expire",
+                sid,
+                {"request_id": rid},
+            )
+        return json.dumps(result, ensure_ascii=False)
 
     # Emit an `.expire` notification on timeout for every blocking request type
     # whose `*.respond` handler tolerates a late reply (allow_expired=True).
@@ -3495,6 +3551,7 @@ def _block(event: str, sid: str, payload: dict, timeout: float | None = 300) -> 
         "preview.read.request",
         "window.read.request",
         "mcp.setup.request",
+        "tour.request",
     }:
         _emit(
             f"{event.removesuffix('.request')}.expire",
@@ -3515,6 +3572,50 @@ def _clarify_timeout_seconds() -> float | None:
         return timeout if timeout > 0 else None
     except Exception:
         return 300
+
+
+def _clarify_block(sid: str, q, c, multi_select=False, questions=None) -> str:
+    """Bridge the clarify tool callback onto _block.
+
+    Single-question calls keep the exact historical payload shape (older
+    renderers never see a new field). Batch calls emit one clarify.request
+    carrying the question list — only wire fields (qid/question/choices/
+    multi_select) are forwarded; the tool-side normalized entries also carry
+    result-assembly keys (id, choices_offered) the renderer must not see.
+    The tool decodes the JSON reply via its batch answer parser.
+    """
+    if questions:
+        wire = [
+            {
+                "qid": entry["qid"],
+                "question": entry["question"],
+                "choices": entry["choices"],
+                "multi_select": bool(entry["multi_select"]),
+            }
+            for entry in questions
+        ]
+        return _block(
+            "clarify.request",
+            sid,
+            {"questions": wire},
+            timeout=_clarify_timeout_seconds(),
+            batch_qids=[entry["qid"] for entry in questions],
+        )
+    # multi_select is a pass-through hint: renderers with checkbox
+    # support can honor it; older renderers ignore the extra field
+    # and stay single-select (a single answer still parses as a
+    # one-element list on the tool side). Only emitted when True so
+    # single-select payloads keep the exact pre-multi-select shape.
+    return _block(
+        "clarify.request",
+        sid,
+        (
+            {"question": q, "choices": c, "multi_select": True}
+            if multi_select
+            else {"question": q, "choices": c}
+        ),
+        timeout=_clarify_timeout_seconds(),
+    )
 
 
 def _clear_pending(sid: str | None = None) -> None:
@@ -4942,6 +5043,68 @@ def _apply_model_switch(
     }
 
 
+def _sync_bot_capabilities(sid: str, session: dict) -> None:
+    """Rebuild a Bot Chat session's agent when its capability surface changed.
+
+    Bot Chats are eternal sessions; toolsets/MCP tool definitions are baked
+    into the live agent at construction, so a capability edit (Settings →
+    Capabilities, skill install, MCP toggle) would otherwise not apply until
+    /new. At turn start, hash the profile's capability surface
+    (tools/bot_mode_probe.capability_fingerprint) and, on change, swap in a
+    freshly built agent for the SAME session — history is session/DB-backed,
+    and the prompt-restore epoch check rebuilds the system prompt to match.
+    One rebuild per user-initiated change; identical state is a no-op.
+    """
+    agent = session.get("agent")
+    if agent is None:
+        return
+    try:
+        title = str(getattr(agent, "_session_title_hint", "") or "").strip()
+        if not title:
+            db = getattr(agent, "_session_db", None)
+            key = session.get("session_key") or ""
+            title = str((db.get_session_title(key) if (db and key) else None) or "").strip()
+        if title != "Bot Chat":
+            return
+        from tools.bot_mode_probe import capability_fingerprint
+
+        home = session.get("profile_home") or None
+        current = capability_fingerprint(home)
+        if current == "unavailable":
+            return
+        seen = session.get("bot_caps_seen")
+        session["bot_caps_seen"] = current
+        if seen is None or seen == current:
+            return
+    except Exception:
+        return
+
+    # Capability surface changed — rebuild the agent in place. Same
+    # session_id/key, so the DB-backed history and (epoch-refreshed) system
+    # prompt carry over; only tool definitions and prompt bytes change.
+    try:
+        tokens = _set_session_context(sid, cwd=_session_cwd(session))
+        try:
+            new_agent = _make_agent(
+                sid,
+                session["session_key"],
+                session_id=session["session_key"],
+                platform_override=_session_source(session),
+            )
+        finally:
+            _clear_session_context(tokens)
+        new_agent._session_title_hint = "Bot Chat"
+        session["agent"] = new_agent
+        session["config_model_seen"] = _config_model_target()
+        _emit(
+            "notice",
+            sid,
+            {"message": "Capabilities updated — this bot's tools and prompt were refreshed."},
+        )
+    except Exception as e:
+        logger.warning("Bot capability sync failed for %s: %s", sid, e)
+
+
 def _sync_agent_model_with_config(sid: str, session: dict) -> None:
     """Adopt a config.yaml model change at turn start, like gateways do per
     message. Sessions pinned with /model keep their choice; a failed switch
@@ -5613,6 +5776,20 @@ def _emit_session_info_for_session(sid: str, session: dict) -> None:
         pass
 
 
+def broadcast_session_info() -> None:
+    """Re-emit ``session.info`` to every live session.
+
+    For approvals-config writers that bypass the ``config.set`` RPC (which
+    re-emits itself): the REST config saves and the ``/approvals`` slash
+    mirror. Only reaches sessions in THIS process; a spawned
+    ``tui_gateway.entry`` child gateway has its own ``_sessions``.
+    """
+    with _sessions_lock:
+        sessions = list(_sessions.items())
+    for sid, sess in sessions:
+        _emit_session_info_for_session(sid, sess)
+
+
 # Tool Args/Result text shipped to the TUI for the verbose trail line. The TUI
 # renders only a small persisted preview (ui-tui VERBOSE_TRAIL_MAX_CHARS), kept
 # all session and expanded by default — so shipping more than that is pure pipe
@@ -6102,20 +6279,8 @@ def _agent_cbs(sid: str) -> dict:
         "notice_clear_callback": lambda key: _emit(
             "notification.clear", sid, {"key": key}
         ),
-        "clarify_callback": lambda q, c, multi_select=False: _block(
-            "clarify.request",
-            sid,
-            # multi_select is a pass-through hint: renderers with checkbox
-            # support can honor it; older renderers ignore the extra field
-            # and stay single-select (a single answer still parses as a
-            # one-element list on the tool side). Only emitted when True so
-            # single-select payloads keep the exact pre-multi-select shape.
-            (
-                {"question": q, "choices": c, "multi_select": True}
-                if multi_select
-                else {"question": q, "choices": c}
-            ),
-            timeout=_clarify_timeout_seconds(),
+        "clarify_callback": lambda q, c, multi_select=False, questions=None: (
+            _clarify_block(sid, q, c, multi_select=multi_select, questions=questions)
         ),
         # read_terminal tool (desktop GUI): same blocking bridge as clarify — the
         # renderer answers terminal.read.respond with the serialized buffer.
@@ -6156,6 +6321,17 @@ def _agent_cbs(sid: str) -> dict:
             sid,
             {"server": server, "action": action, "reason": reason},
             timeout=600,
+        ),
+        # tour tool (desktop GUI): the renderer drives driver.js — highlighting
+        # elements in the app's own DOM or injecting the engine into the
+        # preview pane's webview — and answers tour.respond with the outcome
+        # (did the selector match, which step is active). Generous timeout: a
+        # preview tour's first action loads the engine into a live page.
+        "tour_callback": lambda payload: _block(
+            "tour.request",
+            sid,
+            dict(payload),
+            timeout=45,
         ),
     }
 
@@ -10461,6 +10637,10 @@ def _run_prompt_submit(
         # child; delegate_task then captures it as non-serializable authority.
         transport_token = bind_transport(session.get("transport"))
         runtime_session_token = _current_runtime_session_record.set(session)
+        # Bound eagerly so the except/finally paths below always have an agent
+        # even if turn setup throws; re-read after _sync_bot_capabilities,
+        # which may swap in a rebuilt agent for Bot Chat sessions.
+        agent = session["agent"]
         approval_token = None
         session_tokens = []
         home_token = None  # per-turn HERMES_HOME override for a resumed remote profile
@@ -10521,6 +10701,11 @@ def _run_prompt_submit(
                 # config sync so an explicit pick wins over a config.yaml change.
                 _apply_pending_model_switch(sid, session)
                 _sync_agent_model_with_config(sid, session)
+            # Bot Chat capability sync — adopt Settings→Capabilities edits
+            # (skills/toolsets/MCP/SOUL) into the eternal bot session before
+            # the turn runs. No-op for every other session shape.
+            _sync_bot_capabilities(sid, session)
+            agent = session["agent"]
             # Snapshot after turn-start model sync. A deferred switch mutates
             # history and its version; that mutation belongs to this turn.
             with session["history_lock"]:
@@ -11628,6 +11813,7 @@ def _stage_session_file_attachment(
 
 def _respond(rid, params, key, *, allow_expired=False):
     r = params.get("request_id", "")
+    question_id = str(params.get("question_id") or "")
     with _prompt_lock:
         entry = _pending.get(r)
         if not entry:
@@ -11635,6 +11821,21 @@ def _respond(rid, params, key, *, allow_expired=False):
                 return _ok(rid, {"status": "expired"})
             return _err(rid, 4009, f"no pending {key} request")
         _, ev = entry
+        batch = _batch_clarify.get(r)
+        if batch is not None and question_id:
+            # Per-question lock (multi-question clarify). Update-in-place is
+            # deliberate: a locked answer stays editable until the batch
+            # completes, and completion is exactly "every qid locked" — the
+            # final lock is the Confirm-and-continue click.
+            if question_id not in batch["qids"]:
+                return _err(rid, 4002, f"unknown question_id {question_id!r}")
+            batch["answers"][question_id] = params.get(key, "")
+            remaining = [
+                qid for qid in batch["qids"] if qid not in batch["answers"]
+            ]
+            if not remaining:
+                ev.set()
+            return _ok(rid, {"status": "ok", "remaining": remaining})
         _answers[r] = params.get(key, "")
         ev.set()
     return _ok(rid, {"status": "ok"})
@@ -13752,6 +13953,10 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
         if name == "model" and arg and agent:
             result = _apply_model_switch(sid, session, arg)
             return result.get("warning", "")
+        elif name == "approvals" and arg:
+            # The slash worker already persisted the new approvals.mode; the
+            # bare (read-only) form has no arg and needs no repaint.
+            broadcast_session_info()
         elif name == "personality" and arg and agent:
             pname, new_prompt = _validate_personality(arg, _load_cfg())
             # Persist through the single owner so this surface can never
