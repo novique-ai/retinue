@@ -301,6 +301,25 @@ convention: no `RETINUE_ROOMS_API_KEY` → localhost-only):
 `python -m plugins.platforms.retinue_rooms.cli` is the reference client (create / list /
 send / watch / chat). The web UI consumes the SSE stream; the CLI keeps long-poll.
 
+## Governed retainers (operating contract)
+
+An agent can be marked **governed** (`PATCH /agents/{slug}` with
+`{"governed": true}`; shown on `GET /agents`). A governed member's every turn
+in an **ide** room carries the operator's operating contract — the file named
+by `RETINUE_GOVERNED_CONTRACT` on the gateway — appended to the room briefing
+as its final, binding section.
+
+Fail closed: if the contract file is missing, empty, oversized, or the env
+var is unset, a governed member's ide turn is refused (the transcript shows
+`did not reply (governed contract unavailable — …)`) rather than run
+ungoverned. Sandbox rooms are out of scope — no IDE tree, no contract.
+The file is mtime-cached: edit it and the next turn picks it up, no restart.
+
+ide rooms also pin the turn's **session working directory** to the room's
+`ide_path`, so the standard project-context chain (`AGENTS.md` / `CLAUDE.md`
+via the prompt builder) loads for room members exactly as it does for a host
+CLI session working in that tree. Sandbox rooms load no project context.
+
 ## Model presets (per-hire model selection)
 
 By default a hire copies the **root config's `model:` block** — every new agent uses the

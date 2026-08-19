@@ -31,6 +31,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Governed retainers.** `PATCH /agents/{slug}` accepts `{"governed": true}`;
+  a governed member's every turn in an ide room carries the operator's
+  operating contract (`RETINUE_GOVERNED_CONTRACT` file) as the briefing's
+  final, binding section. Fail closed: contract unreadable → the turn is
+  refused with `governed contract unavailable (…)`, never run ungoverned.
+  Sandbox rooms are out of scope.
+- ide rooms pin the turn's session cwd to the room's `ide_path`, so
+  `AGENTS.md`/`CLAUDE.md` project context loads for room members the same
+  way it does for a host CLI session in that tree (new adapter hook
+  `session_cwd_for`, consumed by the gateway's session binding).
+
 - Room messages show a tiny Discord-style stamp next to the speaker
   (`Today at 3:14 PM`, `Yesterday at 11:08 PM`). Uses the existing
   `ts`. Closes #126.

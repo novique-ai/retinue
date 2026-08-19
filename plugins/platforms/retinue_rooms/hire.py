@@ -775,6 +775,7 @@ def list_agents(home_dir: str) -> List[Dict[str, Any]]:
         if meta is None:
             meta = {"display_name": name, "slug": name, "job": "", "how": ""}
         meta["archived"] = bool(meta.get("archived"))
+        meta["governed"] = bool(meta.get("governed"))
         meta["has_soul"] = os.path.isfile(os.path.join(pdir, "SOUL.md"))
         meta["local_llm"] = profile_uses_local_llm(home_dir, name)
         meta["turn_timeout"] = int(turn_timeout_for(home_dir, name))
@@ -924,6 +925,7 @@ def update_agent(
     avatar_color: Any = _UNSET,
     voice: Any = _UNSET,
     persona: Any = _UNSET,
+    governed: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """Rewrite SOUL + meta for an existing hire. Slug stays put.
 
@@ -951,6 +953,7 @@ def update_agent(
         and avatar_color is _UNSET
         and voice is _UNSET
         and persona is _UNSET
+        and governed is None
     ):
         raise ValueError("nothing to update")
 
@@ -998,6 +1001,14 @@ def update_agent(
         else:
             meta["persona"] = persona_obj
         persona_changed = True
+    if governed is not None:
+        # Governed agents carry the operator's operating contract into every
+        # ide-room turn (see governed.py). Stored only when true so
+        # ungoverned profiles keep a clean meta file.
+        if governed:
+            meta["governed"] = True
+        else:
+            meta.pop("governed", None)
     meta["slug"] = slug
     meta["updated_at"] = time.time()
 
@@ -1020,6 +1031,20 @@ def update_agent(
             )
     _write_meta(profile_dir, meta)
     return _agent_or_raise(home_dir, slug)
+
+
+def agent_is_governed(home_dir: str, slug: str) -> bool:
+    """True when *slug*'s stored meta carries ``governed: true``.
+
+    Reads the meta file directly (cheap JSON) rather than list_agents() —
+    this runs on every room turn.
+    """
+    pdir = _profile_dir(home_dir, (slug or "").strip() or "default")
+    try:
+        with open(os.path.join(pdir, AGENT_META_FILENAME), encoding="utf-8") as f:
+            return bool(json.load(f).get("governed"))
+    except (OSError, ValueError):
+        return False
 
 
 def delete_agent(home_dir: str, slug: str) -> str:

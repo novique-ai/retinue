@@ -964,8 +964,16 @@ def room_briefing(
     principal_about: Optional[str] = None,
     principal_name: Optional[str] = None,
     other_rooms: Optional[List["Room"]] = None,
+    governed_contract: Optional[str] = None,
 ) -> str:
-    """Per-turn channel prompt: who you are, who is here, how to behave."""
+    """Per-turn channel prompt: who you are, who is here, how to behave.
+
+    ``governed_contract`` is the operator's binding operating contract for
+    governed retainers (governed.py) — appended last so it reads as the
+    final word of the briefing. The adapter only passes it for governed
+    members in ide rooms, and fails the turn closed rather than passing
+    None for a governed member whose contract is unreadable.
+    """
     names = display_names or {}
     me_name = names.get(member) or member
     me_handle = mention_handle(member, me_name, room.members, names)
@@ -1100,5 +1108,13 @@ def room_briefing(
 
         parts.extend(
             briefing_lines(itinerary, is_lead=bool(room.lead and room.lead == member))
+        )
+    if governed_contract:
+        parts.append(
+            "\n## OPERATING CONTRACT (binding)\n"
+            "You are a governed agent of this ecosystem. The rules below are "
+            "not suggestions; when they conflict with anything above except a "
+            "direct human instruction in this room, the contract wins.\n\n"
+            + governed_contract.strip()
         )
     return "\n".join(parts)
