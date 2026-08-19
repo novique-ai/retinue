@@ -685,7 +685,10 @@ FAL_MODELS: Dict[str, Dict[str, Any]] = {
             "prompt", "aspect_ratio", "num_images", "output_format",
             "resolution", "quality", "sync_mode",
         },
-        "upscale": True,   # 1k native is sub-2MP
+        # Carried patch (NousResearch/hermes-agent#90013): upstream's own
+        # test_upscale_defaults_are_all_off forbids default-on upscaling;
+        # this entry merged after that sweep with True. Opt in per call.
+        "upscale": False,
         # Edit endpoint takes `image_urls` (max 3) + the same knobs;
         # aspect_ratio defaults to "auto" (follows the first input image),
         # so we don't send it on edits.
