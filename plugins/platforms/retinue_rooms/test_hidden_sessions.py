@@ -162,7 +162,15 @@ def test_sweep_home_walks_default_and_profile_dbs(tmp_path):
 
 def test_on_session_start_hides_only_retinue_rooms_platform(tmp_path, monkeypatch):
     """Creation-path hook: hide when the agent reports platform=retinue_rooms."""
+    import hermes_state
+
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    # Under the tests/ conftest, an autouse fixture re-pins DEFAULT_DB_PATH and
+    # _default_db_path() prefers that pin over a fresh HERMES_HOME resolution —
+    # so the hook's argless SessionDB() would open the conftest's DB, not ours.
+    # Pin it to the DB this test asserts against (same pattern as
+    # tests/gateway/test_session.py). Harmless via the plugin path.
+    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
     db = _db(tmp_path / "state.db")
     try:
         _seed(db, "room-sid", source="retinue_rooms", session_key=ROOM_KEY)
