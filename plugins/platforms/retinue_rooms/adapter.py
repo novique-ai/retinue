@@ -41,7 +41,7 @@ from gateway.platforms.base import (
     SendResult,
 )
 
-from . import attachments, auth, clarify as room_clarify, cronjobs, crossroom, engine, hidden_sessions, hire, ide, identity, itinerary, keepalive, principal, projects, routines, sidebar, skilldraft, uimeta, voice, workspace
+from . import attachments, auth, clarify as room_clarify, cronjobs, crossroom, engine, governed, hidden_sessions, hire, ide, identity, itinerary, keepalive, principal, projects, routines, sidebar, skilldraft, uimeta, voice, workspace
 from .engine import KIND_AGENT, KIND_SYSTEM, KIND_USER, Room, RoomMessage
 from .store import RoomStore
 
@@ -795,6 +795,8 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             persona["voice"] = body.get("voice")
         if "persona" in body:
             persona["persona"] = body.get("persona")
+        if "governed" in body:
+            persona["governed"] = bool(body.get("governed"))
         if not model and not persona:
             raise ValueError("nothing to update")
         if persona:
@@ -1700,6 +1702,21 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         readable, delta = self._unseen(room, member)
         if not delta:
             return False, "nothing new to respond to"
+
+        # Governed retainers carry their operating contract into every ide
+        # turn — FAIL CLOSED when it cannot be read (governed.py). The
+        # (False, reason) return rides the existing failure path, so the
+        # transcript shows a did-not-reply notice naming the cause.
+        governed_contract: Optional[str] = None
+        if (room.workspace or "sandbox") == "ide" and hire.agent_is_governed(
+            self._home_dir(), member
+        ):
+            governed_contract, gc_err = governed.contract_text()
+            if not governed_contract:
+                return False, (
+                    f"governed contract unavailable — {gc_err}; refusing to "
+                    "run this governed retainer without its contract"
+                )
         delivered_through = readable[-1].seq
         previous = int(room.last_seen.get(member, 0))
         # Cap injection only. The watermark still covers the full readable
@@ -1732,6 +1749,7 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             other_rooms=crossroom.other_rooms(
                 self.store.list_rooms(), member, room.id
             ),
+            governed_contract=governed_contract,
         )
 
         speaker_display = (
@@ -1844,6 +1862,25 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         finally:
             if not completed:
                 self._restore_watermark(room, member, previous, delivered_through)
+
+    def session_cwd_for(self, source) -> str:
+        """Host-side working directory for this turn's prompt context.
+
+        ide rooms anchor the session at the room's ide_path so the standard
+        project-context chain (AGENTS.md / CLAUDE.md via
+        build_context_files_prompt) loads exactly as it does for a host CLI
+        session working in that tree. Sandbox rooms return "" — their
+        /workspace is disposable and maps to no host project. Called by the
+        gateway when binding session vars for a turn; must never raise.
+        """
+        try:
+            room = self.store.get(str(getattr(source, "chat_id", "") or ""))
+        except Exception:
+            return ""
+        if room is None or (room.workspace or "sandbox") != "ide":
+            return ""
+        path = (room.ide_path or "").strip()
+        return path if path and os.path.isdir(path) else ""
 
     def _note_posted(self, room_id: str, message: RoomMessage) -> None:
         """Set or clear the room's needs_user flag for a just-posted line."""

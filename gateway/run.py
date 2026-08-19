@@ -24156,6 +24156,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _adapters = getattr(self, "adapters", None) or {}
         _adapter = _adapters.get(context.source.platform)
         _async_delivery = getattr(_adapter, "supports_async_delivery", True)
+        # Platform adapters may pin a host-side working directory for the
+        # turn's prompt context (Retinue ide rooms → the room's ide_path, so
+        # AGENTS.md/CLAUDE.md project context loads like a host CLI session).
+        # Optional hook; a missing or failing hook means no cwd, never a
+        # broken turn.
+        _session_cwd = ""
+        _cwd_hook = getattr(_adapter, "session_cwd_for", None)
+        if callable(_cwd_hook):
+            try:
+                _session_cwd = str(_cwd_hook(context.source) or "")
+            except Exception:
+                logger.debug("session_cwd_for hook failed", exc_info=True)
+                _session_cwd = ""
         return set_session_vars(
             platform=context.source.platform.value,
             chat_id=context.source.chat_id,
@@ -24173,6 +24186,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             profile=getattr(context.source, "profile", "") or "",
             async_delivery=_async_delivery,
             cron_session="",
+            cwd=_session_cwd,
         )
 
     def _clear_session_env(self, tokens: list) -> None:
