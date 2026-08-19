@@ -210,3 +210,47 @@ def test_cron_scheduler_patch_is_confined_to_deliver_result():
         if line < start or line + max(count, 1) - 1 >= end
     ]
     assert not outside, f"cron scheduler hunks outside _deliver_result: {outside}"
+
+
+def test_image_schema_surfaces_backend_declared_upscale(monkeypatch):
+    """Carried patch (NousResearch/hermes-agent#90045): a provider capability
+    ``supports_upscale``/``upscale_note`` must reach the dynamic image tool
+    schema, or agents can never learn the two-tier backend honors upscale."""
+    import tools.image_generation_tool as igt
+
+    monkeypatch.setattr(
+        igt,
+        "_active_image_capabilities",
+        lambda: {
+            "modalities": ["text"],
+            "max_reference_images": 0,
+            "supports_upscale": True,
+            "upscale_note": "high-resolution pass via a second tier",
+        },
+    )
+    desc = igt._build_dynamic_image_schema()["description"]
+    assert "high-resolution pass via a second tier" in desc
+
+
+def test_image_capabilities_pass_backend_upscale_through(monkeypatch):
+    """Carried patch (NousResearch/hermes-agent#90045), passthrough half:
+    ``capabilities()`` fields survive ``_active_image_capabilities``."""
+    import agent.image_gen_registry as reg
+    import hermes_cli.plugins as hp
+    import tools.image_generation_tool as igt
+
+    class _FakeProvider:
+        display_name = "fake"
+
+        def default_model(self):
+            return "fake/model"
+
+        def capabilities(self):
+            return {"supports_upscale": True, "upscale_note": "note text"}
+
+    monkeypatch.setattr(igt, "_read_configured_image_provider", lambda: "fakeprov")
+    monkeypatch.setattr(hp, "_ensure_plugins_discovered", lambda: None)
+    monkeypatch.setattr(reg, "get_provider", lambda name: _FakeProvider())
+    info = igt._active_image_capabilities()
+    assert info.get("supports_upscale") is True
+    assert info.get("upscale_note") == "note text"
