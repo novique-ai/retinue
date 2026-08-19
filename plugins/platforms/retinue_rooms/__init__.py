@@ -75,6 +75,17 @@ def register(ctx) -> None:
         register_jmap_tools(ctx)
     except Exception:
         logger.warning("Retinue rooms: failed to register mail tools", exc_info=True)
+    # Hide room-owned working sessions from the shared session lists.
+    # Registered even in secondary profile scope: member turns run there,
+    # and on_session_start is the creation-path hide (row exists, right DB).
+    try:
+        from . import hidden_sessions
+
+        ctx.register_hook("on_session_start", hidden_sessions.on_session_start)
+    except Exception:
+        logger.debug(
+            "Retinue rooms: hidden-session hook not registered", exc_info=True
+        )
 
     # Inbound platform adapter.
     try:

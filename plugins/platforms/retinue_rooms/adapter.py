@@ -41,7 +41,7 @@ from gateway.platforms.base import (
     SendResult,
 )
 
-from . import attachments, auth, cronjobs, crossroom, engine, hire, ide, identity, itinerary, keepalive, principal, projects, routines, sidebar, skilldraft, voice, workspace
+from . import attachments, auth, cronjobs, crossroom, engine, hidden_sessions, hire, ide, identity, itinerary, keepalive, principal, projects, routines, sidebar, skilldraft, voice, workspace
 from .engine import KIND_AGENT, KIND_SYSTEM, KIND_USER, Room, RoomMessage
 from .store import RoomStore
 
@@ -221,9 +221,33 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             self._rescan_disk_profiles()
         except Exception:
             logger.debug("Retinue rooms: profile rescan at connect failed", exc_info=True)
+        try:
+            self._sweep_hidden_room_sessions()
+        except Exception:
+            logger.debug("Retinue rooms: hidden-session sweep failed", exc_info=True)
         self._start_xai_keepalive()
         logger.info("Retinue rooms: serving on %s:%s", self.host, self.port)
         return True
+
+    def _sweep_hidden_room_sessions(self) -> int:
+        """Hide pre-existing room-owned sessions. Idempotent."""
+        return hidden_sessions.sweep_home(self._home_dir())
+
+    def _hide_room_session(self, session_key: str, member: str) -> None:
+        """Mark this member's rooms session hidden if the row exists."""
+        if not session_key:
+            return
+        try:
+            hidden_sessions.hide_session_in_home(
+                self._home_dir(), session_key, member=member
+            )
+        except Exception:
+            logger.debug(
+                "Retinue rooms: hide session %s/%s failed",
+                member,
+                session_key,
+                exc_info=True,
+            )
 
     def _start_xai_keepalive(self) -> None:
         """Warm the workspace xAI grant before JWT expiry while idle (#34)."""
@@ -1550,6 +1574,7 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         task_id = f"room-{room.id}-{member}-{int(time.time() * 1000)}"
         fut: Future = Future()
         key = (room.id, member)
+        session_key = self._session_key_for(source)
         with self._pending_lock:
             stale = self._pending.pop(key, None)
             if stale is not None and not stale.future.done():
@@ -1559,9 +1584,11 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
                 room_id=room.id,
                 member=member,
                 future=fut,
-                session_key=self._session_key_for(source),
+                session_key=session_key,
                 source=source,
             )
+        # Existing row from a previous turn: hide before dispatch.
+        self._hide_room_session(session_key, member)
 
         media_urls, media_types = attachments.host_media_for_text(
             self._home_dir(),
@@ -1605,6 +1632,8 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             )
         finally:
             _turn_member.reset(token)
+            # Newly created row: hide immediately after dispatch.
+            self._hide_room_session(session_key, member)
 
         budget = hire.turn_timeout_for(
             self._home_dir(), member, room.workspace or "sandbox"

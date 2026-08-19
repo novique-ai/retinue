@@ -24,6 +24,14 @@ user ──HTTP──▶ RetinueRoomsAdapter ──MessageEvent(profile=member)�
   `source.profile = <member>`, `chat_type="group"`, `chat_id = room id`. Shared-group
   sessions get automatic `[speaker]` attribution from the gateway
   (`group_sessions_per_user=False` is forced in the adapter config).
+- **Hidden working sessions**: each member turn is a real Hermes gateway session in
+  the `retinue_rooms` key namespace (`agent:<member>:retinue_rooms:group:<room>`).
+  Those rows are an implementation detail, so they are marked `hidden` at (or
+  immediately after) creation and a one-time sweep at adapter connect hides any
+  that predate the flag. Hidden sessions stay fully resumable for later turns;
+  they simply do not appear in the dashboard / CLI / desktop session lists.
+  Regular user sessions are never touched — identification is the rooms
+  session-key namespace (and `source=retinue_rooms`), not a title heuristic.
 - **Reply capture** (the A2A pattern): the adapter overrides `send()`; only sends whose
   `metadata` carries the gateway's `notify` marker (the documented final-reply marker)
   resolve the pending turn future. `on_processing_complete` resolves
