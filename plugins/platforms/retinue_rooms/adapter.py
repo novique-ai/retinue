@@ -407,6 +407,7 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         ide_path: Optional[str] = None,
         shared_mode: Optional[str] = None,
         project_id: Optional[str] = None,
+        max_followup_rounds: Optional[int] = None,
     ) -> Dict[str, Any]:
         members = [m.strip() for m in members if m and m.strip()]
         if not members:
@@ -420,6 +421,11 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             members=members,
             lead=(lead or "").strip() or None,
             max_agent_turns=max(1, int(max_agent_turns or engine.DEFAULT_MAX_AGENT_TURNS)),
+            max_followup_rounds=(
+                engine.DEFAULT_MAX_FOLLOWUP_ROUNDS
+                if max_followup_rounds is None
+                else max(0, int(max_followup_rounds))
+            ),
             project_id=project_id,
         )
         ide.apply_workspace_fields(room, workspace=workspace, ide_path=ide_path, touching_path=True)
@@ -477,6 +483,9 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             touched = True
         if "max_agent_turns" in body and body.get("max_agent_turns") is not None:
             room.max_agent_turns = max(1, int(body.get("max_agent_turns")))
+            touched = True
+        if "max_followup_rounds" in body and body.get("max_followup_rounds") is not None:
+            room.max_followup_rounds = max(0, int(body.get("max_followup_rounds")))
             touched = True
         overlay_touched = any(key in body for key in ("workspace", "ide_path", "shared_mode"))
         if overlay_touched:
@@ -1300,39 +1309,40 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         # we do not raise AgentBusy here.
         cycle_members = list(room.members)
         names = self._display_names(room)
-        queue = engine.plan_user_turns(
-            engine.with_members(room, cycle_members), user_message.text, names
-        )
-        spoken: List[str] = []
+        max_rounds = room.max_followup_rounds
+        planned_room = engine.with_members(room, cycle_members)
+        queue = engine.plan_user_turns(planned_room, user_message.text, names)
+        attempted: List[str] = []
         turns_taken = 0
-        while queue:
+
+        async def run_speaker(member: str) -> tuple[Optional[str], str]:
+            """Run one member. Returns (verdict, posted_text).
+
+            *verdict* is None when the turn was a silent no-op skip or the
+            cycle was stopped mid-call — the caller must not count those
+            against the budget.
+            """
+            nonlocal room, turns_taken
             if self._stop_event(room_id).is_set():
-                break
-            if turns_taken >= budget:
-                self._post_system(
-                    room_id, engine.cycle_budget_notice(budget, queue)
-                )
-                break
-            wave, queue = engine.take_wave(queue, budget - turns_taken)
-            if not wave:
-                break
-            # One speaker at a time. Their reply is on the transcript
-            # before the next member starts, so reviewers see the draft.
-            member = wave[0]
-            if self._stop_event(room_id).is_set():
-                break
+                return None, ""
             room = self.store.get(room_id) or room
             # Queued for a message it has already read. Announcing the turn
             # and then reporting that it did not reply is pure noise, so
             # skip before the room says anything at all.
             if not self._unseen_delta(room, member):
-                continue
-            self._post_system(room_id, engine.turn_started_notice(names.get(member, member)))
+                return None, ""
+            self._post_system(
+                room_id, engine.turn_started_notice(names.get(member, member))
+            )
             ok, reply = await self._agent_turn(room, member)
             if self._stop_event(room_id).is_set():
-                break
+                return None, ""
             turns_taken += 1
-            spoken.append(member)
+            attempted.append(member)
+            verdict = engine.classify_turn(ok, reply)
+            if verdict == engine.TURN_PASS:
+                # Explicit pass: no agent line, no did-not-reply notice.
+                return verdict, ""
             ask = user_message.text or ""
             already = set(attachments.upload_paths_in(ask))
             found = attachments.harvest(
@@ -1362,24 +1372,98 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
                 # failing at the work. The notice also clears the thinking
                 # indicator (engine.turn_concludes_waiter parses it).
                 self._post_system(room_id, engine.did_not_reply_notice(member, reply))
-                reply = ""
-            else:
-                if not (reply or "").strip():
-                    reply = engine.fallback_reply(ask)
-                self.store.append(
-                    room_id,
-                    RoomMessage(seq=0, ts=0, kind=KIND_AGENT, speaker=member, text=reply),
-                )
-            queue.extend(
+                return engine.TURN_FAIL, ""
+            if not (reply or "").strip():
+                reply = engine.fallback_reply(ask)
+            self.store.append(
+                room_id,
+                RoomMessage(seq=0, ts=0, kind=KIND_AGENT, speaker=member, text=reply),
+            )
+            return engine.TURN_SPEAK, reply
+
+        def merge_into(target: List[str], member: str, posted_text: str) -> None:
+            target.extend(
                 engine.merge_followups(
                     engine.with_members(room, cycle_members),
-                    [(member, reply)],
-                    queue,
-                    spoken,
+                    [(member, posted_text)],
+                    target,
+                    attempted,
                     budget - turns_taken,
                     names,
                 )
             )
+
+        # Phase 1: first planned wave (mentions / lead) plus @mention follow-ups.
+        first_wave_budget_hit = False
+        while queue:
+            if self._stop_event(room_id).is_set():
+                break
+            if turns_taken >= budget:
+                self._post_system(
+                    room_id, engine.cycle_budget_notice(budget, queue)
+                )
+                first_wave_budget_hit = True
+                break
+            wave, queue = engine.take_wave(queue, budget - turns_taken)
+            if not wave:
+                break
+            # One speaker at a time. Their reply is on the transcript
+            # before the next member starts, so reviewers see the draft.
+            member = wave[0]
+            verdict, posted_text = await run_speaker(member)
+            if self._stop_event(room_id).is_set():
+                break
+            if verdict in (engine.TURN_SPEAK, engine.TURN_FAIL):
+                merge_into(queue, member, posted_text)
+
+        # Phase 2: bounded speak-or-pass follow-up rounds. The room
+        # settles when a full round adds no speech, or the round cap
+        # / turn budget is hit. Budget remains the hard ceiling.
+        if self._stop_event(room_id).is_set() or first_wave_budget_hit:
+            return
+        skip = list(attempted)
+        rounds_used = 0
+        while rounds_used < max_rounds:
+            if self._stop_event(room_id).is_set():
+                break
+            remaining = budget - turns_taken
+            if remaining <= 0:
+                leftover = engine.plan_followup_round(cycle_members, attempted, 8)
+                if leftover:
+                    self._post_system(
+                        room_id, engine.cycle_budget_notice(budget, leftover)
+                    )
+                break
+            round_queue = engine.plan_followup_round(cycle_members, skip, remaining)
+            if not round_queue:
+                break
+            rounds_used += 1
+            round_speakers: List[str] = []
+            while round_queue:
+                if self._stop_event(room_id).is_set():
+                    break
+                if turns_taken >= budget:
+                    if round_queue:
+                        self._post_system(
+                            room_id, engine.cycle_budget_notice(budget, round_queue)
+                        )
+                        return
+                    break
+                wave, round_queue = engine.take_wave(
+                    round_queue, budget - turns_taken
+                )
+                if not wave:
+                    break
+                member = wave[0]
+                verdict, posted_text = await run_speaker(member)
+                if self._stop_event(room_id).is_set():
+                    break
+                if verdict == engine.TURN_SPEAK:
+                    round_speakers.append(member)
+                    merge_into(round_queue, member, posted_text)
+            if engine.followup_round_settled(round_speakers):
+                break
+            skip = list(round_speakers)
 
     def _unseen(self, room: Room, member: str) -> tuple[list, list]:
         """(readable, respondable) transcript slices for *member*.
@@ -2079,6 +2163,7 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
                     members=list(body.get("members") or []),
                     lead=body.get("lead"),
                     max_agent_turns=body.get("max_agent_turns"),
+                    max_followup_rounds=body.get("max_followup_rounds"),
                     workspace=body.get("workspace"),
                     ide_path=body.get("ide_path"),
                     shared_mode=body.get("shared_mode"),

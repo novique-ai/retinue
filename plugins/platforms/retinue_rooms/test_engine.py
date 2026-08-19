@@ -435,6 +435,138 @@ def test_merge_followups_respects_budget():
     assert follow == ["editor", "critic"]
 
 
+# ── speak-or-pass + round settling ───────────────────────────────────────
+
+
+def test_pass_is_the_structured_payload_not_prose():
+    """Pass is an exact JSON object, not a regex over free-form output.
+
+    Upstream group chats infer silence by matching ``(pass)`` in prose and
+    misfire on preambles / 'image pass'. The engine must not.
+    """
+    token = engine.pass_payload_text()
+    assert engine.is_pass_reply(token) is True
+    assert engine.is_pass_reply('  {"pass": true}  \n') is True
+    assert engine.is_pass_reply('{"pass":true}') is True
+    assert engine.classify_turn(True, token) == engine.TURN_PASS
+
+    # Surrounding prose, the upstream-style marker, and the English word
+    # are all spoken replies — not a pass.
+    for text in (
+        "I'll (pass) on this.",
+        "please take the image pass",
+        "(pass)",
+        "pass",
+        '{"pass": true} and also here is a note',
+        'Sure.\n{"pass": true}',
+        '{"pass": true, "reason": "nothing to add"}',
+        '[{"pass": true}]',
+        "true",
+        "",
+        "   ",
+    ):
+        assert engine.is_pass_reply(text) is False, text
+        assert engine.classify_turn(True, text) == engine.TURN_SPEAK, text
+
+
+def test_classify_turn_fail_is_not_a_pass():
+    """A failed turn stays FAIL even if the error text looks like the payload."""
+    token = engine.pass_payload_text()
+    assert engine.classify_turn(False, token) == engine.TURN_FAIL
+    assert engine.classify_turn(False, "no reply within 300s") == engine.TURN_FAIL
+    assert engine.classify_turn(True, "hello") == engine.TURN_SPEAK
+
+
+def test_plan_followup_round_skips_first_wave_and_respects_budget():
+    members = ["scout", "editor", "critic"]
+    assert engine.plan_followup_round(members, skip=["scout"], budget_left=8) == [
+        "editor",
+        "critic",
+    ]
+    assert engine.plan_followup_round(members, skip=["scout"], budget_left=1) == [
+        "editor"
+    ]
+    assert engine.plan_followup_round(members, skip=["scout"], budget_left=0) == []
+    # Empty skip is "everyone still to ask" (first-wave all passed / no-op).
+    assert engine.plan_followup_round(members, skip=[], budget_left=8) == members
+    # Nobody left to ask — the room has settled this round.
+    assert engine.plan_followup_round(members, skip=members, budget_left=8) == []
+
+
+def test_followup_round_settled_when_nobody_spoke():
+    assert engine.followup_round_settled([]) is True
+    assert engine.followup_round_settled(["editor"]) is False
+
+
+def test_room_max_followup_rounds_defaults_and_roundtrips():
+    room = _room()
+    assert room.max_followup_rounds == engine.DEFAULT_MAX_FOLLOWUP_ROUNDS
+    assert engine.DEFAULT_MAX_FOLLOWUP_ROUNDS == 3
+    loaded = Room.from_dict(room.to_dict())
+    assert loaded.max_followup_rounds == 3
+    zero = Room.from_dict({**room.to_dict(), "max_followup_rounds": 0})
+    assert zero.max_followup_rounds == 0
+    missing = Room.from_dict({"id": "r-1", "name": "Test", "members": ["scout"]})
+    assert missing.max_followup_rounds == 3
+
+
+def test_first_wave_routing_unchanged_then_followups_settle():
+    """@mentions / lead still pick the first wave. Follow-up rounds are
+    everyone else, and a full round of passes settles the room."""
+    room = _room(lead="scout")
+    first = engine.plan_user_turns(room, "what do you all think?")
+    assert first == ["scout"]
+    follow = engine.plan_followup_round(
+        room.members, skip=first, budget_left=room.max_agent_turns - 1
+    )
+    assert follow == ["editor", "critic"]
+    assert engine.followup_round_settled([]) is True
+
+    mentioned = engine.plan_user_turns(room, "@critic then @scout please")
+    assert mentioned == ["critic", "scout"]
+    follow_mentioned = engine.plan_followup_round(
+        room.members, skip=mentioned, budget_left=6
+    )
+    assert follow_mentioned == ["editor"]
+
+
+def test_followup_round_cap_is_a_bounded_loop():
+    """Engine-level walk: after the first wave, at most N follow-up
+    rounds run; a speech re-opens a round, a full pass settles early."""
+    room = _room(lead="scout", max_followup_rounds=2)
+    first = engine.plan_user_turns(room, "hello")
+    attempted = list(first)
+    spoken = list(first)
+    rounds = 0
+    while rounds < room.max_followup_rounds:
+        wave = engine.plan_followup_round(
+            room.members, skip=attempted if rounds == 0 else spoken[-1:], budget_left=8
+        )
+        if not wave:
+            break
+        rounds += 1
+        round_speakers = []
+        for member in wave:
+            # editor speaks once; everyone else passes
+            if member == "editor" and rounds == 1:
+                round_speakers.append(member)
+        attempted.extend(wave)
+        if engine.followup_round_settled(round_speakers):
+            break
+        spoken.extend(round_speakers)
+    assert rounds == 2  # editor spoke in round 1, round 2 all passed
+    assert spoken == ["scout", "editor"]
+
+
+def test_briefing_teaches_the_structured_pass():
+    text = engine.room_briefing(_room(lead="scout"), "scout", ["Mark"])
+    token = engine.pass_payload_text()
+    assert token in text
+    assert "pass" in text.lower()
+    # Must not tell the model to write the upstream regex bait as prose.
+    assert "write (pass)" not in text.lower()
+
+
 # ── formatting ───────────────────────────────────────────────────────────
 
 
@@ -824,3 +956,16 @@ def test_store_delete_and_corrupt_line_tolerance(tmp_path):
     assert [m.text for m in store.read_since("r-1", 0)] == ["a"]
     assert store.delete("r-1") is True
     assert store.get("r-1") is None
+
+
+def test_pass_reply_tolerates_a_markdown_fence():
+    """Models routinely wrap JSON in a code fence despite instructions.
+    A fenced payload is still exactly the payload; fenced JSON plus prose,
+    or a fence containing anything else, is speech."""
+    fenced = "```json\n{\"pass\": true}\n```"
+    bare_fence = "```\n{\"pass\": true}\n```"
+    assert engine.is_pass_reply(fenced)
+    assert engine.is_pass_reply(bare_fence)
+    assert not engine.is_pass_reply("I'll pass.\n```json\n{\"pass\": true}\n```")
+    assert not engine.is_pass_reply("```json\n{\"pass\": true}\n```\nSee above.")
+    assert not engine.is_pass_reply("```json\n{\"other\": 1}\n```")

@@ -7,6 +7,7 @@ turn-taking rules can be unit-tested without a running Hermes instance
 
 from __future__ import annotations
 
+import json
 import re
 import time
 import uuid
@@ -25,6 +26,15 @@ CYCLE_STOPPED_PREFIX = "Stopped."
 DID_NOT_REPLY_INFIX = " did not reply ("
 
 DEFAULT_MAX_AGENT_TURNS = 8
+DEFAULT_MAX_FOLLOWUP_ROUNDS = 3
+
+# Structured pass contract at the engine boundary. The whole reply must
+# JSON-decode to this object — not a substring, not ``(pass)`` in prose.
+# The adapter/briefing owns instructing members; this module owns matching.
+TURN_SPEAK = "speak"
+TURN_PASS = "pass"
+TURN_FAIL = "fail"
+PASS_PAYLOAD: Dict[str, bool] = {"pass": True}
 
 # On invite, seed last_seen so the newcomer receives only the last N
 # messages rather than the whole transcript. This is not a compromise
@@ -72,6 +82,8 @@ class Room:
     members: List[str]  # Hermes profile names ("default" is allowed)
     lead: Optional[str] = None  # default responder when nobody is mentioned
     max_agent_turns: int = DEFAULT_MAX_AGENT_TURNS
+    # Bounded speak-or-pass laps after the first planned wave. 0 disables.
+    max_followup_rounds: int = DEFAULT_MAX_FOLLOWUP_ROUNDS
     created_at: float = field(default_factory=time.time)
     # member -> highest transcript seq already delivered to that member
     last_seen: Dict[str, int] = field(default_factory=dict)
@@ -104,6 +116,7 @@ class Room:
             members=[str(m) for m in (data.get("members") or [])],
             lead=data.get("lead") or None,
             max_agent_turns=int(data.get("max_agent_turns") or DEFAULT_MAX_AGENT_TURNS),
+            max_followup_rounds=_coerce_followup_rounds(data.get("max_followup_rounds")),
             created_at=float(data.get("created_at") or 0.0),
             last_seen={str(k): int(v) for k, v in (data.get("last_seen") or {}).items()},
             archived=bool(data.get("archived")),
@@ -112,6 +125,16 @@ class Room:
             shared_mode=(str(data["shared_mode"]) if data.get("shared_mode") else None),
             project_id=(str(data["project_id"]) if data.get("project_id") else None),
         )
+
+
+def _coerce_followup_rounds(value: Any) -> int:
+    """0 is a valid disable; missing/garbage fall back to the default."""
+    if value is None or value == "":
+        return DEFAULT_MAX_FOLLOWUP_ROUNDS
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return DEFAULT_MAX_FOLLOWUP_ROUNDS
 
 
 def new_room_id(name: str) -> str:
@@ -502,6 +525,76 @@ def merge_followups(
     return extra
 
 
+def pass_payload_text() -> str:
+    """Canonical JSON a member emits to pass. Adapter briefing quotes this."""
+    return json.dumps(PASS_PAYLOAD)
+
+
+_PASS_FENCE_RE = re.compile(r"^```[A-Za-z0-9_-]*\n(.*?)\n?```$", re.DOTALL)
+
+
+def is_pass_reply(text: str) -> bool:
+    """True iff *text* is exactly the structured pass payload.
+
+    The whole reply must JSON-decode to ``{"pass": true}``. Extra keys,
+    surrounding prose, and ``(pass)`` in a sentence are spoken replies.
+    One surrounding markdown code fence is tolerated — models wrap JSON
+    in fences despite instructions, and a fenced payload is still exactly
+    the payload.
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return False
+    fenced = _PASS_FENCE_RE.match(raw)
+    if fenced:
+        raw = fenced.group(1).strip()
+        if not raw:
+            return False
+    try:
+        data = json.loads(raw)
+    except (ValueError, TypeError):
+        return False
+    return data == PASS_PAYLOAD
+
+
+def classify_turn(ok: bool, text: str) -> str:
+    """Map a model result onto speak / pass / fail.
+
+    Fail is *ok* being false (timeout, dispatch error, empty-delta no-op
+    returned as an error). Pass is recognized only by ``is_pass_reply``.
+    Everything else — including an empty successful reply — is speak;
+    the adapter may still substitute the fallback line.
+    """
+    if not ok:
+        return TURN_FAIL
+    if is_pass_reply(text):
+        return TURN_PASS
+    return TURN_SPEAK
+
+
+def plan_followup_round(
+    members: List[str],
+    skip: List[str],
+    budget_left: int,
+) -> List[str]:
+    """Members offered a speak-or-pass turn this follow-up round.
+
+    *skip* is who already spoke in the immediately previous round, or —
+    for the first follow-up — who already attempted the planned wave.
+    Roster order, truncated to *budget_left*. Empty means nobody is left
+    to ask and the caller treats the room as settled.
+    """
+    if budget_left <= 0:
+        return []
+    blocked = set(skip)
+    return [m for m in members if m not in blocked][:budget_left]
+
+
+def followup_round_settled(spoke: List[str]) -> bool:
+    """True when a follow-up round added no member speech."""
+    return not spoke
+
+
 def did_not_reply_notice(member: str, reason: str) -> str:
     """System line posted when a planned speaker produces no agent message."""
     return f"{member}{DID_NOT_REPLY_INFIX}{reason})"
@@ -721,6 +814,13 @@ def room_briefing(
         "the room adds attribution for you.",
         "Keep replies conversational. A handoff is @Name plus one sentence, "
         "then you stop; that is not too short.",
+        (
+            "If this turn adds nothing, pass instead of filling the transcript. "
+            "Pass by replying with only this JSON object and no other text: "
+            f"{pass_payload_text()}. A pass is silent — the room will not post "
+            "a message for you. A sentence that merely says you pass is a "
+            "spoken reply, not a pass."
+        ),
         "Work you make belongs in this room. Write files under /workspace "
         "and include the /workspace/... path in your reply so it appears "
         "on the transcript. Files the human attached with + live at "
