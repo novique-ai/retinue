@@ -1441,6 +1441,23 @@ class BaseEnvironment(ABC):
             exec_command = self._embed_stdin_heredoc(exec_command, effective_stdin)
             effective_stdin = None
 
+        # Per-turn env (carried patch — tools/turn_env.py): a bound mapping
+        # rides the command string as shell exports, so shared-per-room
+        # containers still see per-member values (broker identity). Empty
+        # for every surface that never binds it.
+        try:
+            from tools.turn_env import export_prefix
+            _turn_prefix = export_prefix()
+        except Exception:
+            _turn_prefix = ""
+        if _turn_prefix:
+            # Subshell-scoped: the backends keep a PERSISTENT shell per
+            # environment, so a bare export would outlive this command and
+            # leak into the next one — in a shared room container that is
+            # the next MEMBER's turn. Parentheses keep the value scoped to
+            # exactly this command.
+            exec_command = f"( {_turn_prefix}{exec_command}\n)"
+
         wrapped = self._wrap_command(exec_command, effective_cwd)
 
         # Use login shell if snapshot failed (so user's profile still loads),

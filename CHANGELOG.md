@@ -31,6 +31,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Broker identity.** Every command a room member's turn executes carries a
+  per-turn HMAC credential (`RETINUE_BROKER_TOKEN`), minted by the gateway
+  with a key outside the bind-mount, so the operator's host broker can tell
+  members apart on a shared socket. Subshell-scoped injection: the token
+  never persists into the next command or the next member's turn (new
+  carried patch `tools/turn_env.py`, injection in `BaseEnvironment.execute`).
+
 - **Governed retainers.** `PATCH /agents/{slug}` accepts `{"governed": true}`;
   a governed member's every turn in an ide room carries the operator's
   operating contract (`RETINUE_GOVERNED_CONTRACT` file) as the briefing's
