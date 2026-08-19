@@ -598,6 +598,9 @@ export const api = {
       body: JSON.stringify({ text, speaker }),
     });
     if (resp.status === 401) throw new AuthRequiredError("API key required");
+    // 204: the turn had no spoken script (an itinerary card on its own).
+    // Silence, not a failure — the caller skips playback.
+    if (resp.status === 204) return null;
     if (!resp.ok) {
       let detail = `HTTP ${resp.status}`;
       try {

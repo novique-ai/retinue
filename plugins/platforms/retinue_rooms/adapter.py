@@ -2014,6 +2014,14 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
         except OSError:
             return None
 
+    def _no_content(self, status: int = 204) -> None:
+        try:
+            self.send_response(status)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            return
+
     def _bytes(self, status: int, payload: bytes, content_type: str) -> None:
         try:
             self.send_response(status)
@@ -2343,6 +2351,11 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
             return self._json(400, {"error": "invalid or oversized JSON body"})
         text = str(body.get("text") or "")
         speaker = str(body.get("speaker") or body.get("voice") or "")
+        # A turn that is only an itinerary card has no spoken script (#158).
+        # That is silence, not a TTS failure -- 204 keeps Speak Replies quiet
+        # instead of surfacing a provider error under the message.
+        if not voice.spoken_text(text):
+            return self._no_content()
         try:
             audio = voice.synthesize_dispatch(
                 text, speaker, home_dir=self.server.adapter._home_dir()
