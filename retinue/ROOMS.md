@@ -342,6 +342,67 @@ profiles (`~/.hermes/profiles/<name>/`, or `default`); creation warns about unkn
 (team membership is the nearest preceding separator). Archive flags live on
 the room meta / `retinue-agent.json`; they hide an entry without deleting it.
 
+## Retainer identity in `ui_meta` (cross-client)
+
+`profiles/<slug>/retinue-agent.json` is **canonical** for a retainer's identity — the
+three-field brief (name / job / how it works) plus avatar, voice and persona. The hire
+flow writes it, `PATCH /agents` edits it, `GET /agents` reads it, and SOUL.md is
+generated from it. None of that changes.
+
+What it left out is everyone else. Upstream Hermes carries a small server-synced
+`ui_meta` block in `profiles/<slug>/profile.yaml` — written by the `profiles.configure`
+RPC, echoed by `profiles.list` on every roster paint, namespaced per consumer (the
+desktop's Bot Mode owns `ui_meta['hermes-bots']`). Any stock client pointed at this
+gateway paints its roster from that call, so a retainer with no `profile.yaml` showed up
+there as a bare directory name.
+
+So identity is **written through** to that block (`uimeta.py`) — on hire, on every
+identity edit, on a model switch, and once at gateway start for retainers hired before
+the mirror existed. One-way and derived: the rooms store stays the source of truth, and a
+failed mirror never fails a hire.
+
+```yaml
+# profiles/data-scout/profile.yaml
+display_name: Data Scout        # generic — what every client already reads
+description: research things    # generic — the retainer's role line
+description_auto: false         # curated: the profile describer must not overwrite it
+ui_meta:
+  retinue:
+    schema: 1
+    source: retinue-rooms
+    slug: data-scout
+    display_name: Data Scout
+    job: research things
+    how: check sources; be terse
+    archived: false
+    initial: D
+    avatar_color: teal          # resolved — override or palette-derived
+    avatar_color_source: override
+    avatar_emoji: 🔭            # omitted when unset
+    voice: ...                  # omitted when unset
+    model_preset: ...           # omitted when unset
+    persona: {...}              # omitted when all-balanced
+```
+
+Rules the mirror keeps:
+
+- **Never writes `ui_meta['hermes-bots']`.** `tools/bot_mode_probe` reads the presence of
+  that namespace on *any* profile as "this install is Bot-Mode-managed" and starts
+  injecting the teammate-messaging protocol into Bot Chat prompts. Squatting it would
+  fight the real plugin and change prompt content. Our namespace is `retinue`, full stop.
+- **Foreign namespaces and unrelated top-level keys survive** — the write is a key-wise
+  merge of our namespace only, the same shape `profiles.configure` applies.
+- **Idempotent.** The block is a pure function of the stored meta (no timestamps), so an
+  unchanged retainer is not rewritten and the start-up sweep is a genuine no-op.
+- **Size-capped** at upstream's 64 KB: `ui_meta` rides `profiles.list` on every paint, so
+  a long `how` is clamped in the mirror only — `retinue-agent.json` keeps it whole.
+- **Retainers only.** A hand-made Hermes profile (no `retinue-agent.json`) is not a
+  retainer and gets no `profile.yaml` from us.
+
+A stock Hermes Desktop therefore lists each retainer by display name with its role as the
+subtitle, from the generic fields; a client that wants the rest (avatar glyph/colour, the
+`how` text, archived state) reads `ui_meta.retinue` without needing a Retinue API.
+
 ## Env
 
 | Var | Default | Meaning |

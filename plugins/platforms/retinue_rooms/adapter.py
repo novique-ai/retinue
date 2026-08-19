@@ -41,7 +41,7 @@ from gateway.platforms.base import (
     SendResult,
 )
 
-from . import attachments, auth, cronjobs, crossroom, engine, hidden_sessions, hire, ide, identity, itinerary, keepalive, principal, projects, routines, sidebar, skilldraft, voice, workspace
+from . import attachments, auth, cronjobs, crossroom, engine, hidden_sessions, hire, ide, identity, itinerary, keepalive, principal, projects, routines, sidebar, skilldraft, uimeta, voice, workspace
 from .engine import KIND_AGENT, KIND_SYSTEM, KIND_USER, Room, RoomMessage
 from .store import RoomStore
 
@@ -225,6 +225,16 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             self._sweep_hidden_room_sessions()
         except Exception:
             logger.debug("Retinue rooms: hidden-session sweep failed", exc_info=True)
+        try:
+            # Back-fill ui_meta for retainers hired before the mirror existed
+            # (#137). Idempotent: a second start rewrites nothing.
+            synced = uimeta.sync_all(self._home_dir())
+            if synced:
+                logger.info(
+                    "Retinue rooms: mirrored ui_meta for %s", ", ".join(synced)
+                )
+        except Exception:
+            logger.debug("Retinue rooms: ui_meta sync at connect failed", exc_info=True)
         self._start_xai_keepalive()
         logger.info("Retinue rooms: serving on %s:%s", self.host, self.port)
         return True
