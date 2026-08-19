@@ -751,6 +751,58 @@ def test_format_lines_attribution():
     ]
 
 
+def test_delta_window_matches_invite_window():
+    """Idle-turn injection and invite seeding share one bound."""
+    assert engine.DELTA_TRANSCRIPT_WINDOW == engine.INVITE_TRANSCRIPT_WINDOW
+    assert engine.DELTA_TRANSCRIPT_WINDOW >= 1
+
+
+def test_cap_delta_keeps_newest_and_counts_omitted():
+    cap = engine.DELTA_TRANSCRIPT_WINDOW
+    msgs = [
+        RoomMessage(seq=i, ts=float(i), kind=KIND_USER, speaker="You", text=f"line-{i}")
+        for i in range(1, cap + 6)
+    ]
+    kept, omitted = engine.cap_delta(msgs)
+    assert omitted == 5
+    assert [m.text for m in kept] == [f"line-{i}" for i in range(6, cap + 6)]
+    assert kept[0].seq == msgs[omitted].seq
+    assert kept[-1] is msgs[-1]
+
+
+def test_cap_delta_under_window_elides_nothing():
+    msgs = [
+        RoomMessage(seq=i, ts=float(i), kind=KIND_USER, speaker="You", text=f"line-{i}")
+        for i in range(1, 4)
+    ]
+    kept, omitted = engine.cap_delta(msgs)
+    assert omitted == 0
+    assert kept == msgs
+
+
+def test_format_delta_context_prepends_elision_notice():
+    prior = [
+        RoomMessage(seq=2, ts=2, kind=KIND_USER, speaker="Mark", text="later"),
+        RoomMessage(seq=3, ts=3, kind=KIND_AGENT, speaker="editor", text="ack"),
+    ]
+    block = engine.format_delta_context(prior, omitted=5)
+    assert block.splitlines() == [
+        f"[room] {engine.omitted_delta_notice(5)}",
+        "[Mark] later",
+        "[editor (agent)] ack",
+    ]
+    assert engine.omitted_delta_notice(5) == "5 earlier messages omitted"
+
+
+def test_format_delta_context_without_elision_matches_format_lines():
+    prior = [RoomMessage(seq=1, ts=1, kind=KIND_USER, speaker="Mark", text="hi")]
+    assert engine.format_delta_context(prior, omitted=0) == engine.format_lines(prior)
+    assert engine.format_delta_context([], omitted=0) is None
+    assert engine.format_delta_context([], omitted=3) == (
+        f"[room] {engine.omitted_delta_notice(3)}"
+    )
+
+
 def test_briefing_names_room_and_members():
     room = _room(lead="scout")
     text = engine.room_briefing(room, "scout", ["Mark"])
@@ -861,6 +913,23 @@ def test_touch_last_seen_merges_parallel_cursors(tmp_path):
     seen = store.get("r-1").last_seen
     assert seen["scout"] == 3
     assert seen["editor"] == 5
+
+
+def test_restore_last_seen_rewinds_only_while_still_tentative(tmp_path):
+    """A failed turn may rewind its own cursor, never a later advance."""
+    store = RoomStore(base_dir=str(tmp_path))
+    store.create(_room())
+    store.touch_last_seen("r-1", "scout", 10)
+    store.touch_last_seen("r-1", "editor", 8)
+    store.restore_last_seen("r-1", "scout", previous=3, tentative=10)
+    seen = store.get("r-1").last_seen
+    assert seen["scout"] == 3
+    assert seen["editor"] == 8
+    store.touch_last_seen("r-1", "scout", 12)
+    store.restore_last_seen("r-1", "scout", previous=3, tentative=10)
+    seen = store.get("r-1").last_seen
+    assert seen["scout"] == 12
+    assert seen["editor"] == 8
 
 
 def test_store_update_last_seen_roundtrip(tmp_path):
