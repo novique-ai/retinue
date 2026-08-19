@@ -121,6 +121,28 @@ class RoomStore:
             room.last_seen[member] = max(room.last_seen.get(member, 0), int(seq))
             self._write_meta(room)
 
+    def restore_last_seen(
+        self, room_id: str, member: str, previous: int, tentative: int
+    ) -> None:
+        """Rewind *member* to *previous* iff the stored cursor is still *tentative*.
+
+        A failed turn uses this so the next cycle re-sees the same delta.
+        If another completed turn already moved the cursor past
+        *tentative*, leave that advance alone — never regress someone
+        else's (or a later same-member) legitimate stick.
+        """
+        with self._lock:
+            try:
+                with open(self._meta_path(room_id), encoding="utf-8") as f:
+                    room = Room.from_dict(json.load(f))
+            except (OSError, ValueError, KeyError):
+                return
+            current = int(room.last_seen.get(member, 0))
+            if current != int(tentative):
+                return
+            room.last_seen[member] = max(0, int(previous))
+            self._write_meta(room)
+
     def _write_meta(self, room: Room) -> None:
         path = self._meta_path(room.id)
         tmp = f"{path}.tmp"

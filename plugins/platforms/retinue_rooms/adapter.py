@@ -1516,14 +1516,29 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         """What *member* actually has to respond to. Empty means no-op turn."""
         return self._unseen(room, member)[1]
 
+    def _restore_watermark(
+        self, room: Room, member: str, previous: int, tentative: int
+    ) -> None:
+        """Unstick a failed turn's cursor. See ``_agent_turn`` for why."""
+        self.store.restore_last_seen(room.id, member, previous, tentative)
+        stored = self.store.get(room.id)
+        if stored is not None:
+            room.last_seen[member] = int(stored.last_seen.get(member, previous))
+        else:
+            room.last_seen[member] = max(0, int(previous))
+
     async def _agent_turn(self, room: Room, member: str) -> tuple[bool, str]:
         """Deliver the unseen transcript to ``member`` and await its reply."""
         readable, delta = self._unseen(room, member)
         if not delta:
             return False, "nothing new to respond to"
         delivered_through = readable[-1].seq
-        trigger = delta[-1]
-        context_block = engine.format_lines(delta[:-1]) if len(delta) > 1 else None
+        previous = int(room.last_seen.get(member, 0))
+        # Cap injection only. The watermark still covers the full readable
+        # slice so a completed turn does not re-inject the elided tail.
+        capped, omitted = engine.cap_delta(delta)
+        trigger = capped[-1]
+        context_block = engine.format_delta_context(capped[:-1], omitted)
 
         me = principal.load(self._home_dir())
         speakers = {
@@ -1616,33 +1631,51 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             metadata={"retinue_room": room.id, "retinue_member": member},
         )
 
-        # Mark the delta delivered before dispatch; on failure the trigger is
-        # re-shown next turn only if new messages arrive — acceptable v1.
-        # touch_last_seen merges under the store lock so parallel members
-        # cannot clobber each other's cursor.
+        # Tentatively mark the delta delivered, then stick or restore.
+        # Speak and explicit pass both count as completion (ok=True) and
+        # keep the cursor; timeout / dispatch error restore *previous* so
+        # the member re-sees this delta on the next cycle.
+        #
+        # Per-room turns are serialized: _run_cycle holds _room_lock for
+        # the whole user-message cycle, and run_speaker awaits one member
+        # at a time. The same member therefore cannot complete a later
+        # turn that would make restore_last_seen regress a legitimate
+        # advance. touch_last_seen still merges under the store lock so
+        # a parallel *other* member cannot lose their cursor on our write.
         self.store.touch_last_seen(room.id, member, delivered_through)
         room.last_seen[member] = max(room.last_seen.get(member, 0), delivered_through)
 
+        completed = False
         token = _turn_member.set(member)
         try:
-            await self.handle_message(event)
-        except Exception as e:
-            self._resolve_pending(
-                room.id, ok=False, text=f"dispatch failed: {e}", member=member
-            )
-        finally:
-            _turn_member.reset(token)
-            # Newly created row: hide immediately after dispatch.
-            self._hide_room_session(session_key, member)
+            try:
+                await self.handle_message(event)
+            except Exception as e:
+                self._resolve_pending(
+                    room.id, ok=False, text=f"dispatch failed: {e}", member=member
+                )
+            finally:
+                _turn_member.reset(token)
+                # Newly created row: hide immediately after dispatch.
+                self._hide_room_session(session_key, member)
 
-        budget = hire.turn_timeout_for(
-            self._home_dir(), member, room.workspace or "sandbox"
-        )
-        try:
-            return await asyncio.wait_for(asyncio.wrap_future(fut), timeout=budget)
-        except asyncio.TimeoutError:
-            self._resolve_pending(room.id, ok=False, text="turn timed out", member=member)
-            return False, f"no reply within {int(budget)}s"
+            budget = hire.turn_timeout_for(
+                self._home_dir(), member, room.workspace or "sandbox"
+            )
+            try:
+                ok, text = await asyncio.wait_for(
+                    asyncio.wrap_future(fut), timeout=budget
+                )
+            except asyncio.TimeoutError:
+                self._resolve_pending(
+                    room.id, ok=False, text="turn timed out", member=member
+                )
+                return False, f"no reply within {int(budget)}s"
+            completed = bool(ok)
+            return ok, text
+        finally:
+            if not completed:
+                self._restore_watermark(room, member, previous, delivered_through)
 
     def _post_system(self, room_id: str, text: str) -> Optional[RoomMessage]:
         try:

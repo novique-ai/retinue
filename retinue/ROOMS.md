@@ -42,6 +42,13 @@ user ──HTTP──▶ RetinueRoomsAdapter ──MessageEvent(profile=member)�
   earlier unseen, attributed lines as `event.channel_context`; the room briefing (roster,
   rules) rides `event.channel_prompt`. Feeding context this way — instead of writing into
   the member's SessionDB — preserves the agent cache and provider prompt caching.
+  The injected delta is capped at `DELTA_TRANSCRIPT_WINDOW` (same size as the invite
+  window); older unread lines become one `[room] N earlier messages omitted` notice.
+  The watermark is marked before dispatch and **sticks only when the turn completes**
+  (speak or an explicit pass). A failed turn (timeout, dispatch error) restores the
+  previous cursor so the member re-sees that delta on the next cycle. Per-room turns
+  are serialized (`_room_lock`, one speaker at a time), so a restore cannot regress
+  another completed turn for the same member.
 - **Idle xAI keepalive**: while any hired cloud member uses `xai-oauth` and the
   workspace grant is `ok`, a daemon tick calls Hermes'
   `resolve_xai_oauth_runtime_credentials(refresh_if_expiring=True)` against the

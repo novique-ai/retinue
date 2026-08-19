@@ -45,6 +45,12 @@ PASS_PAYLOAD: Dict[str, bool] = {"pass": True}
 # call, no new prompt path.
 INVITE_TRANSCRIPT_WINDOW = 20
 
+# Injected per-turn delta is capped at this many messages. The member's
+# own session already has long-run context; dumping an unbounded unread
+# backlog after a long idle is cost without new information. Same size
+# as invite seeding so a first turn and a long-idle turn see one shape.
+DELTA_TRANSCRIPT_WINDOW = INVITE_TRANSCRIPT_WINDOW
+
 # @name — profile names may contain letters, digits, underscores, hyphens.
 _TOKEN_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_-]*")
 _MENTION_RE = re.compile(r"@(" + _TOKEN_RE.pattern + r")")
@@ -710,6 +716,41 @@ def format_lines(messages: List[RoomMessage]) -> str:
             label = "room"
         lines.append(f"[{label}] {msg.text}")
     return "\n".join(lines)
+
+
+def omitted_delta_notice(count: int) -> str:
+    """Compact one-liner when older unread messages were not injected."""
+    return f"{int(count)} earlier messages omitted"
+
+
+def cap_delta(
+    messages: List[RoomMessage],
+    cap: int = DELTA_TRANSCRIPT_WINDOW,
+) -> tuple[List[RoomMessage], int]:
+    """Keep the newest *cap* messages; return ``(kept, omitted_count)``."""
+    if cap <= 0:
+        return list(messages), 0
+    blob = list(messages)
+    extra = len(blob) - cap
+    if extra <= 0:
+        return blob, 0
+    return blob[-cap:], extra
+
+
+def format_delta_context(
+    prior: List[RoomMessage],
+    omitted: int = 0,
+) -> Optional[str]:
+    """``channel_context`` body: optional elision notice + attributed priors.
+
+    The notice uses the same ``[room] …`` shape as ``format_lines`` so it
+    sits in the injected block as one more system line.
+    """
+    body = format_lines(prior) if prior else ""
+    if omitted > 0:
+        notice = f"[room] {omitted_delta_notice(omitted)}"
+        return f"{notice}\n{body}" if body else notice
+    return body or None
 
 
 _MEDIA_WORDS = (
