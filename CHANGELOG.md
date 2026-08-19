@@ -12,6 +12,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Changed
+
+- A timed-out or failed room turn speaks in the retainer's voice
+  instead of only posting a system `did not reply` notice. Speak
+  Replies can play it. The spoken line names the blocker when we
+  know it (a yes/no the room must show, missing permission, missing
+  file/path) instead of "ask me to continue". The system line still
+  records the exact reason. Distinct from the empty-answer apology.
+  Briefing and hire SOUL tell members to say they are blocked and
+  stop rather than tool-loop until the budget dies.
+
+- Hermes ``clarify`` now posts in the room (numbered choices) so the
+  human can hear it and answer with 1 / the option / their own words.
+  That answer resolves the prompt and does not start a second cycle.
+  Stop and turn-timeout release a still-waiting clarify so the agent
+  thread does not leak.
+
 ### Added
 
 - Room messages show a tiny Discord-style stamp next to the speaker

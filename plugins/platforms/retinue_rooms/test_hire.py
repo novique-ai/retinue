@@ -41,6 +41,8 @@ def test_soul_template_teaches_work_stays_in_the_room():
     soul = hire.soul_template("Sheila", "make images", "")
     assert "Write files under /workspace" in soul
     assert "never go silent" in soul
+    assert "Never keep calling tools until the turn times out" in soul
+    assert "missing permission" in soul
 
 
 def test_soul_template_pins_identity_against_engine_bleed():

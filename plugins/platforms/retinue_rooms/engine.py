@@ -858,6 +858,16 @@ _MEDIA_WORDS = (
 FALLBACK_MEDIA = "I'm sorry, I cannot find that image at the moment."
 FALLBACK_GENERIC = "I'm sorry — I couldn't complete that just now."
 
+# Spoken when a planned turn fails. Distinct from FALLBACK_GENERIC so a
+# timeout is not mistaken for an empty successful answer (#133). Distinct
+# from a system-only notice so Speak Replies can play it and the human
+# hears the retainer instead of silence.
+TIMEOUT_REPLY = (
+    "I ran out of time and never posted. Usually that means I was waiting "
+    "on a yes/no, I lacked permission, or I could not find a file or path."
+)
+DISPATCH_REPLY = "I couldn't start that turn. I lacked a way to begin it."
+
 
 _MAKE_WORDS = ("make", "create", "draw", "generate", "paint", "render", "design")
 _FIND_WORDS = ("show", "again", "find", "previous", "last", "where is")
@@ -878,6 +888,31 @@ def fallback_reply(trigger_text: str) -> str:
     if looks_like_media_request(trigger_text):
         return FALLBACK_MEDIA
     return FALLBACK_GENERIC
+
+
+def failed_turn_reply(
+    reason: str,
+    *,
+    last_tool: Optional[Dict[str, Any]] = None,
+    clarify: Any = None,
+) -> str:
+    """Spoken line when a planned turn times out or fails to dispatch.
+
+    Prefer the actual blocker (a hidden yes/no, missing permission, missing
+    path) over a generic "ask me to continue". Distinct from
+    ``FALLBACK_GENERIC`` so a timeout is not an empty successful answer.
+    """
+    from . import clarify as room_clarify
+
+    if clarify is not None:
+        return room_clarify.spoken_from_clarify(clarify)
+    named = room_clarify.spoken_from_tool(last_tool)
+    if named:
+        return named
+    blob = (reason or "").strip().lower()
+    if "no reply within" in blob or "timed out" in blob:
+        return TIMEOUT_REPLY
+    return DISPATCH_REPLY
 
 
 # A planned turn can end without an agent message for reasons that are not
@@ -965,6 +1000,12 @@ def room_briefing(
         "/workspace/uploads/ — you can open them. If you cannot find a "
         "piece the user asks for, say so in one sentence — never stay "
         "silent and never crash out.",
+        "If you cannot finish the work — missing permission, a file or "
+        "path you cannot find, a command that failed — say so in this "
+        "room and stop. Never keep calling tools until the turn times "
+        "out. A stuck turn with no message is worse than an incomplete "
+        "one. If you need a yes/no, ask it in this room (the clarify "
+        "tool posts here); do not wait on a prompt the human cannot see.",
     ]
     if principal_about:
         who = people.split(",")[0].strip() if people else "the human"

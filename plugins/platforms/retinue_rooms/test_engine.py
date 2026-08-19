@@ -812,6 +812,9 @@ def test_briefing_names_room_and_members():
     assert "Then stop" in text
     assert "say so briefly" not in text
     assert "never stay silent" in text
+    assert "Never keep calling tools until the turn times out" in text
+    assert "missing permission" in text
+    assert "clarify" in text
     assert "/workspace/uploads/" in text
 
 
@@ -867,6 +870,34 @@ def test_fallback_reply_is_spoken_not_a_crash():
     assert engine.fallback_reply("what is the status") == engine.FALLBACK_GENERIC
     assert engine.fallback_reply("Make me an image of Herby the Lovebug") == engine.FALLBACK_GENERIC
     assert "crash" not in engine.fallback_reply("picture please").lower()
+
+
+def test_failed_turn_reply_is_spoken_and_not_the_empty_answer():
+    timeout = engine.failed_turn_reply("no reply within 900s")
+    dispatch = engine.failed_turn_reply("dispatch failed: boom")
+    assert timeout == engine.TIMEOUT_REPLY
+    assert dispatch == engine.DISPATCH_REPLY
+    assert timeout != engine.FALLBACK_GENERIC
+    assert dispatch != engine.FALLBACK_GENERIC
+    assert timeout != dispatch
+    assert "ask me to continue" not in timeout.lower()
+
+
+def test_failed_turn_reply_names_clarify_permission_and_missing_path():
+    class _Entry:
+        question = "Is this really infrastructure-5ta4.6?"
+
+    assert "infrastructure-5ta4.6" in engine.failed_turn_reply(
+        "no reply within 900s", clarify=_Entry()
+    )
+    assert "permission" in engine.failed_turn_reply(
+        "no reply within 900s",
+        last_tool={"name": "terminal", "output": "Permission denied: /workspace/x"},
+    ).lower()
+    assert "could not find" in engine.failed_turn_reply(
+        "no reply within 900s",
+        last_tool={"name": "terminal", "output": "Error: no issue found matching"},
+    ).lower()
 
 
 def test_briefing_roster_uses_display_handles():
