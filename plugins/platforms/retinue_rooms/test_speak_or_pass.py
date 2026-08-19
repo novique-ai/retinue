@@ -127,7 +127,7 @@ def test_prose_that_says_pass_is_spoken(tmp_path, monkeypatch):
 def test_unmentioned_post_still_starts_with_the_lead(tmp_path, monkeypatch):
     """First-round routing is unchanged: no @mention → lead, then follow-ups."""
     adapter = _adapter(tmp_path, monkeypatch)
-    room = _room()
+    room = _room(max_followup_rounds=3)
     adapter.store.create(room)
     user_message = adapter.store.append(
         room.id,
@@ -151,7 +151,7 @@ def test_unmentioned_post_still_starts_with_the_lead(tmp_path, monkeypatch):
 
 def test_followup_round_settles_when_everyone_passes(tmp_path, monkeypatch):
     adapter = _adapter(tmp_path, monkeypatch)
-    room = _room()
+    room = _room(max_followup_rounds=3)
     adapter.store.create(room)
     user_message = adapter.store.append(
         room.id,
@@ -179,7 +179,7 @@ def test_followup_round_settles_when_everyone_passes(tmp_path, monkeypatch):
 
 def test_a_followup_speech_opens_another_round(tmp_path, monkeypatch):
     adapter = _adapter(tmp_path, monkeypatch)
-    room = _room()
+    room = _room(max_followup_rounds=3)
     adapter.store.create(room)
     user_message = adapter.store.append(
         room.id,
@@ -288,10 +288,10 @@ def test_zero_followup_rounds_is_first_wave_only(tmp_path, monkeypatch):
 
 
 def test_mention_followups_in_the_first_wave_still_run(tmp_path, monkeypatch):
-    """First-round @mention handoff is unchanged; remaining members then
-    get a settle round."""
+    """First-round @mention handoff is unchanged. The message was directed
+    at scout, so the rest of the room is not polled afterwards (#160)."""
     adapter = _adapter(tmp_path, monkeypatch)
-    room = _room()
+    room = _room(max_followup_rounds=3)
     adapter.store.create(room)
     user_message = adapter.store.append(
         room.id,
@@ -318,8 +318,101 @@ def test_mention_followups_in_the_first_wave_still_run(tmp_path, monkeypatch):
 
     assert calls[0] == "scout"
     assert calls[1] == "editor"
-    assert "critic" in calls
+    assert "critic" not in calls
     assert _agent_texts(adapter.store, room.id) == [
         ("scout", "draft here. @editor please tighten."),
         ("editor", "tightened."),
     ]
+
+
+# ── A directed message is answered, not polled (#160) ────────────────────
+
+
+def test_directed_mention_does_not_convene_the_room(tmp_path, monkeypatch):
+    """Naming a member answers with that member. No follow-up laps."""
+    adapter = _adapter(tmp_path, monkeypatch)
+    room = _room(max_followup_rounds=3)
+    adapter.store.create(room)
+    user_message = adapter.store.append(
+        room.id,
+        RoomMessage(
+            seq=0, ts=0, kind=KIND_USER, speaker="Mark",
+            text="@editor can you get started on this?",
+        ),
+    )
+    calls: list[str] = []
+
+    async def fake_turn(_room, member):
+        calls.append(member)
+        return True, f"{member} answered"
+
+    monkeypatch.setattr(adapter, "_agent_turn", fake_turn)
+    asyncio.run(_run_locked(adapter, room, user_message))
+
+    assert calls == ["editor"]
+    assert [s for s, _t in _agent_texts(adapter.store, room.id)] == ["editor"]
+
+
+def test_room_broadcast_is_directed_too(tmp_path, monkeypatch):
+    """@room already addresses everyone; laps after it are a second poll."""
+    adapter = _adapter(tmp_path, monkeypatch)
+    room = _room(max_followup_rounds=3)
+    adapter.store.create(room)
+    user_message = adapter.store.append(
+        room.id,
+        RoomMessage(seq=0, ts=0, kind=KIND_USER, speaker="Mark", text="@room status?"),
+    )
+    calls: list[str] = []
+
+    async def fake_turn(_room, member):
+        calls.append(member)
+        return True, f"{member} answered"
+
+    monkeypatch.setattr(adapter, "_agent_turn", fake_turn)
+    asyncio.run(_run_locked(adapter, room, user_message))
+
+    assert calls == ["scout", "editor", "critic"]
+
+
+def test_undirected_statement_still_gets_followup_rounds(tmp_path, monkeypatch):
+    """The opt-in poll is for a statement to the room, and still works."""
+    adapter = _adapter(tmp_path, monkeypatch)
+    room = _room(max_followup_rounds=1)
+    adapter.store.create(room)
+    user_message = adapter.store.append(
+        room.id,
+        RoomMessage(seq=0, ts=0, kind=KIND_USER, speaker="Mark", text="where are we?"),
+    )
+    calls: list[str] = []
+
+    async def fake_turn(_room, member):
+        calls.append(member)
+        return True, f"{member} answered"
+
+    monkeypatch.setattr(adapter, "_agent_turn", fake_turn)
+    asyncio.run(_run_locked(adapter, room, user_message))
+
+    assert calls == ["scout", "editor", "critic"]
+
+
+def test_lead_can_still_pull_a_teammate_in_with_rounds_off(tmp_path, monkeypatch):
+    """Delegation by @mention is the intended path and does not need laps."""
+    adapter = _adapter(tmp_path, monkeypatch)
+    room = _room(max_followup_rounds=0)
+    adapter.store.create(room)
+    user_message = adapter.store.append(
+        room.id,
+        RoomMessage(seq=0, ts=0, kind=KIND_USER, speaker="Mark", text="where are we?"),
+    )
+    calls: list[str] = []
+
+    async def fake_turn(_room, member):
+        calls.append(member)
+        if member == "scout":
+            return True, "@critic please take this"
+        return True, f"{member} answered"
+
+    monkeypatch.setattr(adapter, "_agent_turn", fake_turn)
+    asyncio.run(_run_locked(adapter, room, user_message))
+
+    assert calls == ["scout", "critic"]

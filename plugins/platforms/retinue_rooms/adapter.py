@@ -1534,6 +1534,11 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         # / turn budget is hit. Budget remains the hard ceiling.
         if self._stop_event(room_id).is_set() or first_wave_budget_hit:
             return
+        # A message that names its members is answered by them. Laps are
+        # for an undirected statement, where the default responder spoke
+        # and someone else may have something to add (#160).
+        if engine.is_directed(user_message.text, cycle_members, names):
+            return
         skip = list(attempted)
         rounds_used = 0
         while rounds_used < max_rounds:

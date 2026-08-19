@@ -26,7 +26,10 @@ CYCLE_STOPPED_PREFIX = "Stopped."
 DID_NOT_REPLY_INFIX = " did not reply ("
 
 DEFAULT_MAX_AGENT_TURNS = 8
-DEFAULT_MAX_FOLLOWUP_ROUNDS = 3
+# Room-wide speak-or-pass laps are a deliberate mode, not the resting
+# state of a room: a lap costs every member a turn out of the same
+# budget the addressed member needs. Opt in per room (#160).
+DEFAULT_MAX_FOLLOWUP_ROUNDS = 0
 
 # Structured pass contract at the engine boundary. The whole reply must
 # JSON-decode to this object — not a substring, not ``(pass)`` in prose.
@@ -287,6 +290,25 @@ def parse_mentions(
         if member is not None and member not in seen:
             seen.append(member)
     return seen
+
+
+def is_directed(
+    text: str,
+    members: List[str],
+    display_names: Optional[Dict[str, str]] = None,
+) -> bool:
+    """True when the user named who should answer.
+
+    A directed message is answered by the members it names -- convening
+    the rest of the room behind it is a poll the user did not ask for
+    (#160). ``@room`` counts as directed: it already addresses every
+    member in the first wave, so a lap after it is a second poll.
+    Mentions that match no member, or that sit inside a fence, do not
+    direct anything.
+    """
+    if has_room_broadcast(text):
+        return True
+    return bool(parse_mentions(text, members, display_names))
 
 
 def has_room_broadcast(text: str) -> bool:

@@ -61,6 +61,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- A directed `@mention` no longer convenes the whole room. Follow-up
+  speak-or-pass rounds ran after every user message regardless of how it
+  was addressed, so `@Mangus can you get started on this?` gave one
+  answer and then polled the other four members — two of whom restated
+  what had just been said — burning the room's entire 8-turn budget on a
+  question aimed at one person. Laps now run only for an undirected
+  message. Closes #160.
+- `max_followup_rounds` defaults to `0`. Room-wide laps are a deliberate
+  mode, not the resting state of a room: each lap costs every member a
+  turn out of the same budget the addressed member needs. Rooms opt in.
+  The lead delegating with its own `@mention` is unaffected.
+
 - Speak Replies reads a spoken script, not raw chat Markdown. The rooms
   `POST /tts` path was the one TTS surface that never called
   `tools.tts_text_normalize.prepare_spoken_text`, so every turn was read
