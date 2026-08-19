@@ -228,6 +228,15 @@ briefing names the rooms they are also in; `rooms_list` shows them and
    user line after that is a normal redirect. Idle stop is a no-op. Speak
    Replies is cut in the browser (current clip + queue) but the toggle stays.
 
+## Needs-you escalation
+
+A member that @mentions the principal — `@user`, `@you`, or the principal's
+display name when no retainer owns it (retainers win name collisions; fenced
+code never counts) — sets a durable `needs_user` flag on the room. The room
+list and open-room header show a rose "needs you" pill until the principal
+next posts; viewing alone does not clear it. Cross-room posts can escalate
+the destination room the same way.
+
 ## Surfaces
 
 The adapter runs a small stdlib HTTP server (default `127.0.0.1:8643`, the A2A bind-safety

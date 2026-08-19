@@ -657,17 +657,19 @@ function RailButton({
   onClick: () => void;
 }) {
   const initial = (room.name.trim()[0] || "?").toUpperCase();
+  const label = room.needs_user ? `${room.name} — needs you` : room.name;
   return (
     <button
       type="button"
       className={`rail-item avatar-badge${active ? " active" : ""}${room.archived ? " archived" : ""}`}
       style={{ background: chipColor(room.id) }}
-      aria-label={room.name}
+      aria-label={label}
       aria-current={active ? "true" : undefined}
-      title={room.name}
+      title={label}
       onClick={onClick}
     >
       {initial}
+      {room.needs_user && <span className="rail-needs-you" aria-hidden="true" />}
     </button>
   );
 }
@@ -824,6 +826,7 @@ function RoomView({
   onArchive,
   onDelete,
   onRoomUpdate,
+  onUserPosted,
   sidebarCollapsed,
   onToggleSidebar,
   onSaveRoutine,
@@ -836,6 +839,7 @@ function RoomView({
   onArchive: () => void;
   onDelete: () => void;
   onRoomUpdate: (updated: RoomMeta) => void;
+  onUserPosted: () => void;
   sidebarCollapsed: boolean;
   onToggleSidebar: () => void;
   onSaveRoutine: () => void;
@@ -1103,6 +1107,7 @@ function RoomView({
       const body = [text, ...paths].filter(Boolean).join("\n");
       const { planned } = await api.send(room.id, body, userName);
       if (roomRef.current !== room.id) return;
+      onUserPosted();
       setThinking(remainingThinkersAfter(planned, messagesRef.current));
       setDraft("");
       setPendingFiles([]);
@@ -1111,7 +1116,7 @@ function RoomView({
     } finally {
       setSending(false);
     }
-  }, [draft, sending, pendingFiles, room.id, userName]);
+  }, [draft, sending, pendingFiles, room.id, userName, onUserPosted]);
 
   const onTalkEngage = useCallback(async () => {
     setVoiceNote("");
@@ -1135,6 +1140,7 @@ function RoomView({
           draft: prefix,
         });
         if (roomRef.current !== room.id || !talkMountedRef.current) return;
+        onUserPosted();
         setThinking(remainingThinkersAfter(planned, messagesRef.current));
         setVoiceNote(text ? `Heard: ${text}` : "");
         if (prefix) {
@@ -1148,7 +1154,7 @@ function RoomView({
         if (talkMountedRef.current) setSending(false);
       }
     },
-    [room.id, userName],
+    [room.id, userName, onUserPosted],
   );
 
   const ptt = usePushToTalk({
@@ -1196,6 +1202,11 @@ function RoomView({
           <h2>
             {room.name}
             {room.archived ? " (archived)" : ""}
+            {room.needs_user && (
+              <span className="needs-you-badge" title="A retainer asked for you">
+                needs you
+              </span>
+            )}
             {(room.workspace ?? "sandbox") === "ide" && (
               <span className="mode-badge" title={room.ide_path || ""}>
                 {ideFolderLabel(room.ide_path)}
@@ -2986,6 +2997,15 @@ export default function App() {
         .listAgents()
         .then((d) => setAgents(d.agents))
         .catch(() => {});
+      api
+        .listRooms()
+        .then((d) => {
+          setRooms(d.rooms);
+          setCurrent((cur) =>
+            cur ? (d.rooms.find((x) => x.id === cur.id) ?? cur) : null,
+          );
+        })
+        .catch(() => {});
     }, 2000);
     return () => window.clearInterval(t);
   }, []);
@@ -3420,6 +3440,11 @@ export default function App() {
                 >
                   {r.name}
                   {r.archived ? " (archived)" : ""}
+                  {r.needs_user && (
+                    <span className="needs-you-badge" title="A retainer asked for you">
+                      needs you
+                    </span>
+                  )}
                   {(r.workspace ?? "sandbox") === "ide" && (
                     <span className="mode-badge" title={r.ide_path || ""}>
                       {ideFolderLabel(r.ide_path)}
@@ -3768,6 +3793,13 @@ export default function App() {
             onRoomUpdate={(updated) => {
               setCurrent(updated);
               void refresh();
+            }}
+            onUserPosted={() => {
+              const id = current.id;
+              setRooms((prev) =>
+                prev.map((r) => (r.id === id ? { ...r, needs_user: false } : r)),
+              );
+              setCurrent((cur) => (cur ? { ...cur, needs_user: false } : cur));
             }}
             sidebarCollapsed={sidebarCollapsed}
             onToggleSidebar={toggleSidebar}

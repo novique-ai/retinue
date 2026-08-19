@@ -58,6 +58,11 @@ _MENTION_RE = re.compile(r"@(" + _TOKEN_RE.pattern + r")")
 # User-only broadcast. Reserved — do not hire a retainer whose slug is ``room``.
 ROOM_BROADCAST_TOKEN = "room"
 
+# Principal escalation. Generic forms always count; the display name is
+# added when it is a mention token. Reserved — do not hire a retainer
+# whose slug is ``user`` or ``you``.
+PRINCIPAL_GENERIC = ("user", "you")
+
 
 @dataclass
 class RoomMessage:
@@ -105,6 +110,8 @@ class Room:
     # Projects group rooms (see projects.py). None = Unfiled. This is the
     # only membership record — do not also track room ids on the project.
     project_id: Optional[str] = None
+    # A member @mentioned the principal; cleared when the principal posts.
+    needs_user: bool = False
 
     def default_responder(self) -> Optional[str]:
         if self.lead and self.lead in self.members:
@@ -130,6 +137,7 @@ class Room:
             ide_path=(str(data["ide_path"]) if data.get("ide_path") else None),
             shared_mode=(str(data["shared_mode"]) if data.get("shared_mode") else None),
             project_id=(str(data["project_id"]) if data.get("project_id") else None),
+            needs_user=bool(data.get("needs_user")),
         )
 
 
@@ -287,6 +295,87 @@ def has_room_broadcast(text: str) -> bool:
         if match.group(1).lower() == ROOM_BROADCAST_TOKEN:
             return True
     return False
+
+
+def principal_aliases(display_name: Optional[str] = None) -> List[str]:
+    """Generic ``@user`` / ``@you`` plus mentionable tokens of the display name."""
+    aliases = list(PRINCIPAL_GENERIC)
+    seen = {a.lower() for a in aliases}
+    name = (display_name or "").strip()
+    if not name:
+        return aliases
+    candidates: List[str] = []
+    if _TOKEN_RE.fullmatch(name):
+        candidates.append(name)
+    first = name.split()[0]
+    if first and _TOKEN_RE.fullmatch(first):
+        candidates.append(first)
+    for token in candidates:
+        key = token.lower()
+        if key not in seen:
+            aliases.append(token)
+            seen.add(key)
+    return aliases
+
+
+def principal_mention_handle(display_name: Optional[str] = None) -> Optional[str]:
+    """Display-name token to advertise next to ``@user``, or None."""
+    named = [
+        alias
+        for alias in principal_aliases(display_name)
+        if alias.lower() not in PRINCIPAL_GENERIC
+    ]
+    return named[0] if named else None
+
+
+def mentions_principal(
+    text: str,
+    display_name: Optional[str] = None,
+    members: Optional[List[str]] = None,
+    display_names: Optional[Dict[str, str]] = None,
+) -> bool:
+    """True when a live @mention addresses the principal, not a retainer.
+
+    Generic ``@user`` / ``@you`` always count. The principal's display name
+    and unique first name count unless that alias already belongs to a
+    member — the retainer wins so ``@Clayton`` still hands off.
+    Mentions inside fenced code are not live.
+    """
+    generics = {token.lower() for token in PRINCIPAL_GENERIC}
+    named = {alias.lower() for alias in principal_aliases(display_name)} - generics
+    if members:
+        index = mention_index(list(members), display_names)
+        named = {alias for alias in named if alias not in index}
+    for match in _MENTION_RE.finditer(blank_fences(text or "")):
+        token = match.group(1).lower()
+        if token in generics or token in named:
+            return True
+    return False
+
+
+def apply_needs_user(
+    room: Room,
+    message: RoomMessage,
+    principal_name: str = "",
+    member_names: Optional[Dict[str, str]] = None,
+) -> bool:
+    """Set or clear ``room.needs_user`` for a newly posted message.
+
+    An agent line that @mentions the principal sets the flag. The
+    principal's next post clears it. System notices do neither. Returns
+    whether the flag changed.
+    """
+    before = bool(room.needs_user)
+    if message.kind == KIND_USER:
+        room.needs_user = False
+    elif message.kind == KIND_AGENT and mentions_principal(
+        message.text,
+        principal_name,
+        members=room.members,
+        display_names=member_names,
+    ):
+        room.needs_user = True
+    return bool(room.needs_user) != before
 
 
 # Composer prefix on a voice take. Mentions live at the start of the
@@ -830,11 +919,19 @@ def room_briefing(
         extra = f" (`{slug}`)" if handle.lower() != slug.lower() else ""
         roster.append(f"@{handle}{extra}")
     people = ", ".join(user_names) if user_names else "the user"
+    you_handle = principal_mention_handle(principal_name)
+    escalate = "Escalate a real judgment call with @user"
+    if you_handle:
+        escalate += f" (or @{you_handle})"
+    escalate += "; that flags the room as needing them."
     parts = [
         f'You are {me_name}, a member of the room "{room.name}".',
         f"In this room you speak as @{me_handle}.",
         f"Humans here: {people}.",
-        "The human does not take agent turns. Do not @ them as if they were a retainer.",
+        (
+            "The human does not take agent turns. Do not @ them as if they "
+            f"were a retainer. {escalate}"
+        ),
         (
             "Other agent members: " + ", ".join(roster) + "."
             if roster
