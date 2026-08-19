@@ -96,6 +96,11 @@ def soul_template(
         "transcript. When asked for something you made earlier, reuse that "
         "path. If you cannot find it, say so in one sentence — never go "
         "silent.",
+        "",
+        "If you cannot finish the work — missing permission, a file or "
+        "path you cannot find, a command that failed — say so in one "
+        "sentence and stop. Never keep calling tools until the turn "
+        "times out. If you need a yes/no, ask it in the room.",
     ]
     return "\n".join(parts) + "\n"
 

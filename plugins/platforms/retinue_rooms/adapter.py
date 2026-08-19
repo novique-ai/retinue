@@ -41,7 +41,7 @@ from gateway.platforms.base import (
     SendResult,
 )
 
-from . import attachments, auth, cronjobs, crossroom, engine, hidden_sessions, hire, ide, identity, itinerary, keepalive, principal, projects, routines, sidebar, skilldraft, uimeta, voice, workspace
+from . import attachments, auth, clarify as room_clarify, cronjobs, crossroom, engine, hidden_sessions, hire, ide, identity, itinerary, keepalive, principal, projects, routines, sidebar, skilldraft, uimeta, voice, workspace
 from .engine import KIND_AGENT, KIND_SYSTEM, KIND_USER, Room, RoomMessage
 from .store import RoomStore
 
@@ -330,6 +330,53 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         if meta.get("job_id"):
             return self._append_unsolicited_agent(chat_id, content or "", member, message_id)
         return SendResult(success=True, message_id=message_id)
+
+    async def send_clarify(
+        self,
+        chat_id: str,
+        question: str,
+        choices: Optional[list],
+        clarify_id: str,
+        session_key: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Post the yes/no on the transcript so Speak Replies can play it.
+
+        Base ``send_clarify`` calls ``send()``, and rooms ``send()`` drops
+        anything without ``notify``. The prompt never landed. We write it
+        as the retainer and mark the entry awaiting text so the next
+        room line resolves it.
+        """
+        if choices:
+            try:
+                from tools.clarify_gateway import mark_awaiting_text
+
+                mark_awaiting_text(clarify_id)
+            except Exception:
+                logger.debug("Retinue rooms: mark_awaiting_text failed", exc_info=True)
+        if self.store.get(chat_id) is None:
+            return SendResult(success=False, message_id="", error="no such room")
+        meta = metadata or {}
+        member = (
+            meta.get("retinue_member")
+            or meta.get("thread_id")
+            or _turn_member.get()
+            or _member_from_scope()
+            or room_clarify.member_from_session_key(session_key)
+        )
+        speaker = (member or "").strip() or "room"
+        posted = self.store.append(
+            chat_id,
+            RoomMessage(
+                seq=0,
+                ts=0,
+                kind=KIND_AGENT,
+                speaker=speaker,
+                text=room_clarify.format_prompt(question, choices),
+            ),
+        )
+        self._note_posted(chat_id, posted)
+        return SendResult(success=True, message_id=str(posted.seq))
 
     def _append_unsolicited_agent(
         self,
@@ -946,6 +993,10 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             room_id, RoomMessage(seq=0, ts=0, kind=KIND_USER, speaker=speaker, text=text)
         )
         self._note_posted(room_id, message)
+        if room_clarify.try_resolve(room, text):
+            # Julio asked a yes/no. This line is the answer — do not
+            # start a second cycle on top of the one still waiting.
+            return {"seq": message.seq, "planned": [], "clarify": True}
         planned = engine.plan_user_turns(room, text, self._display_names(room))
         fut = asyncio.run_coroutine_threadsafe(self._run_cycle(room_id, message), self._loop)
         if wait:
@@ -1050,6 +1101,9 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         if not active:
             return {"stopped": False, "idle": True}
         self._stop_event(room_id).set()
+        stored = self.store.get(room_id)
+        if stored is not None:
+            room_clarify.release_room(stored)
         with self._pending_lock:
             pending_here = [
                 pending
@@ -1401,12 +1455,34 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
                 reply = attachments.with_published_paths(reply if ok else "", published)
                 ok = True
             if not ok:
-                # A turn that never produced an answer — it timed out, was
-                # superseded, or had nothing to read — is reported by the
-                # room, not spoken in the member's voice. Speaking it made
-                # every one of those look like the retainer apologising for
-                # failing at the work. The notice also clears the thinking
-                # indicator (engine.turn_concludes_waiter parses it).
+                # A turn that ran and failed (timeout, dispatch) must
+                # still speak in the member's voice. A system-only
+                # notice is silence on Speak Replies and looks like
+                # ghosting. The spoken line is failed_turn_reply —
+                # distinct from FALLBACK_GENERIC so it is not an empty
+                # successful answer (#133). The system notice stays
+                # under it with the exact reason and still clears the
+                # thinking indicator.
+                pending = room_clarify.pending_for_room(room)
+                clarify_entry = pending[1] if pending else None
+                last_tool = None if clarify_entry is not None else self._last_tool_block(
+                    member, room_id
+                )
+                spoken = engine.failed_turn_reply(
+                    reply, last_tool=last_tool, clarify=clarify_entry
+                )
+                room_clarify.release_room(room)
+                posted = self.store.append(
+                    room_id,
+                    RoomMessage(
+                        seq=0,
+                        ts=0,
+                        kind=KIND_AGENT,
+                        speaker=member,
+                        text=spoken,
+                    ),
+                )
+                self._note_posted(room_id, posted)
                 self._post_system(room_id, engine.did_not_reply_notice(member, reply))
                 return engine.TURN_FAIL, ""
             if not (reply or "").strip():
@@ -1528,6 +1604,80 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
     def _unseen_delta(self, room: Room, member: str) -> list:
         """What *member* actually has to respond to. Empty means no-op turn."""
         return self._unseen(room, member)[1]
+
+    def _last_tool_block(self, member: str, room_id: str) -> Optional[Dict[str, Any]]:
+        """Last in-flight or completed tool on this member's room session."""
+        import json as _json
+        import sqlite3
+
+        home = Path(self._home_dir())
+        paths = [home / "state.db", home / "profiles" / member / "state.db"]
+        keys = room_clarify.session_keys(room_id, member)
+        for db_path in paths:
+            if not db_path.is_file():
+                continue
+            try:
+                con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=1.0)
+            except sqlite3.Error:
+                continue
+            try:
+                row = con.execute(
+                    "SELECT id FROM sessions WHERE session_key IN ({}) "
+                    "ORDER BY last_activity_at DESC".format(
+                        ",".join("?" * len(keys))
+                    ),
+                    keys,
+                ).fetchone()
+                if row is None:
+                    # Profile DB often has one session with a null key.
+                    row = con.execute(
+                        "SELECT id FROM sessions ORDER BY last_activity_at DESC LIMIT 1"
+                    ).fetchone()
+                if row is None:
+                    continue
+                msg = con.execute(
+                    "SELECT role, tool_name, tool_calls, content FROM messages "
+                    "WHERE session_id = ? ORDER BY id DESC LIMIT 8",
+                    (row[0],),
+                ).fetchall()
+            except sqlite3.Error:
+                continue
+            finally:
+                con.close()
+            last_tool_out = None
+            last_call = None
+            for role, tool_name, tool_calls, content in msg:
+                if role == "tool" and last_tool_out is None:
+                    last_tool_out = {
+                        "name": tool_name or "",
+                        "output": content or "",
+                        "arguments": {},
+                    }
+                if role == "assistant" and tool_calls and last_call is None:
+                    try:
+                        calls = _json.loads(tool_calls)
+                    except (TypeError, ValueError):
+                        calls = []
+                    if isinstance(calls, list) and calls:
+                        fn = (calls[0] or {}).get("function") or {}
+                        args = fn.get("arguments") or {}
+                        if isinstance(args, str):
+                            try:
+                                args = _json.loads(args)
+                            except (TypeError, ValueError):
+                                args = {}
+                        last_call = {
+                            "name": fn.get("name") or "",
+                            "arguments": args if isinstance(args, dict) else {},
+                            "output": "",
+                        }
+            if last_call and last_call.get("name") == "clarify":
+                return last_call
+            if last_tool_out:
+                return last_tool_out
+            if last_call:
+                return last_call
+        return None
 
     def _restore_watermark(
         self, room: Room, member: str, previous: int, tentative: int

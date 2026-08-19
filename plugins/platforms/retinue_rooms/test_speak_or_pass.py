@@ -95,7 +95,8 @@ def test_failed_turn_is_still_did_not_reply_not_a_pass(tmp_path, monkeypatch):
 
     notice = engine.did_not_reply_notice("scout", "no reply within 300s")
     assert notice in _system_texts(adapter.store, room.id)
-    assert _agent_texts(adapter.store, room.id) == []
+    assert _agent_texts(adapter.store, room.id) == [("scout", engine.TIMEOUT_REPLY)]
+    assert engine.FALLBACK_GENERIC not in [text for _k, _s, text in _kinds(adapter.store, room.id)]
 
 
 def test_prose_that_says_pass_is_spoken(tmp_path, monkeypatch):

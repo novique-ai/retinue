@@ -268,13 +268,13 @@ def test_no_op_turn_is_never_spoken_as_the_member(tmp_path, monkeypatch):
     assert "scout is on it." not in _system_texts(adapter.store, room.id)
 
 
-def test_timed_out_turn_reports_as_the_room_not_the_member(tmp_path, monkeypatch):
-    """A turn that ran and never answered is the room's news.
+def test_timed_out_turn_speaks_in_the_member_voice(tmp_path, monkeypatch):
+    """A turn that ran and never answered still has to speak.
 
-    Regression for novique-ai/retinue#133: a 300s timeout was rendered as
-    FALLBACK_GENERIC in the member's voice, indistinguishable from a real
-    empty answer. It must be a system did-not-reply line, which is also
-    what clears the thinking indicator.
+    #133 made this a system-only notice so it would not be FALLBACK_GENERIC.
+    That left Speak Replies silent and the human thinking the retainer
+    ghosted. The retainer now posts TIMEOUT_REPLY (distinct from the
+    empty-answer apology) and the room still records the exact reason.
     """
     adapter = _adapter(tmp_path, monkeypatch)
     room = _room(members=["scout"], lead="scout")
@@ -291,10 +291,14 @@ def test_timed_out_turn_reports_as_the_room_not_the_member(tmp_path, monkeypatch
     asyncio.run(_run_locked(adapter, room, user_message))
 
     kinds = _kinds(adapter.store, room.id)
-    assert not any(kind == KIND_AGENT for kind, _speaker, _text in kinds)
+    assert (KIND_AGENT, "scout", engine.TIMEOUT_REPLY) in kinds
+    assert engine.FALLBACK_GENERIC not in [text for _k, _s, text in kinds]
     notice = engine.did_not_reply_notice("scout", "no reply within 300s")
     assert notice in _system_texts(adapter.store, room.id)
-    # The slug prefix is the contract turn_concludes_waiter parses.
+    assert engine.turn_concludes_waiter(
+        RoomMessage(seq=0, ts=0, kind=KIND_AGENT, speaker="scout", text=engine.TIMEOUT_REPLY),
+        "scout",
+    )
     assert engine.turn_concludes_waiter(
         RoomMessage(seq=0, ts=0, kind=KIND_SYSTEM, speaker="room", text=notice), "scout"
     )

@@ -197,14 +197,22 @@ briefing names the rooms they are also in; `rooms_list` shows them and
    control is later; it is not the default.
 5. **Speak or pass.** A member whose turn adds nothing can pass explicitly.
    A pass produces no transcript message — not an agent line, and not the
-   system `did not reply (...)` notice. That notice stays for failed turns
-   (timeout, dispatch error). Empty-delta no-op turns are still skipped
-   silently before the model is called. The pass signal is a structured
-   contract at the engine boundary: the entire reply must be the JSON object
-   `{"pass": true}`. Surrounding prose, `(pass)` in a sentence, and the word
-   "pass" in ordinary English are spoken replies. The per-turn briefing
-   tells members how to pass; the engine matches the payload deterministically
-   (no regex over free-form output).
+   system `did not reply (...)` notice. Empty-delta no-op turns are still
+   skipped silently before the model is called. A turn that **ran and
+   failed** (timeout, dispatch error) is not silence: the retainer posts
+   `failed_turn_reply` in their own voice (so Speak Replies plays it) and
+   the room still records the system `did not reply (...)` reason under
+   it. That spoken line is not `FALLBACK_GENERIC` — a timeout is not an
+   empty successful answer. If the turn died on a yes/no, missing
+   permission, or a missing file/path, the spoken line names that
+   blocker. The briefing tells members to say they are blocked and stop,
+   rather than tool-loop until the budget dies. The
+   pass signal is a structured contract at the engine boundary: the
+   entire reply must be the JSON object `{"pass": true}`. Surrounding
+   prose, `(pass)` in a sentence, and the word "pass" in ordinary English
+   are spoken replies. The per-turn briefing tells members how to pass;
+   the engine matches the payload deterministically (no regex over
+   free-form output).
 6. **Round settling.** After the user message and the first planned wave
    (mentions, or the lead), remaining members get a bounded number of
    speak-or-pass follow-up rounds (`max_followup_rounds`, default 3; `0`
@@ -227,6 +235,11 @@ briefing names the rooms they are also in; `rooms_list` shows them and
    if the gateway can, and post `Stopped. {name} stopped this turn.` A new
    user line after that is a normal redirect. Idle stop is a no-op. Speak
    Replies is cut in the browser (current clip + queue) but the toggle stays.
+10. **Clarify.** A retainer that needs a yes/no uses the Hermes `clarify`
+    tool. Rooms post that prompt as the retainer (numbered choices) so
+    Speak Replies plays it. The next user line answers it (`1`, the
+    option text, or free words) and does **not** start a second cycle.
+    Stop and turn-timeout release a still-waiting clarify.
 
 ## Needs-you escalation
 
