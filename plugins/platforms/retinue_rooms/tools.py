@@ -18,8 +18,8 @@ import logging
 import os
 from typing import Any, Dict, Optional
 
-from . import crossroom
-from .engine import KIND_AGENT, Room, RoomMessage
+from . import crossroom, principal
+from .engine import KIND_AGENT, Room, RoomMessage, apply_needs_user
 from .store import RoomStore
 
 logger = logging.getLogger(__name__)
@@ -156,13 +156,29 @@ def rooms_post(args: dict, **_: Any) -> str:
         # post_user_message() only, so this schedules nobody in the
         # destination — the no-cycle guarantee is structural, not a flag we
         # remembered to pass.
-        store.append(
+        posted = store.append(
             destination.id,
             RoomMessage(seq=0, ts=0, kind=KIND_AGENT, speaker=member, text=line),
         )
     except Exception as e:
         logger.exception("cross-room post to %s failed", destination.id)
         return f"Error: could not post to #{destination.name} — {e}."
+
+    try:
+        home = crossroom.workspace_home(_home())
+        name = str(principal.load(home).get("display_name") or "")
+        names = _display_names(destination)
+        store.mutate(
+            destination.id,
+            lambda room: apply_needs_user(
+                room,
+                posted,
+                principal_name=name,
+                member_names=names,
+            ),
+        )
+    except Exception:
+        logger.exception("cross-room: could not update needs_user on %s", destination.id)
 
     return crossroom.confirmation_line(destination.name)
 

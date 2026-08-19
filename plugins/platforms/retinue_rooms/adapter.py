@@ -347,10 +347,11 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         speaker = (member or "").strip()
         if not speaker or speaker == "default":
             speaker = "cron"
-        self.store.append(
+        posted = self.store.append(
             room_id,
             RoomMessage(seq=0, ts=0, kind=KIND_AGENT, speaker=speaker, text=body),
         )
+        self._note_posted(room_id, posted)
         return SendResult(success=True, message_id=message_id)
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
@@ -944,6 +945,7 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         message = self.store.append(
             room_id, RoomMessage(seq=0, ts=0, kind=KIND_USER, speaker=speaker, text=text)
         )
+        self._note_posted(room_id, message)
         planned = engine.plan_user_turns(room, text, self._display_names(room))
         fut = asyncio.run_coroutine_threadsafe(self._run_cycle(room_id, message), self._loop)
         if wait:
@@ -1409,10 +1411,11 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
                 return engine.TURN_FAIL, ""
             if not (reply or "").strip():
                 reply = engine.fallback_reply(ask)
-            self.store.append(
+            posted = self.store.append(
                 room_id,
                 RoomMessage(seq=0, ts=0, kind=KIND_AGENT, speaker=member, text=reply),
             )
+            self._note_posted(room_id, posted)
             return engine.TURN_SPEAK, reply
 
         def merge_into(target: List[str], member: str, posted_text: str) -> None:
@@ -1686,6 +1689,29 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         finally:
             if not completed:
                 self._restore_watermark(room, member, previous, delivered_through)
+
+    def _note_posted(self, room_id: str, message: RoomMessage) -> None:
+        """Set or clear the room's needs_user flag for a just-posted line."""
+        if message.kind == KIND_SYSTEM:
+            return
+        room = self.store.get(room_id)
+        if room is None:
+            return
+        name = str(principal.load(self._home_dir()).get("display_name") or "")
+        names = self._display_names(room)
+
+        def apply(stored: Room) -> None:
+            engine.apply_needs_user(
+                stored,
+                message,
+                principal_name=name,
+                member_names=names,
+            )
+
+        try:
+            self.store.mutate(room_id, apply)
+        except KeyError:
+            return
 
     def _post_system(self, room_id: str, text: str) -> Optional[RoomMessage]:
         try:

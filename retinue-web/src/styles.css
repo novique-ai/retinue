@@ -425,6 +425,19 @@ body {
   font-weight: 700;
   font-size: 13px;
   padding: 0;
+  position: relative;
+}
+
+.rail-needs-you {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #f7768e;
+  border: 2px solid var(--bg-raised);
+  pointer-events: none;
 }
 
 .rail-item.active {
@@ -600,6 +613,22 @@ body {
   background: #3a2e16;
   color: #e0af68;
   border: 1px solid #e0af68;
+}
+
+/* Attention chip — not .mini (22px icon square) and not .mini.wide
+   (text button). Same pill shape as .mode-badge, rose instead of gold. */
+.needs-you-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  vertical-align: middle;
+  background: #3a2430;
+  color: #f7768e;
+  border: 1px solid #f7768e;
 }
 
 .room-members {
