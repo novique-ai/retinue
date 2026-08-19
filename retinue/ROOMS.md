@@ -320,6 +320,18 @@ ide rooms also pin the turn's **session working directory** to the room's
 via the prompt builder) loads for room members exactly as it does for a host
 CLI session working in that tree. Sandbox rooms load no project context.
 
+## Broker identity (per-turn member credential)
+
+Room containers are shared per ROOM, so container env cannot carry member
+identity. Instead the gateway mints a per-turn token
+(`RETINUE_BROKER_TOKEN` = `v1:<slug>:<expiry>:<hmac>`, key at
+`<HERMES_HOME>/broker.key`, outside every bind-mount) and injects it into
+each command the member's turn executes, subshell-scoped so it never
+survives into the next command — or the next member's turn. The operator's
+host broker (infra) verifies the HMAC and maps slug → role; nothing a
+container can read suffices to forge one. Turns without a token simply
+cannot use the broker; the turn itself never fails on token problems.
+
 ## Model presets (per-hire model selection)
 
 By default a hire copies the **root config's `model:` block** — every new agent uses the

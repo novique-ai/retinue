@@ -41,7 +41,7 @@ from gateway.platforms.base import (
     SendResult,
 )
 
-from . import attachments, auth, clarify as room_clarify, cronjobs, crossroom, engine, governed, hidden_sessions, hire, ide, identity, itinerary, keepalive, principal, projects, routines, sidebar, skilldraft, uimeta, voice, workspace
+from . import attachments, auth, brokertoken, clarify as room_clarify, cronjobs, crossroom, engine, governed, hidden_sessions, hire, ide, identity, itinerary, keepalive, principal, projects, routines, sidebar, skilldraft, uimeta, voice, workspace
 from .engine import KIND_AGENT, KIND_SYSTEM, KIND_USER, Room, RoomMessage
 from .store import RoomStore
 
@@ -1833,6 +1833,19 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
 
         completed = False
         token = _turn_member.set(member)
+        # Broker identity rides every command this turn executes
+        # (tools/turn_env.py) — the container is shared per room, so this is
+        # the only carrier that is per-member. Never fails the turn: a turn
+        # without a token simply cannot use the broker.
+        _tenv_token = None
+        try:
+            from tools import turn_env as _turn_env_mod
+
+            _tenv_token = _turn_env_mod.set_turn_env(
+                {brokertoken.TOKEN_ENV: brokertoken.mint(self._home_dir(), member)}
+            )
+        except Exception:
+            logger.debug("broker token bind failed", exc_info=True)
         try:
             try:
                 await self.handle_message(event)
@@ -1860,6 +1873,11 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             completed = bool(ok)
             return ok, text
         finally:
+            if _tenv_token is not None:
+                try:
+                    _turn_env_mod.reset(_tenv_token)
+                except Exception:
+                    pass
             if not completed:
                 self._restore_watermark(room, member, previous, delivered_through)
 
