@@ -410,6 +410,54 @@ A stock Hermes Desktop therefore lists each retainer by display name with its ro
 subtitle, from the generic fields; a client that wants the rest (avatar glyph/colour, the
 `how` text, archived state) reads `ui_meta.retinue` without needing a Retinue API.
 
+## Peer DMs (`hermes peer`) — reaching retainers from other Hermes instances
+
+Upstream's `hermes peer` gives any Hermes instance a headless DM lane into this
+workspace: `hermes peer add <name> --url <api-url> --key <API_SERVER_KEY>`, then
+`hermes peer dm <name>/<member> < body.txt` runs one turn in that retainer's
+canonical Bot Chat and prints the reply. Decision record: issue #139 (Option A).
+
+### Security posture — two surfaces, two rules
+
+| Surface | Auth | Why |
+|---|---|---|
+| Rooms API (this adapter) | **Keyless by design** — network membership is the gate; the installer strips any configured rooms API key | Collaboration surface for people already inside the boundary |
+| `api_server` platform (peer lane) | **Key required** (`API_SERVER_KEY`) | Credentialed machine-to-machine lane; a peer holds the key as `HERMES_PEER_<NAME>_KEY` |
+
+Enabling the peer lane does not weaken the rooms posture: the rooms API stays
+keyless, the api_server surface never is.
+
+### Enablement (all three, or misdelivery)
+
+1. `platforms:` — add `api_server` with a strong `API_SERVER_KEY`.
+2. `gateway.multiplex_profiles: true` — **required for per-retainer delivery.**
+   The `/p/<member>` URL prefix is *silently ignored* when multiplexing is off
+   and the DM lands in the workspace root's Bot Chat instead. Silent
+   misdelivery, not an error — do not run the lane half-configured.
+3. Bind scope (loopback / private network) per deployment; reachability is the
+   network's business.
+
+Per-retainer routing rests on a pinned invariant: room turns stamp
+`source.profile` with the member and the session store's resolver prefers that
+stamp under multiplex (`test_session_key_profile.py` keeps both halves honest).
+
+### One-time migration note
+
+Flipping `multiplex_profiles` on re-namespaces room member session keys
+(`agent:main:…` → `agent:<member>:…`): every member starts a fresh working
+session on its next turn — accumulated member context resets once. Room
+transcripts, identity, and workspaces are untouched. The hidden-session sweep
+matches both namespaces, so old rows stay hidden.
+
+### Known nuance
+
+Retainer Bot Chats do **not** carry upstream's teammate-messaging protocol
+section: `tools/bot_mode_probe._is_bot_managed` keys on `ui_meta['hermes-bots']`,
+which Retinue deliberately never writes (see "Retainer identity in `ui_meta`").
+Inbound DMs deliver fine; the retainer just isn't pre-briefed on DM etiquette.
+Outbound (`hermes peer dm` *from* room turns) is deferred — the room briefing,
+not SOUL, would carry the peer roster; file a follow-up when wanted.
+
 ## Env
 
 | Var | Default | Meaning |
