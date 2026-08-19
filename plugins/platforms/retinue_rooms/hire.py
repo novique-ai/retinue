@@ -474,6 +474,7 @@ def apply_model_preset(home_dir: str, slug: str, preset: str) -> Dict[str, Any]:
     meta["model_switched_at"] = time.time()
     with open(meta_path, "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
+    _mirror_ui_meta(profile_dir, meta)
 
     for agent in list_agents(home_dir):
         if agent.get("slug") == slug:
@@ -680,6 +681,7 @@ def scaffold_profile(
         meta["persona"] = persona_obj
     with open(os.path.join(profile_dir, AGENT_META_FILENAME), "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
+    _mirror_ui_meta(profile_dir, meta)
     return enrich_agent(dict(meta))
 
 
@@ -872,6 +874,19 @@ _RESPONSE_ONLY = {
 }
 
 
+def _mirror_ui_meta(profile_dir: str, meta: Dict[str, Any]) -> None:
+    """Project the just-written identity into the profile's ``ui_meta``.
+
+    ``retinue-agent.json`` stays canonical; ``profile.yaml``'s ``ui_meta``
+    is a derived, server-synced copy other Hermes clients can read (see
+    uimeta.py). Best-effort by construction — a mirror failure must never
+    fail a hire, an edit, or a model switch.
+    """
+    from . import uimeta
+
+    uimeta.mirror_quietly(profile_dir, meta)
+
+
 def _write_meta(profile_dir: str, meta: Dict[str, Any]) -> None:
     path = os.path.join(profile_dir, AGENT_META_FILENAME)
     payload = {k: v for k, v in meta.items() if k not in _RESPONSE_ONLY}
@@ -879,6 +894,7 @@ def _write_meta(profile_dir: str, meta: Dict[str, Any]) -> None:
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2)
     os.replace(tmp, path)
+    _mirror_ui_meta(profile_dir, payload)
 
 
 def _agent_or_raise(home_dir: str, slug: str) -> Dict[str, Any]:
