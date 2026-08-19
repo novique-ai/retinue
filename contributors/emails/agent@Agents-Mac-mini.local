@@ -1,0 +1,2 @@
+teknium1
+# unlinked machine identity (upstream e6f59e5b7, committed by teknium1). Upstream deleted BOTH case variants in 693c0e1c6 because they collided on case-insensitive filesystems; only this single variant is re-added here, so no collision returns. Needed because a fork sync PR presents the whole upstream range as new commits to contributor-check.yml.
