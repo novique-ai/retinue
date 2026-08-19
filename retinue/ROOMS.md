@@ -213,13 +213,16 @@ briefing names the rooms they are also in; `rooms_list` shows them and
    are spoken replies. The per-turn briefing tells members how to pass;
    the engine matches the payload deterministically (no regex over
    free-form output).
-6. **Round settling.** After the user message and the first planned wave
-   (mentions, or the lead), remaining members get a bounded number of
-   speak-or-pass follow-up rounds (`max_followup_rounds`, default 3; `0`
-   disables). The room settles when a full round adds no speech. A speech
-   re-opens a round so others can react; the round cap and the turn budget
-   both stop the loop. First-round routing (`@mentions`, lead default) is
-   unchanged.
+6. **Round settling.** Only for an **undirected** message. If the user
+   named anyone — an `@mention`, or `@room` — that member answers and the
+   room is not polled behind them. Otherwise, after the lead's turn, the
+   remaining members get a bounded number of speak-or-pass follow-up
+   rounds (`max_followup_rounds`, **default `0` — off**; set it per room
+   to opt in). The room settles when a full round adds no speech. A
+   speech re-opens a round so others can react; the round cap and the
+   turn budget both stop the loop. First-round routing (`@mentions`, lead
+   default) is unchanged, and the lead pulling a teammate in with its own
+   `@mention` works with rounds off — that is the normal delegation path.
 7. Reply capture is per `(room, member)` so two in-flight speakers cannot
    steal each other's notify.
 8. **Rooms run concurrently with each other.** Sequencing is per room, not
@@ -266,7 +269,7 @@ convention: no `RETINUE_ROOMS_API_KEY` → localhost-only):
 | `GET/POST /agents` | roster / hire (`{name, job, how, model?}` — `model` names a preset) |
 | `GET/PATCH /agents/{slug}` | inspect / edit (`{name?, job?, how?, model?, archived?}`) — SOUL rewrite in place; `model` still switches the preset. No restart. |
 | `DELETE /agents/{slug}` | remove `profiles/<slug>/` (never `default`); evicts the live registration |
-| `GET/POST /rooms` | list / create (`{name, members[], lead?, max_agent_turns?, max_followup_rounds?, workspace?, ide_path?, shared_mode?}`) — `workspace` is `sandbox` (default) or `ide`; `shared_mode` is `rw` (default) or `ro`. List is sidebar-ordered and includes `archived`. `max_followup_rounds` is the speak-or-pass settle cap (default 3, `0` disables). |
+| `GET/POST /rooms` | list / create (`{name, members[], lead?, max_agent_turns?, max_followup_rounds?, workspace?, ide_path?, shared_mode?}`) — `workspace` is `sandbox` (default) or `ide`; `shared_mode` is `rw` (default) or `ro`. List is sidebar-ordered and includes `archived`. `max_followup_rounds` is the speak-or-pass settle cap (default `0` — off; set it to opt in, and it only applies to an undirected message). |
 | `GET/PATCH/DELETE /rooms/{id}` | inspect / edit (`{name?, members?, lead?, archived?, max_agent_turns?, max_followup_rounds?, workspace?, ide_path?, shared_mode?}`) / remove. Archive hides without wiping the transcript. Full-array `members` restaffs wholesale; members it adds or drops get the same join/leave notices and `last_seen` seeding as the incremental endpoints. |
 | `POST /rooms/{id}/members` | invite one agent (`{member}`) → 201. Seeds `last_seen` so a first-time invitee sees only the last 20 messages (and the join notice). A re-invite keeps their existing cursor. |
 | `DELETE /rooms/{id}/members/{slug}` | remove one agent → 200. `last_seen` is kept so a later re-invite resumes where they left off. Refuses the last remaining member. |

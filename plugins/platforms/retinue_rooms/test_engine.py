@@ -501,13 +501,13 @@ def test_followup_round_settled_when_nobody_spoke():
 def test_room_max_followup_rounds_defaults_and_roundtrips():
     room = _room()
     assert room.max_followup_rounds == engine.DEFAULT_MAX_FOLLOWUP_ROUNDS
-    assert engine.DEFAULT_MAX_FOLLOWUP_ROUNDS == 3
+    assert engine.DEFAULT_MAX_FOLLOWUP_ROUNDS == 0
     loaded = Room.from_dict(room.to_dict())
-    assert loaded.max_followup_rounds == 3
-    zero = Room.from_dict({**room.to_dict(), "max_followup_rounds": 0})
-    assert zero.max_followup_rounds == 0
+    assert loaded.max_followup_rounds == 0
+    three = Room.from_dict({**room.to_dict(), "max_followup_rounds": 3})
+    assert three.max_followup_rounds == 3
     missing = Room.from_dict({"id": "r-1", "name": "Test", "members": ["scout"]})
-    assert missing.max_followup_rounds == 3
+    assert missing.max_followup_rounds == 0
 
 
 def test_first_wave_routing_unchanged_then_followups_settle():
@@ -1069,3 +1069,14 @@ def test_pass_reply_tolerates_a_markdown_fence():
     assert not engine.is_pass_reply("I'll pass.\n```json\n{\"pass\": true}\n```")
     assert not engine.is_pass_reply("```json\n{\"pass\": true}\n```\nSee above.")
     assert not engine.is_pass_reply("```json\n{\"other\": 1}\n```")
+
+
+def test_is_directed_recognises_who_the_user_named():
+    members = ["scout", "editor", "critic"]
+    assert engine.is_directed("@editor can you start?", members) is True
+    assert engine.is_directed("@room status?", members) is True
+    assert engine.is_directed("where are we?", members) is False
+    # A mention that names nobody in the room does not direct the message.
+    assert engine.is_directed("@nobody hello", members) is False
+    # Mentions inside a fence are not live.
+    assert engine.is_directed("```\n@editor\n```", members) is False
