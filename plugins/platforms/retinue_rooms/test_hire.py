@@ -422,13 +422,137 @@ def test_switch_agent_model_evicts_live_cache(tmp_path, monkeypatch):
     assert any("scout" in k for k in runner._agent_cache)
 
 
-def test_scaffold_seeds_root_auth_store(tmp_path):
+# ── credentials: static .env is copied, the OAuth store is SHARED (#136) ──
+
+
+def _xai_root_store(access: str, refresh: str) -> str:
+    return json.dumps(
+        {
+            "version": 1,
+            "active_provider": "xai-oauth",
+            "providers": {
+                "xai-oauth": {
+                    "tokens": {"access_token": access, "refresh_token": refresh}
+                }
+            },
+        }
+    )
+
+
+def test_scaffold_seeds_env_but_shares_the_workspace_auth_store(tmp_path, monkeypatch):
+    """A hire must not fork the workspace OAuth store.
+
+    Replaces ``test_scaffold_seeds_root_auth_store``, which pinned the copy
+    this issue removes. Static ``.env`` keys still copy — a profile's secret
+    scope has no root fallback (``agent.secret_scope.build_profile_secret_scope``
+    reads only ``<profile>/.env``) and API keys do not rotate.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     (tmp_path / "config.yaml").write_text("model:\n  default: m\n  provider: anthropic\n", encoding="utf-8")
-    (tmp_path / "auth.json").write_text('{"providers": {"xai-oauth": {}}}', encoding="utf-8")
+    (tmp_path / "auth.json").write_text(_xai_root_store("old-access", "old-refresh"), encoding="utf-8")
+    (tmp_path / ".env").write_text("ANTHROPIC_API_KEY=sk-static\n", encoding="utf-8")
+
     hire.scaffold_profile(str(tmp_path), "Keys", "hold credentials", "")
-    seeded = tmp_path / "profiles" / "keys" / "auth.json"
-    assert seeded.read_text(encoding="utf-8") == '{"providers": {"xai-oauth": {}}}'
-    assert (seeded.stat().st_mode & 0o777) == 0o600
+
+    pdir = tmp_path / "profiles" / "keys"
+    assert not (pdir / "auth.json").exists()
+    assert (pdir / ".env").read_text(encoding="utf-8") == "ANTHROPIC_API_KEY=sk-static\n"
+    assert (pdir / ".env").stat().st_mode & 0o777 == 0o600
+
+
+def test_hired_profile_reads_a_rotated_workspace_token(tmp_path, monkeypatch):
+    """The whole point: one live token pool.
+
+    Reads through upstream's real resolution path
+    (``hermes_cli.auth.get_provider_auth_state`` under the per-turn
+    ``HERMES_HOME`` override the multiplexer installs). A copied store makes
+    the hire replay a consumed single-use refresh token; the global-root
+    fallback makes it see the rotation.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text("model:\n  default: m\n  provider: anthropic\n", encoding="utf-8")
+    (tmp_path / "auth.json").write_text(_xai_root_store("old-access", "old-refresh"), encoding="utf-8")
+
+    hire.scaffold_profile(str(tmp_path), "Keys", "hold credentials", "")
+
+    # The workspace refreshes; the rotated grant lands at the root only.
+    (tmp_path / "auth.json").write_text(_xai_root_store("new-access", "new-refresh"), encoding="utf-8")
+
+    from hermes_cli.auth import get_provider_auth_state
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    token = set_hermes_home_override(str(tmp_path / "profiles" / "keys"))
+    try:
+        state = get_provider_auth_state("xai-oauth")
+    finally:
+        reset_hermes_home_override(token)
+
+    assert state is not None
+    assert state["tokens"]["access_token"] == "new-access"
+
+
+def test_hire_still_copies_auth_when_the_shared_pool_cannot_resolve(
+    tmp_path, monkeypatch, caplog
+):
+    """Fail-safe: never strand a hire with no credentials at all.
+
+    ``hermes_cli.auth._global_auth_file_path`` resolves the fallback through
+    ``get_default_hermes_root()``, which reads the PROCESS ``HERMES_HOME``.
+    When that does not resolve back to this workspace root (e.g. a
+    ``HERMES_HOME`` nested under ``~/.hermes``), the profile would read some
+    other root's store — so keep the old copy and say so out loud.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "elsewhere"))
+    (tmp_path / "config.yaml").write_text("model:\n  default: m\n  provider: anthropic\n", encoding="utf-8")
+    (tmp_path / "auth.json").write_text(_xai_root_store("old-access", "old-refresh"), encoding="utf-8")
+
+    with caplog.at_level("WARNING", logger=hire.__name__):
+        hire.scaffold_profile(str(tmp_path), "Keys", "hold credentials", "")
+
+    copied = tmp_path / "profiles" / "keys" / "auth.json"
+    assert copied.is_file()
+    assert copied.stat().st_mode & 0o777 == 0o600
+    assert any("shared" in r.getMessage() for r in caplog.records)
+
+
+# ── model inheritance: the fork's verbatim block is a superset (#136) ─────
+
+
+def test_workspace_default_inheritance_keeps_the_whole_model_block(tmp_path):
+    """Drift guard against upstream's narrower ``_write_profile_model``.
+
+    Upstream's ``profiles.create`` inherits only ``model.provider`` +
+    ``model.default``. Retinue copies the root's ``model:`` block verbatim,
+    which is what carries ``base_url`` / ``api_key`` — drop those and every
+    local-LLM hire silently retargets at the cloud.
+    """
+    (tmp_path / "config.yaml").write_text(
+        "# workspace default\n"
+        "model:\n"
+        "  provider: custom\n"
+        "  model: local/auto\n"
+        "  base_url: http://10.44.0.13:8091/v1\n"
+        "  api_key: \"none\"  # llama-server takes anything\n"
+        "agent:\n  tool_choice: auto\n",
+        encoding="utf-8",
+    )
+    hire.scaffold_profile(str(tmp_path), "Local Hand", "run local", "")
+    config = (tmp_path / "profiles" / "local-hand" / "config.yaml").read_text(encoding="utf-8")
+    assert "provider: custom" in config
+    assert "model: local/auto" in config
+    assert "base_url: http://10.44.0.13:8091/v1" in config
+    assert "llama-server takes anything" in config
+
+
+def test_model_preset_overrides_inheritance_and_keeps_its_base_url(tmp_path):
+    (tmp_path / "config.yaml").write_text(
+        "model:\n  default: root-model\n  provider: anthropic\n", encoding="utf-8"
+    )
+    _write_presets(tmp_path)
+    hire.scaffold_profile(str(tmp_path), "Pinned", "serve", "", model_preset="local")
+    config = (tmp_path / "profiles" / "pinned" / "config.yaml").read_text(encoding="utf-8")
+    assert "root-model" not in config
+    assert "base_url: http://llm:8091/v1" in config
 
 
 # ── hot-register a hire into a live multiplexer (no gateway restart) ─────

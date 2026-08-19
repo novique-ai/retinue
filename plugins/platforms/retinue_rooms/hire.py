@@ -481,6 +481,93 @@ def apply_model_preset(home_dir: str, slug: str, preset: str) -> Dict[str, Any]:
     raise KeyError(slug)
 
 
+def workspace_auth_is_shared(home_dir: str) -> bool:
+    """True when a profile under *home_dir* reads the workspace ``auth.json``.
+
+    Upstream's profile auth fallback (``hermes_cli.auth._global_auth_file_path``)
+    resolves the shared store as ``get_default_hermes_root() / "auth.json"``,
+    and ``get_default_hermes_root()`` deliberately reads the **process**
+    ``HERMES_HOME`` — not the per-turn context override the multiplexer
+    installs. So the fallback lands on this workspace's store only when the
+    launch root resolves back to *home_dir*.
+
+    Retinue's gateway sets ``HERMES_HOME=~/.retinue``, which is not under
+    ``~/.hermes``, so the root resolves to itself and this is True. A
+    ``HERMES_HOME`` nested inside ``~/.hermes`` would resolve to ``~/.hermes``
+    instead — a different store — and sharing must not be assumed there.
+    Fails closed (False) if the resolution raises.
+    """
+    try:
+        from hermes_constants import get_default_hermes_root
+
+        root = os.path.realpath(str(get_default_hermes_root()))
+    except Exception:
+        logger.debug("Retinue hire: could not resolve the Hermes root", exc_info=True)
+        return False
+    return os.path.realpath(home_dir) == root
+
+
+def _seed_profile_credentials(home_dir: str, profile_dir: str) -> Dict[str, Any]:
+    """Give a new profile the workspace's static secrets — but not its tokens.
+
+    This is upstream's ``share_auth`` (``tui_gateway/methods_profiles.py``,
+    ``profiles.create``) applied to the hire flow. Upstream implements it
+    inline in a JSON-RPC handler that also creates the profile directory,
+    seeds skills and writes a wrapper script — none of which the hire flow
+    uses — so there is no helper to import. What we reuse is the runtime
+    mechanism it exists for, in ``hermes_cli.auth``:
+    ``_load_provider_state`` falls back per-provider to the global-root
+    store, ``read_credential_pool`` merges the root pool, and
+    ``_provider_state_transaction`` / ``_save_provider_state_to_source``
+    write a rotated token back to the store it was read from. Skipping the
+    copy is what opts a profile into that path, so upstream's fixes to it
+    reach every hire for free.
+
+    Why the copy was wrong: ``auth.json`` holds rotating OAuth grants. With
+    single-use refresh tokens the first refresh in either store invalidates
+    the other, so a hire forked the workspace grant and the room member died
+    on the next rotation. The fork already treated the copy as damage —
+    ``auth.clear_profile_xai_shadows`` strips it after every reauth. Not
+    writing it is the same fix, one step earlier.
+
+    ``.env`` still copies: a profile's secret scope
+    (``agent.secret_scope.build_profile_secret_scope``) reads only
+    ``<profile>/.env`` and has no root fallback, and plain API keys have no
+    refresh semantics, so copying them is safe.
+    """
+    seeded: Dict[str, Any] = {"env": False, "auth": "shared"}
+
+    root_env = os.path.join(home_dir, ".env")
+    if os.path.isfile(root_env):
+        dst_env = os.path.join(profile_dir, ".env")
+        shutil.copy(root_env, dst_env)
+        os.chmod(dst_env, 0o600)
+        seeded["env"] = True
+
+    root_auth = os.path.join(home_dir, "auth.json")
+    if not os.path.isfile(root_auth):
+        return seeded
+    if workspace_auth_is_shared(home_dir):
+        return seeded
+
+    # Fail-safe: the shared pool cannot resolve to THIS workspace, so a
+    # profile with no auth.json would read some other root's store (or
+    # none). Copy as before rather than strand the hire — and say so.
+    dst_auth = os.path.join(profile_dir, "auth.json")
+    shutil.copy(root_auth, dst_auth)
+    os.chmod(dst_auth, 0o600)
+    seeded["auth"] = "copied"
+    logger.warning(
+        "Retinue hire: workspace %s is not the Hermes root, so its auth store "
+        "cannot be shared with profiles; copied auth.json into %s instead. "
+        "The copy forks rotating OAuth grants — point HERMES_HOME at the "
+        "workspace root to restore one live token pool.",
+        home_dir,
+        profile_dir,
+    )
+    return seeded
+
+
 def _cache_key_for_slug(key: Any, slug: str) -> bool:
     return slug in str(key).split(":")
 
@@ -570,14 +657,9 @@ def scaffold_profile(
     with open(os.path.join(profile_dir, "config.yaml"), "w", encoding="utf-8") as f:
         f.write(model_block + "agent:\n  tool_choice: auto\n")
 
-    # Credentials: a profile's secret scope reads its own .env and auth store;
-    # seed both from the workspace root so a freshly hired agent can reach any
-    # provider the workspace owner has configured or OAuth-logged-into.
-    for cred, mode in ((".env", 0o600), ("auth.json", 0o600)):
-        root_cred = os.path.join(home_dir, cred)
-        if os.path.isfile(root_cred):
-            shutil.copy(root_cred, os.path.join(profile_dir, cred))
-            os.chmod(os.path.join(profile_dir, cred), mode)
+    # Credentials: static secrets are seeded from the workspace root; the
+    # OAuth store is SHARED, never copied. See _seed_profile_credentials.
+    _seed_profile_credentials(home_dir, profile_dir)
 
     meta: Dict[str, Any] = {
         "display_name": display_name,

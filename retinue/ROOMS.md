@@ -273,9 +273,32 @@ AIAgent so cloud staff can move between versioned presets without a
 hand-edit or gateway restart. Local / LAN presets stay operator-owned
 (they carry a host `base_url`).
 
-Credentials: a hire seeds the profile's `.env` **and `auth.json`** from the workspace root,
-so presets can target any provider the workspace owner has configured or OAuth-logged-into
-(e.g. run `hermes auth login` once in the workspace, then hire agents onto that provider).
+Credentials: a hire seeds the profile's `.env` from the workspace root and **shares** the
+workspace `auth.json` rather than copying it — upstream's `share_auth` (`profiles.create`
+in `tui_gateway/methods_profiles.py`). A profile with no `auth.json` reads the workspace
+store through Hermes' global-root fallback (`hermes_cli.auth`: provider state and the
+credential pool fall back per-provider to `get_default_hermes_root()/auth.json`, and a
+rotated token is written back to the store it was read from). So presets can still target
+any provider the workspace owner has configured or OAuth-logged-into — run `hermes auth
+login` once in the workspace and every hire is on it — but there is exactly **one live
+token pool**. A copy forked it: with single-use refresh tokens the first refresh in either
+store invalidates the other, which is what kept killing room members after a rotation.
+Static `.env` keys still copy; a profile's secret scope reads only its own `.env` (no root
+fallback) and API keys have no refresh semantics.
+
+That fallback resolves through the **process** `HERMES_HOME`, so it lands on this workspace
+only when `HERMES_HOME` is the workspace root (Retinue's gateway sets `~/.retinue`, which
+satisfies it). In a layout where it does not — e.g. a `HERMES_HOME` nested under
+`~/.hermes` — the hire falls back to the old copy and logs a warning rather than starting
+an agent with no credentials at all.
+
+**Migration.** Profiles hired before this change still have their copied `auth.json`, and a
+profile entry always shadows the workspace one. They keep working, but they keep the
+forked-token failure mode until the copy is cleared. `POST /auth/reauth` already runs
+`auth.clear_profile_xai_shadows()` on every successful login, which drops
+`providers.xai-oauth` from every profile store — so one workspace reauth migrates the whole
+roster. To migrate by hand, delete `profiles/<slug>/auth.json` (the profile then reads the
+workspace store); nothing regenerates it.
 
 A hire is hot-registered into the live multiplexer (pairing store, busy-mode
 snapshot, `served_profiles`) so the new agent can join a room **without a
