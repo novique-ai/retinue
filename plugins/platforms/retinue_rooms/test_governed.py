@@ -55,7 +55,9 @@ def test_governed_flag_roundtrips_and_lists(tmp_path, monkeypatch):
     hire.update_agent(str(tmp_path), "scout", governed=False)
     assert hire.agent_is_governed(str(tmp_path), "scout") is False
     meta = json.loads(
-        (tmp_path / "profiles" / "scout" / hire.AGENT_META_FILENAME).read_text()
+        (tmp_path / "profiles" / "scout" / hire.AGENT_META_FILENAME).read_text(
+            encoding="utf-8"
+        )
     )
     assert "governed" not in meta  # false is absence, meta stays clean
 
