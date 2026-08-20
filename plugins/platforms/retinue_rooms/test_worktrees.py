@@ -36,7 +36,7 @@ def ide_root(tmp_path, monkeypatch):
     _git(str(repo), "init", "-q", "-b", "main")
     _git(str(repo), "config", "user.email", "t@example.com")
     _git(str(repo), "config", "user.name", "T")
-    (repo / "keep.txt").write_text("base\n")
+    (repo / "keep.txt").write_text("base\n", encoding="utf-8")
     _git(str(repo), "add", "keep.txt")
     _git(str(repo), "commit", "-qm", "base")
     (root / "data").mkdir()
@@ -142,8 +142,7 @@ def test_worktree_is_created_on_its_own_branch(ide_root):
 def test_ensure_is_idempotent(ide_root):
     root = worktrees.resolve_worktree_root()
     first = worktrees.ensure_worktree(str(ide_root), "infra", "r1", root)
-    (os.path.join(first, "scratch.txt"))
-    open(os.path.join(first, "scratch.txt"), "w").write("x")
+    open(os.path.join(first, "scratch.txt"), "w", encoding="utf-8").write("x")
     second = worktrees.ensure_worktree(str(ide_root), "infra", "r1", root)
     assert first == second
     # Reusing must not blow away work in progress.
@@ -182,11 +181,11 @@ def test_one_rooms_edits_and_index_are_invisible_to_another(ide_root):
     assert a != b
 
     # Room A starts a change and stages it.
-    open(os.path.join(a, "a-work.txt"), "w").write("room a\n")
+    open(os.path.join(a, "a-work.txt"), "w", encoding="utf-8").write("room a\n")
     _git(a, "add", "a-work.txt")
 
     # Room B is mid-task on its own file.
-    open(os.path.join(b, "b-work.txt"), "w").write("room b\n")
+    open(os.path.join(b, "b-work.txt"), "w", encoding="utf-8").write("room b\n")
 
     # B cannot see A's file at all, so no `git add -A` can sweep it up.
     assert not os.path.exists(os.path.join(b, "a-work.txt"))
