@@ -41,7 +41,7 @@ from gateway.platforms.base import (
     SendResult,
 )
 
-from . import attachments, auth, brokertoken, clarify as room_clarify, cronjobs, crossroom, engine, governed, hidden_sessions, hire, ide, identity, itinerary, keepalive, principal, projects, routines, sidebar, skilldraft, uimeta, voice, workspace
+from . import attachments, auth, brokertoken, clarify as room_clarify, cron_workspace, cronjobs, crossroom, engine, governed, hidden_sessions, hire, ide, identity, itinerary, keepalive, principal, projects, routines, sidebar, skilldraft, uimeta, voice, workspace
 from .engine import KIND_AGENT, KIND_SYSTEM, KIND_USER, Room, RoomMessage
 from .store import RoomStore
 
@@ -236,6 +236,10 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         except Exception:
             logger.debug("Retinue rooms: ui_meta sync at connect failed", exc_info=True)
         self._start_xai_keepalive()
+        try:
+            cron_workspace.install(self)
+        except Exception:
+            logger.debug("Retinue rooms: cron workspace wrap failed", exc_info=True)
         logger.info("Retinue rooms: serving on %s:%s", self.host, self.port)
         return True
 
@@ -285,6 +289,7 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         self._xai_keepalive = None
 
     async def disconnect(self) -> None:
+        cron_workspace.uninstall()
         self._stop_xai_keepalive()
         if self._httpd is not None:
             try:

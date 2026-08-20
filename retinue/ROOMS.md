@@ -61,7 +61,10 @@ user ──HTTP──▶ RetinueRoomsAdapter ──MessageEvent(profile=member)�
   profile's `config.yaml` has no `platforms:` block; the narrow carried patch is
   recorded in [FORK-POLICY.md](FORK-POLICY.md). The rooms adapter appends the reply to the
   transcript as the member (`thread_id`). It does not start a new mention
-  cycle. Progress sends without `job_id` stay off the transcript.
+  cycle. Progress sends without `job_id` stay off the transcript. The job
+  itself runs under that room's workspace overlay (same bind as a mention
+  cycle) so an `ide` routine sees `/workspace`; a job with no room, or an
+  unknown room id, is unchanged (#171).
 
 ## Routines and scheduled jobs
 
