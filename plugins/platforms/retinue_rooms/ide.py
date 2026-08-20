@@ -175,6 +175,10 @@ def overlay_env(room: Room, home_dir: Optional[str] = None) -> Dict[str, str]:
         os.makedirs(uploads, exist_ok=True)
         volumes.append(f"{uploads}:{CONTAINER_MOUNT}/uploads:ro")
     env["TERMINAL_DOCKER_VOLUMES"] = json.dumps(volumes)
+    if parse_workspace(room.workspace) == WORKSPACE_IDE:
+        # Arms the mount-root search fence for this room's commands
+        # (workspace_context.ide_root_scan_refusal, novique-ai/retinue#165).
+        env[workspace_context.IDE_WORKSPACE_FLAG] = "1"
     return env
 
 
