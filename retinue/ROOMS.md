@@ -62,9 +62,12 @@ user ──HTTP──▶ RetinueRoomsAdapter ──MessageEvent(profile=member)�
   recorded in [FORK-POLICY.md](FORK-POLICY.md). The rooms adapter appends the reply to the
   transcript as the member (`thread_id`). It does not start a new mention
   cycle. Progress sends without `job_id` stay off the transcript. The job
-  itself runs under that room's workspace overlay (same bind as a mention
-  cycle) so an `ide` routine sees `/workspace`; a job with no room, or an
-  unknown room id, is unchanged (#171).
+  inherits that room's **workspace mount and broker identity** so an `ide`
+  routine sees `/workspace` and can reach the broker as its owner (#171).
+  It is not a full mention cycle: `crossroom.in_room` is not bound, so the
+  cross-room post tools refuse from a scheduled run. A job with no room, an
+  unknown room id, or an owner who is not a member of the destination room
+  runs unwrapped — no mount, no token.
 
 ## Routines and scheduled jobs
 
