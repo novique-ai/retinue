@@ -1926,6 +1926,17 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             )
         except Exception:
             logger.debug("broker token bind failed", exc_info=True)
+        # Provider stalls/retries surface on the transcript instead of only
+        # the journal (#166) — same ContextVar carrier as the broker token.
+        _vis_token = None
+        try:
+            from tools import turn_visibility as _turn_visibility
+
+            _vis_token = _turn_visibility.set_notifier(
+                self._provider_event_notifier(room.id, member)
+            )
+        except Exception:
+            logger.debug("turn visibility bind failed", exc_info=True)
         try:
             try:
                 await self.handle_message(event)
@@ -1953,6 +1964,11 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             completed = bool(ok)
             return ok, text
         finally:
+            if _vis_token is not None:
+                try:
+                    _turn_visibility.reset(_vis_token)
+                except Exception:
+                    pass
             if _tenv_token is not None:
                 try:
                     _turn_env_mod.reset(_tenv_token)
@@ -2002,6 +2018,32 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             self.store.mutate(room_id, apply)
         except KeyError:
             return
+
+    def _provider_event_notifier(self, room_id: str, member: str):
+        """Per-turn callback for tools.turn_visibility (#166).
+
+        Runs in the conversation loop's worker thread, so the transcript
+        write hops to the gateway loop when one is available. Rate-limited
+        per turn: provider kills arrive 60-120s apart, so one line each is
+        signal; a misbehaving provider must not become transcript spam.
+        """
+        room = self.store.get(room_id)
+        display = self._display_names(room).get(member, member) if room else member
+        last_post = [0.0]
+
+        def _notify(message: str) -> None:
+            now = time.monotonic()
+            if now - last_post[0] < 20.0:
+                return
+            last_post[0] = now
+            text = engine.provider_event_notice(display, message)
+            loop = self._loop
+            if loop is not None:
+                loop.call_soon_threadsafe(self._post_system, room_id, text)
+            else:
+                self._post_system(room_id, text)
+
+        return _notify
 
     def _post_system(self, room_id: str, text: str) -> Optional[RoomMessage]:
         try:

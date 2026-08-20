@@ -775,6 +775,24 @@ def cycle_stopped_notice(who: Optional[str] = None) -> str:
     return CYCLE_STOPPED_PREFIX
 
 
+PROVIDER_EVENT_PREFIX = "⚠️"
+_PROVIDER_DETAIL_CAP = 200
+
+
+def provider_event_notice(member_display: str, detail: str) -> str:
+    """System line for a mid-turn provider stall/retry (#166).
+
+    Compact by contract: *detail* is a one-line summary from the retry loop
+    (error class, attempt counter, model), never a payload — and it is
+    capped here so a provider's error prose cannot flood the transcript.
+    """
+    body = " ".join((detail or "").split())
+    if len(body) > _PROVIDER_DETAIL_CAP:
+        body = body[: _PROVIDER_DETAIL_CAP - 1] + "…"
+    who = (member_display or "").strip() or "the retainer"
+    return f"{PROVIDER_EVENT_PREFIX} {who}'s model provider hiccuped — {body} Still working."
+
+
 def is_cycle_abort_notice(text: str) -> bool:
     body = text or ""
     return (
