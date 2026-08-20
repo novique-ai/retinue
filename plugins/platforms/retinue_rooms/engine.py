@@ -14,6 +14,8 @@ import uuid
 from dataclasses import asdict, dataclass, field, replace
 from typing import Any, Dict, List, Optional
 
+from . import worktrees
+
 KIND_USER = "user"
 KIND_AGENT = "agent"
 KIND_SYSTEM = "system"
@@ -107,6 +109,11 @@ class Room:
     # ide: same container runtime, bind-mount of ide_path at /workspace.
     workspace: str = "sandbox"
     ide_path: Optional[str] = None
+    # Repo paths (relative to ide_path) this room isolates in its own git
+    # worktree on retinue/room/<id>, bind-mounted over their place in
+    # /workspace. Empty = share the tree with every other room, as before
+    # (novique-ai/retinue#169).
+    worktree_repos: List[str] = field(default_factory=list)
     # /shared mount: "rw" (default) or "ro". Absent treated as "rw";
     # unknown values on disk stay read-only.
     shared_mode: Optional[str] = None
@@ -138,6 +145,7 @@ class Room:
             archived=bool(data.get("archived")),
             workspace=str(data.get("workspace") or "sandbox"),
             ide_path=(str(data["ide_path"]) if data.get("ide_path") else None),
+            worktree_repos=[str(r) for r in (data.get("worktree_repos") or [])],
             shared_mode=(str(data["shared_mode"]) if data.get("shared_mode") else None),
             project_id=(str(data["project_id"]) if data.get("project_id") else None),
             needs_user=bool(data.get("needs_user")),
@@ -1088,6 +1096,17 @@ def room_briefing(
             "Recursive searches rooted at /workspace itself are refused: "
             "they take minutes and flood your context with output."
         )
+        isolated = [str(r) for r in (getattr(room, "worktree_repos", None) or [])]
+        if isolated:
+            paths = ", ".join(f"/workspace/{r}" for r in isolated)
+            parts.append(
+                f"{paths} is your OWN git worktree, checked out on branch "
+                f"{worktrees.branch_for(room.id)} — no other room can see or disturb "
+                f"your edits there. Commit to that branch as normal; you "
+                f"cannot and should not switch it to main. The human merges "
+                f"it on the host when the work is verified. Everything else "
+                f"under /workspace is still the shared tree."
+            )
     else:
         parts.append(
             "This room is sandboxed. Your terminal /workspace is an isolated "

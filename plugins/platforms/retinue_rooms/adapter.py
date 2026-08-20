@@ -490,6 +490,7 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         shared_mode: Optional[str] = None,
         project_id: Optional[str] = None,
         max_followup_rounds: Optional[int] = None,
+        worktree_repos: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         members = [m.strip() for m in members if m and m.strip()]
         if not members:
@@ -510,7 +511,14 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             ),
             project_id=project_id,
         )
-        ide.apply_workspace_fields(room, workspace=workspace, ide_path=ide_path, touching_path=True)
+        ide.apply_workspace_fields(
+            room,
+            workspace=workspace,
+            ide_path=ide_path,
+            touching_path=True,
+            worktree_repos=worktree_repos,
+            touching_worktrees=True,
+        )
         room.shared_mode = ide.parse_shared_mode(shared_mode)
         self.store.create(room)
         unknown = [m for m in members if not self._profile_exists(m)]
@@ -569,15 +577,24 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         if "max_followup_rounds" in body and body.get("max_followup_rounds") is not None:
             room.max_followup_rounds = max(0, int(body.get("max_followup_rounds")))
             touched = True
-        overlay_touched = any(key in body for key in ("workspace", "ide_path", "shared_mode"))
+        overlay_touched = any(
+            key in body
+            for key in ("workspace", "ide_path", "shared_mode", "worktree_repos")
+        )
         if overlay_touched:
             overlay_key_before = ide.container_key_for_room(room)
-        if "workspace" in body or "ide_path" in body:
+        if "workspace" in body or "ide_path" in body or "worktree_repos" in body:
             ide.apply_workspace_fields(
                 room,
                 workspace=body["workspace"] if "workspace" in body else room.workspace,
                 ide_path=body.get("ide_path") if "ide_path" in body else room.ide_path,
                 touching_path="ide_path" in body,
+                worktree_repos=(
+                    body.get("worktree_repos")
+                    if "worktree_repos" in body
+                    else room.worktree_repos
+                ),
+                touching_worktrees="worktree_repos" in body,
             )
             touched = True
         if "shared_mode" in body:
@@ -2609,6 +2626,7 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
                     max_followup_rounds=body.get("max_followup_rounds"),
                     workspace=body.get("workspace"),
                     ide_path=body.get("ide_path"),
+                    worktree_repos=body.get("worktree_repos"),
                     shared_mode=body.get("shared_mode"),
                     project_id=body.get("project_id"),
                 )
