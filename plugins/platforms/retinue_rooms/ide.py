@@ -310,7 +310,7 @@ def docker_backend_error() -> Optional[str]:
 
 @contextmanager
 def apply_room_workspace(
-    room: Room, home_dir: Optional[str] = None
+    room: Room, home_dir: Optional[str] = None, *, publish_invariants: bool = True
 ) -> Iterator[Dict[str, str]]:
     """Bind this room's workspace for one cycle.
 
@@ -318,6 +318,17 @@ def apply_room_workspace(
     ContextVar (see tools/workspace_context.py), which is per-asyncio-task and
     is propagated into the worker threads that dispatch tools, so no caller
     needs to serialize on a process-wide lock to keep its mounts.
+
+    ``publish_invariants=False`` binds only the ContextVar overlay and leaves
+    ``INVARIANT_ENV`` (``TERMINAL_CWD``) out of ``os.environ``. That write is
+    process-global, and cron serialises it under ``_terminal_cwd_lock``
+    (cron/scheduler.py) precisely because concurrent jobs share it. A caller
+    running on a cron pool thread must not publish it: doing so writes outside
+    that lock, and — because ``run_job`` snapshots ``_prior_terminal_cwd``
+    *after* the caller has already written — poisons the restore, so the job's
+    ``finally`` puts ``/workspace`` back instead of the real prior value and
+    the wrong tree leaks into whatever runs next. The gateway loop, which owns
+    the process, still publishes normally.
     """
     repos = room_worktree_repos(room)
     if repos:
@@ -331,9 +342,10 @@ def apply_room_workspace(
         )
     overlay = overlay_env(room, home_dir)
     ensure_share_layout(room)
-    for key in INVARIANT_ENV:
-        value = overlay.get(key)
-        if value is not None and os.environ.get(key) != value:
-            os.environ[key] = value
+    if publish_invariants:
+        for key in INVARIANT_ENV:
+            value = overlay.get(key)
+            if value is not None and os.environ.get(key) != value:
+                os.environ[key] = value
     with workspace_context.workspace(overlay):
         yield overlay
