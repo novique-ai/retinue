@@ -84,3 +84,97 @@ def workspace(overlay: Optional[Dict[str, str]]) -> Iterator[Optional[Mapping[st
         yield overlay
     finally:
         _overlay.reset(token)
+
+
+# --- ide-room mount-root search fence (novique-ai/retinue#165) ---------------
+#
+# An ide room bind-mounts the operator's ENTIRE IDE at /workspace. A recursive
+# search rooted there is legal shell but always a mistake: minutes of wall
+# clock under the exclusive room lock, and a ~50KB tool dump that poisons the
+# member's session (#164). The rooms overlay marks ide rooms with
+# IDE_WORKSPACE_FLAG; the terminal tool consults ide_root_scan_refusal()
+# before executing. This is a product fence against an honest-but-wasteful
+# pattern, not a security boundary — `cd /workspace && grep -r .` still
+# passes, and the room briefing owns that education.
+
+IDE_WORKSPACE_FLAG = "RETINUE_IDE_WORKSPACE"
+
+_IDE_MOUNT_ROOT = "/workspace"
+_COMMAND_BREAKS = frozenset({"|", "||", "&&", ";", "&"})
+_RECURSIVE_LONG_OPTS = frozenset({"--recursive", "--dereference-recursive"})
+#: Programs that recurse by default when handed a directory.
+_RECURSIVE_BY_DEFAULT = frozenset({"rg", "ripgrep", "find"})
+#: Programs that recurse only with an -r/-R style flag.
+_RECURSIVE_WITH_FLAG = frozenset({"grep", "egrep", "fgrep"})
+
+
+def _fence_tokens(command: str) -> list:
+    import shlex
+
+    try:
+        # punctuation_chars makes ;, |, && standalone tokens, so the
+        # per-segment program scan below sees compound commands correctly.
+        lex = shlex.shlex(command or "", posix=True, punctuation_chars=True)
+        lex.whitespace_split = True
+        return list(lex)
+    except ValueError:
+        return (command or "").split()
+
+
+def _is_mount_root(token: str) -> bool:
+    return token in (_IDE_MOUNT_ROOT, _IDE_MOUNT_ROOT + "/", _IDE_MOUNT_ROOT + "/.")
+
+
+def scans_ide_root(command: str) -> bool:
+    """True when *command* recursively searches the ide mount root itself.
+
+    Refuses ``grep -r … /workspace``, ``rg … /workspace``, and
+    ``find /workspace …`` (each observed live on 2026-08-20); a path one
+    level deeper (``/workspace/<repo>``) always passes.
+    """
+    tokens = _fence_tokens(command)
+    for index, token in enumerate(tokens):
+        if not _is_mount_root(token):
+            continue
+        start = 0
+        for j in range(index - 1, -1, -1):
+            if tokens[j] in _COMMAND_BREAKS:
+                start = j + 1
+                break
+        if start >= len(tokens):
+            continue
+        program = os.path.basename(tokens[start])
+        if program in _RECURSIVE_BY_DEFAULT:
+            return True
+        if program in _RECURSIVE_WITH_FLAG:
+            for opt in tokens[start + 1 : index]:
+                if opt in _RECURSIVE_LONG_OPTS:
+                    return True
+                if (
+                    opt.startswith("-")
+                    and not opt.startswith("--")
+                    and any(c in "rR" for c in opt[1:])
+                ):
+                    return True
+    return False
+
+
+def ide_root_scan_refusal(command: str) -> Optional[str]:
+    """Refusal message for an ide-room mount-root scan, or ``None`` to allow.
+
+    Fires only when the active workspace overlay carries
+    ``IDE_WORKSPACE_FLAG`` — CLI, desktop, delegate children, and sandbox
+    rooms are untouched.
+    """
+    if getenv(IDE_WORKSPACE_FLAG, "") != "1":
+        return None
+    if not scans_ide_root(command):
+        return None
+    return (
+        "refused: recursive search rooted at /workspace. /workspace is the "
+        "entire host IDE (every repo and data tree), not this task's "
+        "project — a root scan takes minutes and floods your context. "
+        "Scope the search to the repo you are working in, e.g. "
+        "`grep -rn PATTERN /workspace/<repo>/`, or list the root first "
+        "with `ls /workspace`."
+    )

@@ -3023,6 +3023,22 @@ def terminal_tool(
                     "status": "blocked",
                 }, ensure_ascii=False)
 
+        # ide-room mount-root scan fence (novique-ai/retinue#165). Checked
+        # before — and regardless of — force: this is a product fence on an
+        # ide-attached room's shared mount, not a dangerous-command approval,
+        # so a model passing force=True must not tunnel through it. No-op for
+        # every non-rooms surface (the overlay flag is only set by ide rooms).
+        from tools.workspace_context import ide_root_scan_refusal as _ide_fence
+
+        _ide_refusal = _ide_fence(command)
+        if _ide_refusal:
+            return json.dumps({
+                "output": "",
+                "exit_code": -1,
+                "error": _ide_refusal,
+                "status": "blocked",
+            }, ensure_ascii=False)
+
         # Pre-exec security checks (tirith + dangerous command detection)
         # Skip check if force=True (user has confirmed they want to run it)
         approval_note = None

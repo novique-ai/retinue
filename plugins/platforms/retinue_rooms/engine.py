@@ -775,6 +775,24 @@ def cycle_stopped_notice(who: Optional[str] = None) -> str:
     return CYCLE_STOPPED_PREFIX
 
 
+PROVIDER_EVENT_PREFIX = "⚠️"
+_PROVIDER_DETAIL_CAP = 200
+
+
+def provider_event_notice(member_display: str, detail: str) -> str:
+    """System line for a mid-turn provider stall/retry (#166).
+
+    Compact by contract: *detail* is a one-line summary from the retry loop
+    (error class, attempt counter, model), never a payload — and it is
+    capped here so a provider's error prose cannot flood the transcript.
+    """
+    body = " ".join((detail or "").split())
+    if len(body) > _PROVIDER_DETAIL_CAP:
+        body = body[: _PROVIDER_DETAIL_CAP - 1] + "…"
+    who = (member_display or "").strip() or "the retainer"
+    return f"{PROVIDER_EVENT_PREFIX} {who}'s model provider hiccuped — {body} Still working."
+
+
 def is_cycle_abort_notice(text: str) -> bool:
     body = text or ""
     return (
@@ -1062,6 +1080,13 @@ def room_briefing(
             "This room is attached to this machine's IDE. Your terminal "
             "/workspace is a bind-mount of that host tree — treat it as the "
             "real project, not a throwaway sandbox."
+        )
+        parts.append(
+            "/workspace is the ENTIRE IDE — every repo and data tree on "
+            "this machine — not one project. Work inside the specific repo "
+            "your task names (e.g. /workspace/infra/) and search there. "
+            "Recursive searches rooted at /workspace itself are refused: "
+            "they take minutes and flood your context with output."
         )
     else:
         parts.append(

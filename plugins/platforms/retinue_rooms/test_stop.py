@@ -321,3 +321,147 @@ def test_real_empty_answer_still_speaks_the_fallback(tmp_path, monkeypatch):
     asyncio.run(_run_locked(adapter, room, user_message))
 
     assert (KIND_AGENT, "scout", engine.FALLBACK_GENERIC) in _kinds(adapter.store, room.id)
+
+
+# ---------------------------------------------------------------------------
+# Stop rotates the member session (#164)
+# ---------------------------------------------------------------------------
+
+
+class _FakeSessionStore:
+    def __init__(self):
+        self.reset_keys: list[str] = []
+
+    async def reset_session(self, session_key):
+        self.reset_keys.append(session_key)
+        return object()
+
+
+class _FakeRunner:
+    def __init__(self):
+        self.async_session_store = _FakeSessionStore()
+        self.interrupted: list[str] = []
+        self.evicted: list[str] = []
+
+    async def _interrupt_and_clear_session(self, session_key, source, **kwargs):
+        self.interrupted.append(session_key)
+
+    def _evict_cached_agent(self, session_key):
+        self.evicted.append(session_key)
+
+
+def _register_pending(adapter, room, member: str, session_key: str):
+    from concurrent.futures import Future
+
+    from .adapter import _PendingTurn
+
+    source = adapter.build_source(
+        chat_id=room.id,
+        chat_name=f"room:{room.name}",
+        chat_type="group",
+        user_id="user:test",
+        user_name="Mark",
+        thread_id=member,
+    )
+    pending = _PendingTurn(
+        task_id="t-1",
+        room_id=room.id,
+        member=member,
+        future=Future(),
+        session_key=session_key,
+        source=source,
+    )
+    with adapter._pending_lock:
+        adapter._pending[(room.id, member)] = pending
+    return pending
+
+
+def test_stop_rotates_the_interrupted_members_session(tmp_path, monkeypatch):
+    """Stop must drop the member's session history, not just the agent cache.
+
+    The room store owns everything durable (transcript, watermark; the
+    briefing is re-sent every turn), so the Hermes session's only cross-turn
+    cargo is tool history. Before #164 the next turn rebuilt the agent FROM
+    that history, so a poisoned 45-60k tool dump survived every Stop.
+    """
+    adapter = _adapter(tmp_path, monkeypatch)
+    room = _room()
+    adapter.store.create(room)
+    runner = _FakeRunner()
+    adapter.gateway_runner = runner
+    _register_pending(adapter, room, "scout", "sess-scout-1")
+
+    result = asyncio.run(adapter._stop_cycle(room.id, "Mark"))
+
+    assert result["stopped"] is True
+    assert runner.interrupted == ["sess-scout-1"]
+    assert runner.async_session_store.reset_keys == ["sess-scout-1"]
+
+
+def test_stop_rotation_failure_does_not_break_stop(tmp_path, monkeypatch):
+    """A session store that cannot rotate must not turn Stop into an error."""
+    adapter = _adapter(tmp_path, monkeypatch)
+    room = _room()
+    adapter.store.create(room)
+    runner = _FakeRunner()
+
+    async def broken_reset(session_key):
+        raise RuntimeError("db down")
+
+    runner.async_session_store.reset_session = broken_reset
+    adapter.gateway_runner = runner
+    _register_pending(adapter, room, "scout", "sess-scout-1")
+
+    result = asyncio.run(adapter._stop_cycle(room.id, "Mark"))
+    assert result["stopped"] is True
+
+
+def test_reset_member_session_lever_while_idle(tmp_path, monkeypatch):
+    """The explicit new-session lever works with no turn in flight (#164)."""
+    adapter = _adapter(tmp_path, monkeypatch)
+    room = _room()
+    adapter.store.create(room)
+    runner = _FakeRunner()
+    adapter.gateway_runner = runner
+
+    result = asyncio.run(adapter._reset_member_session(room.id, "scout"))
+
+    assert result["reset"] is True
+    assert result["member"] == "scout"
+    assert len(runner.async_session_store.reset_keys) == 1
+    # The rotated key is the same one an _agent_turn for this member derives.
+    source = adapter.build_source(
+        chat_id=room.id,
+        chat_name=f"room:{room.name}",
+        chat_type="group",
+        user_id="agent:someone",
+        user_name="someone (agent)",
+        thread_id="scout",
+    )
+    source.profile = "scout"
+    assert runner.async_session_store.reset_keys[0] == adapter._session_key_for(source)
+
+
+def test_reset_member_session_refuses_while_busy(tmp_path, monkeypatch):
+    from .adapter import AgentBusy
+
+    adapter = _adapter(tmp_path, monkeypatch)
+    room = _room()
+    adapter.store.create(room)
+    runner = _FakeRunner()
+    adapter.gateway_runner = runner
+    _register_pending(adapter, room, "scout", "sess-scout-1")
+
+    with pytest.raises(AgentBusy):
+        asyncio.run(adapter._reset_member_session(room.id, "scout"))
+
+
+def test_reset_member_session_unknown_room_and_member(tmp_path, monkeypatch):
+    adapter = _adapter(tmp_path, monkeypatch)
+    room = _room()
+    adapter.store.create(room)
+    adapter.gateway_runner = _FakeRunner()
+    with pytest.raises(KeyError):
+        asyncio.run(adapter._reset_member_session("ghost", "scout"))
+    with pytest.raises(ValueError):
+        asyncio.run(adapter._reset_member_session(room.id, "nobody"))

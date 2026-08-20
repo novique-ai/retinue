@@ -1151,6 +1151,7 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
                     interrupt_reason=_INTERRUPT_REASON_STOP,
                     invalidation_reason="retinue_room_stop",
                 )
+                await self._rotate_member_session(key)
                 return
             except Exception:
                 logger.debug(
@@ -1177,6 +1178,85 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
                 request_hard_interrupt(agent, "Stopped.")
         except Exception:
             logger.debug("Retinue rooms: hard interrupt failed", exc_info=True)
+        await self._rotate_member_session(key)
+
+    async def _rotate_member_session(self, session_key: str) -> bool:
+        """Drop a member's Hermes session history by rotating the session id.
+
+        The room store owns everything durable — transcript, watermark — and
+        the briefing is re-sent on every turn, so the Hermes session's only
+        cross-turn cargo is tool history. After a Stop that cargo is a
+        poisoned prompt the next turn re-pays in full (a 45-60k grep dump
+        survived Stop, PATCH-evict, and a "clean context" re-prompt on
+        2026-08-20 — #164). Rotation makes the next turn rebuild from the
+        room transcript instead. Never raises: Stop must succeed even when
+        the session store cannot rotate.
+        """
+        if not session_key:
+            return False
+        runner = self._live_runner()
+        store = getattr(runner, "async_session_store", None) if runner else None
+        reset = getattr(store, "reset_session", None)
+        if not callable(reset):
+            return False
+        try:
+            entry = await reset(session_key)
+        except Exception:
+            logger.debug("Retinue rooms: session rotation failed", exc_info=True)
+            return False
+        # The evicted cache slot would otherwise rebuild from the OLD
+        # session's history (see gateway _interrupt_and_clear_session);
+        # after rotation the rebuild source is the fresh, empty session.
+        evict = getattr(runner, "_evict_cached_agent", None)
+        if callable(evict):
+            try:
+                evict(session_key)
+            except Exception:
+                logger.debug("Retinue rooms: post-rotation evict failed", exc_info=True)
+        logger.info("Retinue rooms: rotated member session %s (#164)", session_key)
+        return entry is not None
+
+    def reset_member_session(self, room_id: str, member: str) -> Dict[str, Any]:
+        """Explicit "new session" lever for one room member (#164).
+
+        Idle-only: with a turn in flight, Stop is the right lever (it rotates
+        on interrupt); rotating under a running turn would race its writes.
+        """
+        if self.store.get(room_id) is None:
+            raise KeyError(room_id)
+        if self._loop is None:
+            raise RuntimeError("gateway loop not ready")
+        fut = asyncio.run_coroutine_threadsafe(
+            self._reset_member_session(room_id, member), self._loop
+        )
+        return fut.result(timeout=15)
+
+    async def _reset_member_session(self, room_id: str, member: str) -> Dict[str, Any]:
+        room = self.store.get(room_id)
+        if room is None:
+            raise KeyError(room_id)
+        member = (member or "").strip()
+        if member not in room.members:
+            raise ValueError(f"no member '{member}' in this room")
+        if self._cycle_active(room_id):
+            raise AgentBusy(
+                f"{member} may be mid-turn — Stop the cycle first; Stop already "
+                "starts them a fresh session"
+            )
+        # Derive the same session key an _agent_turn for this member builds.
+        # user_id varies per trigger there, so the key cannot depend on it.
+        source = self.build_source(
+            chat_id=room.id,
+            chat_name=f"room:{room.name}",
+            chat_type="group",
+            user_id="user:reset",
+            user_name=_DEFAULT_USER_NAME,
+            thread_id=member,
+        )
+        source.profile = None if member == "default" else member
+        key = self._session_key_for(source)
+        ok = await self._rotate_member_session(key)
+        return {"reset": bool(ok), "member": member, "room": room_id}
 
     def save_routine_from_room(
         self,
@@ -1846,6 +1926,17 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             )
         except Exception:
             logger.debug("broker token bind failed", exc_info=True)
+        # Provider stalls/retries surface on the transcript instead of only
+        # the journal (#166) — same ContextVar carrier as the broker token.
+        _vis_token = None
+        try:
+            from tools import turn_visibility as _turn_visibility
+
+            _vis_token = _turn_visibility.set_notifier(
+                self._provider_event_notifier(room.id, member)
+            )
+        except Exception:
+            logger.debug("turn visibility bind failed", exc_info=True)
         try:
             try:
                 await self.handle_message(event)
@@ -1873,6 +1964,11 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             completed = bool(ok)
             return ok, text
         finally:
+            if _vis_token is not None:
+                try:
+                    _turn_visibility.reset(_vis_token)
+                except Exception:
+                    pass
             if _tenv_token is not None:
                 try:
                     _turn_env_mod.reset(_tenv_token)
@@ -1922,6 +2018,32 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             self.store.mutate(room_id, apply)
         except KeyError:
             return
+
+    def _provider_event_notifier(self, room_id: str, member: str):
+        """Per-turn callback for tools.turn_visibility (#166).
+
+        Runs in the conversation loop's worker thread, so the transcript
+        write hops to the gateway loop when one is available. Rate-limited
+        per turn: provider kills arrive 60-120s apart, so one line each is
+        signal; a misbehaving provider must not become transcript spam.
+        """
+        room = self.store.get(room_id)
+        display = self._display_names(room).get(member, member) if room else member
+        last_post = [0.0]
+
+        def _notify(message: str) -> None:
+            now = time.monotonic()
+            if now - last_post[0] < 20.0:
+                return
+            last_post[0] = now
+            text = engine.provider_event_notice(display, message)
+            loop = self._loop
+            if loop is not None:
+                loop.call_soon_threadsafe(self._post_system, room_id, text)
+            else:
+                self._post_system(room_id, text)
+
+        return _notify
 
     def _post_system(self, room_id: str, text: str) -> Optional[RoomMessage]:
         try:
@@ -2521,6 +2643,20 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
                 )
             except KeyError:
                 return self._json(404, {"error": "no such room"})
+            except RuntimeError as e:
+                return self._json(503, {"error": str(e)})
+            return self._json(200, result)
+        if len(parts) == 3 and parts[0] == "rooms" and parts[2] == "reset-session":
+            try:
+                result = adapter.reset_member_session(
+                    parts[1], str(body.get("member") or "")
+                )
+            except KeyError:
+                return self._json(404, {"error": "no such room"})
+            except AgentBusy as e:
+                return self._json(409, {"error": str(e)})
+            except ValueError as e:
+                return self._json(400, {"error": str(e)})
             except RuntimeError as e:
                 return self._json(503, {"error": str(e)})
             return self._json(200, result)

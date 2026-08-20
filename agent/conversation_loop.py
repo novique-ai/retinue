@@ -5029,6 +5029,21 @@ def run_conversation(
                         agent._buffer_vprint(f"   📋 Details: {_err_body_str}")
                 agent._buffer_vprint(f"   ⏱️  Elapsed: {elapsed_time:.2f}s  Context: {len(api_messages)} msgs, ~{approx_tokens:,} tokens")
 
+                # Carried patch (retinue, novique-ai/retinue#166): surface the
+                # failure to whatever bound tools.turn_visibility — a Retinue
+                # room posts a system line so a stalled provider is visible on
+                # the transcript, not only in the journal. No-op elsewhere.
+                try:
+                    from tools import turn_visibility as _turn_visibility
+
+                    _turn_visibility.notify(
+                        f"call to {_model} failed after {elapsed_time:.0f}s "
+                        f"({_error_summary}); retrying "
+                        f"(attempt {retry_count}/{max_retries})."
+                    )
+                except Exception:
+                    pass
+
                 # Actionable hint for OpenRouter "no tool endpoints" error.
                 # Buffered like the rest of the retry trace — surfaced only
                 # if every retry+fallback exhausts.  Avoids spamming users
