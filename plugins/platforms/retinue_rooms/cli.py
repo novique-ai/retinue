@@ -70,6 +70,14 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="host directory for workspace=ide (else RETINUE_IDE_ROOT)",
     )
+    p_create.add_argument(
+        "--worktree-repos",
+        default=None,
+        help=(
+            "comma-separated repo paths under the ide path to isolate in this "
+            "room's own git worktree (e.g. infra,projects/retinue)"
+        ),
+    )
 
     sub.add_parser("list", help="list rooms")
 
@@ -99,6 +107,9 @@ def main(argv: list[str] | None = None) -> int:
                 "max_agent_turns": args.max_agent_turns,
                 "workspace": args.workspace,
                 "ide_path": args.ide_path,
+                "worktree_repos": [
+                    r.strip() for r in (args.worktree_repos or "").split(",") if r.strip()
+                ],
             },
         )
         print(json.dumps(result, indent=2))

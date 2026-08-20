@@ -275,8 +275,8 @@ convention: no `RETINUE_ROOMS_API_KEY` → localhost-only):
 | `GET/POST /agents` | roster / hire (`{name, job, how, model?}` — `model` names a preset) |
 | `GET/PATCH /agents/{slug}` | inspect / edit (`{name?, job?, how?, model?, archived?}`) — SOUL rewrite in place; `model` still switches the preset. No restart. |
 | `DELETE /agents/{slug}` | remove `profiles/<slug>/` (never `default`); evicts the live registration |
-| `GET/POST /rooms` | list / create (`{name, members[], lead?, max_agent_turns?, max_followup_rounds?, workspace?, ide_path?, shared_mode?}`) — `workspace` is `sandbox` (default) or `ide`; `shared_mode` is `rw` (default) or `ro`. List is sidebar-ordered and includes `archived`. `max_followup_rounds` is the speak-or-pass settle cap (default `0` — off; set it to opt in, and it only applies to an undirected message). |
-| `GET/PATCH/DELETE /rooms/{id}` | inspect / edit (`{name?, members?, lead?, archived?, max_agent_turns?, max_followup_rounds?, workspace?, ide_path?, shared_mode?}`) / remove. Archive hides without wiping the transcript. Full-array `members` restaffs wholesale; members it adds or drops get the same join/leave notices and `last_seen` seeding as the incremental endpoints. |
+| `GET/POST /rooms` | list / create (`{name, members[], lead?, max_agent_turns?, max_followup_rounds?, workspace?, ide_path?, shared_mode?, worktree_repos?}`) — `workspace` is `sandbox` (default) or `ide`; `shared_mode` is `rw` (default) or `ro`. List is sidebar-ordered and includes `archived`. `max_followup_rounds` is the speak-or-pass settle cap (default `0` — off; set it to opt in, and it only applies to an undirected message). |
+| `GET/PATCH/DELETE /rooms/{id}` | inspect / edit (`{name?, members?, lead?, archived?, max_agent_turns?, max_followup_rounds?, workspace?, ide_path?, shared_mode?, worktree_repos?}`) / remove. Archive hides without wiping the transcript. Full-array `members` restaffs wholesale; members it adds or drops get the same join/leave notices and `last_seen` seeding as the incremental endpoints. |
 | `POST /rooms/{id}/members` | invite one agent (`{member}`) → 201. Seeds `last_seen` so a first-time invitee sees only the last 20 messages (and the join notice). A re-invite keeps their existing cursor. |
 | `DELETE /rooms/{id}/members/{slug}` | remove one agent → 200. `last_seen` is kept so a later re-invite resumes where they left off. Refuses the last remaining member. |
 | `GET /rooms/{id}/routines` | routines whose `source_room` is this room |
@@ -325,6 +325,41 @@ ide rooms also pin the turn's **session working directory** to the room's
 `ide_path`, so the standard project-context chain (`AGENTS.md` / `CLAUDE.md`
 via the prompt builder) loads for room members exactly as it does for a host
 CLI session working in that tree. Sandbox rooms load no project context.
+
+### Per-room worktrees (`worktree_repos`)
+
+Most ide rooms mount the *same* host tree, and turns in different rooms run
+concurrently — serialisation is per member, not per tree. Two agents editing
+one working tree lose each other's edits, stage each other's files, or test a
+state that never existed, all without an error.
+
+A room may declare `worktree_repos`: repo paths **relative to its own
+`ide_path`**. Each gets a private `git worktree` on `retinue/room/<room-id>`,
+bind-mounted over that path inside `/workspace`. The agent still sees
+`/workspace/infra` — it is simply theirs alone.
+
+```bash
+retinue-rooms create "Infra work" --members mangus \
+  --workspace ide --worktree-repos infra
+```
+
+- **Opt-in.** A room that declares nothing behaves exactly as before, so this
+  changes no existing room until you set the field.
+- **Never `main`.** Git refuses one branch in two worktrees, which is the
+  interlock we want: the room commits to its own branch and a human merges on
+  the host, so no agent writes to `main` directly.
+- **Name a repo, not the tree.** An IDE root is usually a *container* of many
+  repos and not a repo itself, so `worktree_repos: ["."]` is rejected — name
+  `infra`, `projects/retinue`, and so on. A non-repo path is refused with a
+  message saying so.
+- **Fails closed.** If a declared worktree cannot be prepared the turn is
+  refused. A room that believes it is isolated but is not is worse than a room
+  that will not start.
+- Worktrees live under `$HERMES_HOME/worktrees/<room-id>/<repo>`
+  (`RETINUE_WORKTREE_ROOT` overrides) — outside the mounted tree, so one
+  room's checkout never appears inside another room's mount.
+
+Everything under `/workspace` that is *not* declared remains the shared tree.
 
 ## Broker identity (per-turn member credential)
 

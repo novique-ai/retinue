@@ -25,6 +25,7 @@ from typing import Any, Dict, Iterator, List, Optional
 
 from tools import workspace_context
 
+from . import worktrees
 from .engine import Room
 
 WORKSPACE_SANDBOX = "sandbox"
@@ -126,12 +127,28 @@ def resolve_ide_path(explicit: Optional[str] = None) -> str:
     return path
 
 
+def room_worktree_repos(room: Room) -> List[str]:
+    """Declared worktree repos, but only where they can apply (ide rooms)."""
+    if parse_workspace(room.workspace) != WORKSPACE_IDE:
+        return []
+    return worktrees.parse_worktree_repos(getattr(room, "worktree_repos", None))
+
+
 def _room_overlay_volumes(room: Room) -> List[str]:
     mode = parse_workspace(room.workspace)
     volumes: List[str] = []
     if mode == WORKSPACE_IDE:
         path = resolve_ide_path(room.ide_path)
         volumes.append(f"{path}:{CONTAINER_MOUNT}:rw")
+        # After the workspace mount, so each nested bind wins over the tree
+        # underneath it (novique-ai/retinue#169).
+        repos = room_worktree_repos(room)
+        if repos:
+            volumes.extend(
+                worktrees.worktree_volumes(
+                    room.id, repos, worktrees.resolve_worktree_root(), CONTAINER_MOUNT
+                )
+            )
     shared = resolve_shared_dir()
     if shared:
         volumes.append(f"{shared}:{SHARED_MOUNT}:{shared_mode_for(room)}")
@@ -229,7 +246,13 @@ def list_folders(raw: Optional[str] = None) -> Dict[str, Any]:
 
 
 def apply_workspace_fields(
-    room: Room, *, workspace: object = None, ide_path: object = None, touching_path: bool = False
+    room: Room,
+    *,
+    workspace: object = None,
+    ide_path: object = None,
+    touching_path: bool = False,
+    worktree_repos: object = None,
+    touching_worktrees: bool = False,
 ) -> Room:
     """Set workspace mode + resolved ide_path on *room*. Mutates and returns it."""
     mode = parse_workspace(workspace if workspace is not None else room.workspace)
@@ -237,8 +260,13 @@ def apply_workspace_fields(
     if mode == WORKSPACE_IDE:
         raw = ide_path if touching_path or ide_path is not None else room.ide_path
         room.ide_path = resolve_ide_path(None if raw is None else str(raw))
+        if touching_worktrees or worktree_repos is not None:
+            room.worktree_repos = worktrees.parse_worktree_repos(worktree_repos)
     else:
         room.ide_path = None
+        # A sandbox room has no host tree to isolate; keeping the list would
+        # silently re-arm on a later switch back to ide.
+        room.worktree_repos = []
     return room
 
 
@@ -302,6 +330,16 @@ def apply_room_workspace(
     the wrong tree leaks into whatever runs next. The gateway loop, which owns
     the process, still publishes normally.
     """
+    repos = room_worktree_repos(room)
+    if repos:
+        # Fail closed. A room that believes it is isolated but is not is worse
+        # than a room that refuses to start (novique-ai/retinue#169).
+        worktrees.ensure_worktrees(
+            room.id,
+            resolve_ide_path(room.ide_path),
+            repos,
+            worktrees.resolve_worktree_root(),
+        )
     overlay = overlay_env(room, home_dir)
     ensure_share_layout(room)
     if publish_invariants:
