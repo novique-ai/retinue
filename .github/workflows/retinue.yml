@@ -55,12 +55,10 @@ jobs:
         working-directory: retinue-web
         run: |
           npm ci
-          # Colocated src/**/*.test.ts, named explicitly: a glob that matches
-          # nothing exits 0 under `node --test`, so an added-then-renamed suite
-          # would stop running without anything going red.
-          node --experimental-strip-types --test \
-            src/voice/ptt.test.ts \
-            src/thinking.test.ts
+          # The runner walks test/ and src/ for *.test.ts(x) and hard-fails on
+          # an empty scan. Naming entry points here instead is what left
+          # test/cron.ui.test.tsx unexecuted since it was written (#180).
+          node test/run-ui-tests.mjs
           npm run build
 
   retinue-delta:
