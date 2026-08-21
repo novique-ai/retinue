@@ -78,6 +78,11 @@ _PY_RELEVANT_SITE = ("website/static/oauth/",)
 # can't get push access — it runs on an ephemeral runner with zero write perms.
 _CI_REVIEW_FILES = {
     ".prettierrc",
+    # The body of the `All required checks pass` gate. Branch protection
+    # requires that one check, so a PR that edits this file is editing the
+    # thing deciding whether that PR may merge. Same class as a workflow file,
+    # and it lives outside .github/ only because it has unit tests.
+    "scripts/ci/evaluate_required_checks.py",
 }
 _CI_REVIEW_PATHS = (".github/workflows/", ".github/actions/")
 

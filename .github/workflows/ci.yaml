@@ -230,32 +230,26 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # Narrower than the workflow default. This job now checks out and runs
+    # PR-authored code (the evaluator below), so it must not carry the
+    # orchestrator's pull-requests/security-events write scopes.
+    permissions:
+      contents: read
     outputs:
       needs-json: ${{ steps.evaluate.outputs.needs-json }}
     steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # The decision lives in scripts/ci/evaluate_required_checks.py, covered
+      # by tests/ci/test_evaluate_required_checks.py. It used to be a heredoc
+      # here, which is how it went years without anyone noticing it passed a
+      # ``cancelled`` job (#176): a gate nobody can write a test against is a
+      # gate nobody can check.
       - name: Evaluate job results
         id: evaluate
         env:
           NEEDS: ${{ toJSON(needs) }}
-        run: |
-          echo "$NEEDS" | python3 -c "
-          import json, sys
-          needs = json.load(sys.stdin)
-          # Emit compact {job_name: result} for the comment assembler.
-          compact = {name: info['result'] for name, info in needs.items()}
-          print(f'needs-json={json.dumps(compact)}')
-          with open('$GITHUB_OUTPUT', 'a') as f:
-              f.write(f'needs-json={json.dumps(compact)}\n')
-          failed = [name for name, info in needs.items() if info['result'] == 'failure']
-          for name, info in sorted(needs.items()):
-              result = info['result']
-              icon = '✅' if result in ('success', 'skipped') else '❌'
-              print(f'{icon} {name}: {result}')
-          if failed:
-              print(f'::error::{len(failed)} job(s) failed: {\", \".join(failed)}')
-              sys.exit(1)
-          print('All checks passed (or were skipped)')
-          "
+        run: echo "$NEEDS" | python3 scripts/ci/evaluate_required_checks.py
 
   # ─────────────────────────────────────────────────────────────────────
   # CI timing report: collect per-job/step durations from the GitHub API,

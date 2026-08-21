@@ -26,6 +26,18 @@ if not hasattr(_mcp_server_mod, "MCPServer"):
     )
 
 
+# How long the worker may take to answer its first /tools.
+#
+# Answering means: boot a fresh interpreter, import the agent stack, spawn the
+# profile-local MCP server as a further subprocess, complete the stdio
+# handshake, and enumerate its tools. At 10s this was a startup race, not an
+# assertion — the #176 flake, red on loaded runners running twelve slices of
+# per-file pytest subprocesses in parallel and green on an idle laptop. The
+# bound only has to be too short to hang the suite; a worker that never
+# answers still fails, just later.
+_RESPONSE_TIMEOUT_S = 120
+
+
 def test_profile_local_mcp_tool_is_visible_in_slash_worker(tmp_path):
     profile_home = tmp_path / "profile-home"
     profile_home.mkdir()
@@ -88,20 +100,36 @@ def test_profile_local_mcp_tool_is_visible_in_slash_worker(tmp_path):
         cwd=tmp_path,
     )
     output: queue.Queue[str] = queue.Queue()
+    errors: list[str] = []
     try:
         assert proc.stdin is not None
         assert proc.stdout is not None
+        assert proc.stderr is not None
         stdout = proc.stdout
+        stderr = proc.stderr
         threading.Thread(
             target=lambda: output.put(stdout.readline()),
+            daemon=True,
+        ).start()
+        # Drain stderr concurrently. Without this the only evidence a timeout
+        # left behind was "no response within 10 seconds" — no traceback, no
+        # exit status — which is why this test recurred in #176 for weeks
+        # without anyone being able to say why. A full stderr pipe would also
+        # deadlock the worker before it could answer.
+        threading.Thread(
+            target=lambda: errors.extend(iter(stderr.readline, "")),
             daemon=True,
         ).start()
         proc.stdin.write(json.dumps({"id": 1, "command": "/tools"}) + "\n")
         proc.stdin.flush()
         try:
-            line = output.get(timeout=10)
+            line = output.get(timeout=_RESPONSE_TIMEOUT_S)
         except queue.Empty:
-            pytest.fail("slash worker produced no /tools response within 10 seconds")
+            pytest.fail(
+                f"slash worker produced no /tools response within "
+                f"{_RESPONSE_TIMEOUT_S:.0f}s (exit status: {proc.poll()})\n"
+                f"--- worker stderr ---\n{''.join(errors) or '(empty)'}"
+            )
         response = json.loads(line)
         assert response["ok"] is True
         assert "mcp__profileprobe__hermes_61922_profile_probe" in response["output"]
