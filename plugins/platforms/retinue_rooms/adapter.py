@@ -1567,6 +1567,9 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         planned_room = engine.with_members(room, cycle_members)
         queue = engine.plan_user_turns(planned_room, user_message.text, names)
         attempted: List[str] = []
+        replies: List[tuple[str, str]] = []
+        noticed: List[str] = []
+        posted_drop = False
         turns_taken = 0
 
         async def run_speaker(member: str) -> tuple[Optional[str], str]:
@@ -1659,6 +1662,8 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             return engine.TURN_SPEAK, reply
 
         def merge_into(target: List[str], member: str, posted_text: str) -> None:
+            if posted_text:
+                replies.append((member, posted_text))
             target.extend(
                 engine.merge_followups(
                     engine.with_members(room, cycle_members),
@@ -1670,6 +1675,31 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
                 )
             )
 
+        def note_queued(queued: List[str]) -> None:
+            noticed.extend(queued)
+
+        def post_pending_drop(reason: str, used: int) -> None:
+            """One transcript line when a mention/queue dies on a budget (#189)."""
+            nonlocal posted_drop
+            if posted_drop or self._stop_event(room_id).is_set():
+                return
+            pending = engine.pending_mentioned(
+                planned_room,
+                replies,
+                attempted,
+                names,
+                exclude=noticed,
+            )
+            text = engine.dropped_pending_notice(
+                engine.dropped_pending(pending, reason=reason, used=used),
+                names,
+                cycle_members,
+            )
+            if not text:
+                return
+            self._post_system(room_id, text)
+            posted_drop = True
+
         # Phase 1: first planned wave (mentions / lead) plus @mention follow-ups.
         first_wave_budget_hit = False
         while queue:
@@ -1679,6 +1709,7 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
                 self._post_system(
                     room_id, engine.cycle_budget_notice(budget, queue)
                 )
+                note_queued(queue)
                 first_wave_budget_hit = True
                 break
             wave, queue = engine.take_wave(queue, budget - turns_taken)
@@ -1696,15 +1727,20 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         # Phase 2: bounded speak-or-pass follow-up rounds. The room
         # settles when a full round adds no speech, or the round cap
         # / turn budget is hit. Budget remains the hard ceiling.
-        if self._stop_event(room_id).is_set() or first_wave_budget_hit:
+        rounds_used = 0
+        if self._stop_event(room_id).is_set():
+            return
+        if first_wave_budget_hit:
+            post_pending_drop(engine.REASON_AGENT_TURNS, turns_taken)
             return
         # A message that names its members is answered by them. Laps are
         # for an undirected statement, where the default responder spoke
         # and someone else may have something to add (#160).
         if engine.is_directed(user_message.text, cycle_members, names):
+            if turns_taken >= budget:
+                post_pending_drop(engine.REASON_AGENT_TURNS, turns_taken)
             return
         skip = list(attempted)
-        rounds_used = 0
         while rounds_used < max_rounds:
             if self._stop_event(room_id).is_set():
                 break
@@ -1715,6 +1751,7 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
                     self._post_system(
                         room_id, engine.cycle_budget_notice(budget, leftover)
                     )
+                    note_queued(leftover)
                 break
             round_queue = engine.plan_followup_round(cycle_members, skip, remaining)
             if not round_queue:
@@ -1729,6 +1766,8 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
                         self._post_system(
                             room_id, engine.cycle_budget_notice(budget, round_queue)
                         )
+                        note_queued(round_queue)
+                        post_pending_drop(engine.REASON_AGENT_TURNS, turns_taken)
                         return
                     break
                 wave, round_queue = engine.take_wave(
@@ -1746,6 +1785,13 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             if engine.followup_round_settled(round_speakers):
                 break
             skip = list(round_speakers)
+
+        if self._stop_event(room_id).is_set():
+            return
+        if turns_taken >= budget:
+            post_pending_drop(engine.REASON_AGENT_TURNS, turns_taken)
+        elif rounds_used >= max_rounds:
+            post_pending_drop(engine.REASON_FOLLOWUP_ROUNDS, rounds_used)
 
     def _unseen(self, room: Room, member: str) -> tuple[list, list]:
         """(readable, respondable) transcript slices for *member*.
