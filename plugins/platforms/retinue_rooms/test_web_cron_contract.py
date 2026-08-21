@@ -1,4 +1,10 @@
-"""Cheap source tripwires around the executed scheduled-jobs UI suite."""
+"""Cheap source tripwires around the scheduled-jobs UI suite, and the wiring
+that makes it execute.
+
+The substring checks here are tripwires, not coverage. `test/cron.ui.test.tsx`
+is the coverage — and until #180 nothing in CI ran it, which is why these
+tripwires had grown to stand in for it.
+"""
 
 from __future__ import annotations
 
@@ -7,6 +13,7 @@ import re
 import subprocess
 
 import pytest
+import yaml
 
 
 ROOT = os.path.dirname(
@@ -93,18 +100,49 @@ def test_app_wires_scheduled_and_save_routine_modals():
     assert source.count("window.prompt(") == 4
 
 
-def test_ui_runner_exists_and_package_manifest_is_unchanged():
+def _web_build_run_block() -> str:
+    """The shell body of retinue.yml's `web-build` job."""
+    workflow = yaml.safe_load(_read(".github/workflows/retinue.yml"))
+    steps = workflow["jobs"]["web-build"]["steps"]
+    return "\n".join(str(step.get("run") or "") for step in steps)
+
+
+def test_ci_runs_the_ui_suite_runner_rather_than_naming_entry_points():
+    """#180: naming entry points is how a whole suite went unexecuted.
+
+    `test/cron.ui.test.tsx` was never run by CI from the day it was written —
+    `retinue-web` is not an npm workspace, so `js-tests.yml` never sees it, and
+    the web job listed individual files. Its only "coverage" was the substring
+    matching in this module, which cannot fail on a broken assertion.
+    """
+    run = _web_build_run_block()
+
+    assert "test/run-ui-tests.mjs" in run, (
+        "retinue.yml's web-build job must invoke the UI runner, which discovers "
+        "every suite, instead of naming entry points that drift out of coverage"
+    )
+    named = [
+        line
+        for line in run.splitlines()
+        if "--test" in line and not line.lstrip().startswith("#")
+    ]
+    assert not named, (
+        "web-build names test entry points directly: "
+        f"{named} — add the suite where the runner walks instead"
+    )
+
+
+def test_ui_runner_walks_both_suite_homes():
+    """An empty or half scan must be impossible to ship quietly."""
     runner = _read("retinue-web/test/run-ui-tests.mjs")
-    suite = _read("retinue-web/test/cron.ui.test.tsx")
     assert "esbuild" in runner and '"--test"' in runner
     assert "readdirSync" in runner and r"\.test\.(ts|tsx)$" in runner
-    for marker in (
-        "node:test", "node:assert", "../src/cron", "fetch", "cron-last-run",
-        "cron-next-run", "cron-filter-owner", "cron-action-delete",
-        "submitSaveRoutine", "formFromRow", "roomless", "prompt", "skill",
-        "cron-form-submit",
-    ):
-        assert marker in suite
+    assert 'join(root, "test")' in runner and 'join(root, "src")' in runner
+    assert "throw new Error" in runner
+
+
+def test_package_manifest_is_unchanged():
+    """Fork policy: retinue-web/package.json stays byte-identical to its base."""
     result = subprocess.run(
         ["git", "show", "56516ec7faa075bab1b1c321962bde38ff79f292:retinue-web/package.json"],
         cwd=ROOT,

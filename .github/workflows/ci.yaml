@@ -199,7 +199,12 @@ jobs:
   # status even when some deps were skipped. Only actual ``failure``
   # results cause it to fail; ``skipped`` is treated as success.
   #
-  # Branch protection should require ONLY this check.
+  # Upstream requires ONLY this check. This fork does not: the `Protect main`
+  # ruleset requires `Retinue delta` (retinue.yml) and nothing else, so this
+  # gate is advisory here — the red X everyone reads, not the one that blocks.
+  # Verified against the live ruleset 2026-08-21; the previous wording claimed
+  # it was required and was simply false. Two files each claiming to be "the"
+  # required check is how nobody notices which one actually is.
   #
   # Outputs ``needs-json`` — a compact ``{job_name: result}`` dict — so
   # the live comment poller can list failed jobs in the PR comment.
