@@ -125,3 +125,62 @@ def test_ide_briefing_teaches_the_workspace_scope(tmp_path):
 def test_sandbox_briefing_does_not_mention_the_fence():
     text = engine.room_briefing(_room(workspace="sandbox"), "dev", ["Mark"])
     assert "ENTIRE IDE" not in text
+
+
+# --- the fence is about the BIG tree, not about ide rooms (infra-90xc) ------
+
+
+def test_room_scoped_to_one_repo_is_not_fenced(tmp_path, monkeypatch):
+    root = tmp_path / "IDE"
+    scoped = root / "projects" / "labelwatch"
+    scoped.mkdir(parents=True)
+    monkeypatch.setenv("RETINUE_IDE_ROOT", str(root))
+    env = ide.overlay_env(_room(workspace="ide", ide_path=str(scoped)))
+    assert workspace_context.IDE_WORKSPACE_FLAG not in env
+    with workspace_context.workspace(env):
+        # Recursively searching one repo is the correct move, not a mistake.
+        assert workspace_context.ide_root_scan_refusal("grep -rn x /workspace") is None
+
+
+def test_room_mounted_at_the_ide_root_is_still_fenced(tmp_path, monkeypatch):
+    root = tmp_path / "IDE"
+    root.mkdir()
+    monkeypatch.setenv("RETINUE_IDE_ROOT", str(root))
+    env = ide.overlay_env(_room(workspace="ide", ide_path=str(root)))
+    assert env.get(workspace_context.IDE_WORKSPACE_FLAG) == "1"
+    with workspace_context.workspace(env):
+        assert workspace_context.ide_root_scan_refusal("grep -rn x /workspace") is not None
+
+
+def test_unconfigured_root_keeps_fencing(tmp_path, monkeypatch):
+    monkeypatch.delenv("RETINUE_IDE_ROOT", raising=False)
+    env = ide.overlay_env(_ide_room(tmp_path))
+    assert env.get(workspace_context.IDE_WORKSPACE_FLAG) == "1"
+
+
+# --- the briefing must describe the mount the room actually has -------------
+
+
+def _briefing(room) -> str:
+    return engine.room_briefing(room, "dev", ["Mark"])
+
+
+def test_briefing_tells_a_scoped_room_what_workspace_really_is(tmp_path, monkeypatch):
+    root = tmp_path / "IDE"
+    scoped = root / "projects" / "labelwatch"
+    scoped.mkdir(parents=True)
+    monkeypatch.setenv("RETINUE_IDE_ROOT", str(root))
+    text = _briefing(_room(workspace="ide", ide_path=str(scoped)))
+    assert "ENTIRE IDE" not in text
+    assert str(scoped) in text
+    # The retainer read `projects/labelwatch/qa/test-plan.yaml` in AGENTS.md,
+    # could not find it under its mount, and reported the doc as wrong.
+    assert "projects/labelwatch/..." in text
+
+
+def test_briefing_still_warns_a_root_mounted_room(tmp_path, monkeypatch):
+    root = tmp_path / "IDE"
+    root.mkdir()
+    monkeypatch.setenv("RETINUE_IDE_ROOT", str(root))
+    text = _briefing(_room(workspace="ide", ide_path=str(root)))
+    assert "ENTIRE IDE" in text

@@ -1964,9 +1964,21 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         try:
             from tools import turn_env as _turn_env_mod
 
-            _tenv_token = _turn_env_mod.set_turn_env(
-                {brokertoken.TOKEN_ENV: brokertoken.mint(self._home_dir(), member)}
-            )
+            _tenv = {
+                brokertoken.TOKEN_ENV: brokertoken.mint(self._home_dir(), member)
+            }
+            try:
+                # What /workspace actually IS on the host this turn, so the
+                # broker translates a container cwd instead of assuming the
+                # room is mounted at the IDE root (infra-90xc). Computed
+                # separately: a room record the mount map cannot resolve must
+                # not also cost the retainer its broker identity.
+                _tenv[ide.MOUNT_MAP_ENV] = json.dumps(
+                    ide.workspace_mount_map(room), separators=(",", ":")
+                )
+            except Exception:
+                logger.debug("workspace mount map failed", exc_info=True)
+            _tenv_token = _turn_env_mod.set_turn_env(_tenv)
         except Exception:
             logger.debug("broker token bind failed", exc_info=True)
         # Provider stalls/retries surface on the transcript instead of only
