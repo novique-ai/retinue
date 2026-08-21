@@ -416,3 +416,116 @@ def test_lead_can_still_pull_a_teammate_in_with_rounds_off(tmp_path, monkeypatch
     asyncio.run(_run_locked(adapter, room, user_message))
 
     assert calls == ["scout", "critic"]
+
+
+# ── round/turn budget drop is transcript-visible (#189) ──────────────────
+
+
+def test_round_cap_posts_notice_when_mention_is_dropped(tmp_path, monkeypatch):
+    """Last followup round @mentions a member who already spoke.
+
+    There is no next round, so the assignment would vanish without a
+    system line. Budget behaviour is unchanged: claude is not given
+    another turn.
+    """
+    adapter = _adapter(tmp_path, monkeypatch)
+    room = _room(
+        members=["scout", "claude"],
+        lead="scout",
+        max_followup_rounds=2,
+        max_agent_turns=8,
+    )
+    adapter.store.create(room)
+    user_message = adapter.store.append(
+        room.id,
+        RoomMessage(seq=0, ts=0, kind=KIND_USER, speaker="Mark", text="hello"),
+    )
+    calls: list[str] = []
+
+    async def fake_turn(_room, member):
+        calls.append(member)
+        if member == "scout" and calls.count("scout") == 1:
+            return True, "lead start"
+        if member == "claude":
+            return True, "claude first"
+        if member == "scout":
+            return True, "@claude go on T5-T8"
+        return True, engine.pass_payload_text()
+
+    monkeypatch.setattr(adapter, "_agent_turn", fake_turn)
+    asyncio.run(_run_locked(adapter, room, user_message))
+
+    assert calls == ["scout", "claude", "scout"]
+    assert [speaker for speaker, _text in _agent_texts(adapter.store, room.id)] == [
+        "scout",
+        "claude",
+        "scout",
+    ]
+    expected = engine.dropped_pending_notice(
+        engine.dropped_pending(
+            ["claude"], reason=engine.REASON_FOLLOWUP_ROUNDS, used=2
+        )
+    )
+    assert expected in _system_texts(adapter.store, room.id)
+    assert _system_texts(adapter.store, room.id).count(expected) == 1
+
+
+def test_turn_budget_posts_notice_when_mention_cannot_run(tmp_path, monkeypatch):
+    """A first-wave @mention with no remaining turns is dropped silently
+    today because merge_followups returns [] and the leftover queue is
+    empty, so cycle_budget_notice never fires.
+    """
+    adapter = _adapter(tmp_path, monkeypatch)
+    room = _room(
+        members=["scout", "claude"],
+        lead="scout",
+        max_agent_turns=1,
+        max_followup_rounds=0,
+    )
+    adapter.store.create(room)
+    user_message = adapter.store.append(
+        room.id,
+        RoomMessage(seq=0, ts=0, kind=KIND_USER, speaker="Mark", text="hello"),
+    )
+
+    async def fake_turn(_room, member):
+        if member == "scout":
+            return True, "@claude go on T5-T8"
+        return True, f"{member} answered"
+
+    monkeypatch.setattr(adapter, "_agent_turn", fake_turn)
+    asyncio.run(_run_locked(adapter, room, user_message))
+
+    assert [speaker for speaker, _text in _agent_texts(adapter.store, room.id)] == [
+        "scout"
+    ]
+    expected = engine.dropped_pending_notice(
+        engine.dropped_pending(
+            ["claude"], reason=engine.REASON_AGENT_TURNS, used=1
+        )
+    )
+    assert expected in _system_texts(adapter.store, room.id)
+
+
+def test_no_drop_notice_when_mention_still_gets_a_turn(tmp_path, monkeypatch):
+    """Budget left + not already attempted → the mention runs. No notice."""
+    adapter = _adapter(tmp_path, monkeypatch)
+    room = _room(max_followup_rounds=0)
+    adapter.store.create(room)
+    user_message = adapter.store.append(
+        room.id,
+        RoomMessage(seq=0, ts=0, kind=KIND_USER, speaker="Mark", text="hello"),
+    )
+
+    async def fake_turn(_room, member):
+        if member == "scout":
+            return True, "@critic please take this"
+        return True, f"{member} answered"
+
+    monkeypatch.setattr(adapter, "_agent_turn", fake_turn)
+    asyncio.run(_run_locked(adapter, room, user_message))
+
+    assert not any(
+        engine.CYCLE_ROUND_BUDGET_PREFIX in text
+        for text in _system_texts(adapter.store, room.id)
+    )
