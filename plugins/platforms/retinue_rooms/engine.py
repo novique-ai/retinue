@@ -8,6 +8,7 @@ turn-taking rules can be unit-tested without a running Hermes instance
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 import uuid
@@ -1089,13 +1090,46 @@ def room_briefing(
             "/workspace is a bind-mount of that host tree — treat it as the "
             "real project, not a throwaway sandbox."
         )
-        parts.append(
-            "/workspace is the ENTIRE IDE — every repo and data tree on "
-            "this machine — not one project. Work inside the specific repo "
-            "your task names (e.g. /workspace/infra/) and search there. "
-            "Recursive searches rooted at /workspace itself are refused: "
-            "they take minutes and flood your context with output."
-        )
+        # What /workspace IS depends on how the room was scoped, and saying
+        # the wrong one costs the retainer the whole turn: told "/workspace is
+        # the ENTIRE IDE" while mounted on a single repo, it reached for
+        # /workspace/infra/..., found nothing, and reported the repo's own
+        # documented paths as wrong (infra-90xc).
+        from .ide import configured_ide_root, mounts_ide_root, resolve_ide_path
+
+        try:
+            scoped = not mounts_ide_root(room)
+            host = resolve_ide_path(room.ide_path) if scoped else ""
+        except ValueError:
+            # A room record whose path no longer resolves already fails at
+            # container start with a real message. The briefing is not the
+            # place to invent a second failure, so it keeps the old wording.
+            scoped, host = False, ""
+        if not scoped:
+            parts.append(
+                "/workspace is the ENTIRE IDE — every repo and data tree on "
+                "this machine — not one project. Work inside the specific repo "
+                "your task names (e.g. /workspace/infra/) and search there. "
+                "Recursive searches rooted at /workspace itself are refused: "
+                "they take minutes and flood your context with output."
+            )
+        else:
+            root = configured_ide_root()
+            rel = os.path.relpath(host, root) if root else host
+            parts.append(
+                f"/workspace is ONE subtree of this machine's IDE: the host "
+                f"path {host}. The rest of the IDE is NOT mounted — no "
+                f"/workspace/infra, no sibling projects. If the work needs "
+                f"something outside this subtree, say so in the room; do not "
+                f"invent a path."
+            )
+            parts.append(
+                f"Paths in AGENTS.md, runbooks and issue trackers are written "
+                f"relative to the IDE root, so they read as {rel}/... — the "
+                f"same file is /workspace/... for you. A documented path that "
+                f"starts with {rel}/ is not wrong; it is the host's view of "
+                f"your mount."
+            )
         isolated = [str(r) for r in (getattr(room, "worktree_repos", None) or [])]
         if isolated:
             paths = ", ".join(f"/workspace/{r}" for r in isolated)

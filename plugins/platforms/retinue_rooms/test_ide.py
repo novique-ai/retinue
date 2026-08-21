@@ -784,3 +784,87 @@ def test_docker_backend_is_a_checked_precondition(monkeypatch):
 
     monkeypatch.delenv("TERMINAL_ENV", raising=False)
     assert ide.docker_backend_error(), "an unset backend is the default 'local', not docker"
+
+
+# ── host-broker reach from a scoped room (infra-90xc) ────────────────────────
+#
+# A room scoped below the IDE root is the supported shape, not a mistake: it
+# is how a retainer is confined to one product repo. Before these mounts, that
+# confinement silently removed bd, gh, flag-defect, host-git, cr, crm and
+# rm.sh, because every shim reached the socket and the client through
+# /workspace — a path that IS the IDE root only for a room mounted there.
+
+
+def _broker_specs(vols: list[str]) -> list[str]:
+    return [v for v in vols if ide.BROKER_MOUNT in v or ide.BROKER_CLIENT_MOUNT in v]
+
+
+def _ide_root_with_broker(tmp_path):
+    root = tmp_path / "IDE"
+    (root / "data" / "broker").mkdir(parents=True)
+    (root / "infra" / "scripts").mkdir(parents=True)
+    (root / "infra" / "scripts" / "room-broker-client.py").write_text("# client\n")
+    return root
+
+
+def test_scoped_ide_room_still_reaches_the_broker(tmp_path, monkeypatch):
+    monkeypatch.delenv("RETINUE_SHARED_DIR", raising=False)
+    root = _ide_root_with_broker(tmp_path)
+    scoped = root / "projects" / "labelwatch"
+    scoped.mkdir(parents=True)
+    monkeypatch.setenv("RETINUE_IDE_ROOT", str(root))
+    room = _room(workspace="ide", ide_path=str(scoped))
+    vols = json.loads(ide.overlay_env(room)["TERMINAL_DOCKER_VOLUMES"])
+    assert f"{scoped}:/workspace:rw" in vols
+    assert _broker_specs(vols) == [
+        f"{root}/data/broker:{ide.BROKER_MOUNT}:rw",
+        f"{root}/infra/scripts/room-broker-client.py:{ide.BROKER_CLIENT_MOUNT}:ro",
+    ]
+
+
+def test_broker_mounts_skipped_without_an_ide_root(tmp_path, monkeypatch):
+    monkeypatch.delenv("RETINUE_SHARED_DIR", raising=False)
+    monkeypatch.delenv("RETINUE_IDE_ROOT", raising=False)
+    room = _room(workspace="ide", ide_path=str(tmp_path))
+    vols = json.loads(ide.overlay_env(room)["TERMINAL_DOCKER_VOLUMES"])
+    assert _broker_specs(vols) == []
+
+
+def test_broker_mounts_skipped_when_the_socket_dir_is_absent(tmp_path, monkeypatch):
+    monkeypatch.delenv("RETINUE_SHARED_DIR", raising=False)
+    root = tmp_path / "IDE"
+    root.mkdir()
+    monkeypatch.setenv("RETINUE_IDE_ROOT", str(root))
+    room = _room(workspace="ide", ide_path=str(root))
+    vols = json.loads(ide.overlay_env(room)["TERMINAL_DOCKER_VOLUMES"])
+    assert _broker_specs(vols) == []
+
+
+def test_sandbox_room_gets_no_broker_mounts(tmp_path, monkeypatch):
+    monkeypatch.delenv("RETINUE_SHARED_DIR", raising=False)
+    monkeypatch.setenv("RETINUE_IDE_ROOT", str(_ide_root_with_broker(tmp_path)))
+    vols = json.loads(ide.overlay_env(_room(workspace="sandbox"))["TERMINAL_DOCKER_VOLUMES"])
+    assert _broker_specs(vols) == []
+
+
+def test_mount_map_names_the_rooms_real_mount(tmp_path, monkeypatch):
+    root = _ide_root_with_broker(tmp_path)
+    scoped = root / "projects" / "labelwatch"
+    scoped.mkdir(parents=True)
+    monkeypatch.setenv("RETINUE_IDE_ROOT", str(root))
+    room = _room(workspace="ide", ide_path=str(scoped))
+    # Not [["/workspace", str(root)]] — that assumption is the defect.
+    assert ide.workspace_mount_map(room) == [["/workspace", str(scoped)]]
+    assert ide.workspace_mount_map(_room(workspace="sandbox")) == []
+
+
+def test_mount_map_puts_worktree_binds_before_the_workspace(tmp_path, monkeypatch):
+    root = _ide_root_with_broker(tmp_path)
+    (root / "infra").mkdir(exist_ok=True)
+    monkeypatch.setenv("RETINUE_IDE_ROOT", str(root))
+    monkeypatch.setenv("RETINUE_WORKTREE_ROOT", str(tmp_path / "wt"))
+    room = _room(id="r-wt", workspace="ide", ide_path=str(root), worktree_repos=["infra"])
+    pairs = ide.workspace_mount_map(room)
+    assert [p[0] for p in pairs] == ["/workspace/infra", "/workspace"]
+    assert pairs[0][1].startswith(str(tmp_path / "wt"))
+    assert pairs[1][1] == str(root)

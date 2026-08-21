@@ -39,6 +39,24 @@ SHARED_MODE_RO = "ro"
 SHARED_MODE_RW = "rw"
 SHARED_MODES = frozenset({SHARED_MODE_RO, SHARED_MODE_RW})
 
+# Host-broker reach (infra-90xc). The broker socket and its client live under
+# the IDE root, and the shims in the workspace image used to reach them only
+# through /workspace — which is the IDE root ONLY for a room mounted there. A
+# room scoped to one repo (the point of scoping) lost bd, gh, flag-defect,
+# host-git, cr, crm and rm.sh outright: the escalation path a governed
+# retainer is told to use failed with "No such file". These two binds put the
+# socket and the client at fixed paths in EVERY ide room, so reach no longer
+# depends on where the room happens to be scoped. The client rides a bind (not
+# the image) so updating it still needs no rebuild.
+BROKER_MOUNT = "/opt/ide-broker"
+BROKER_CLIENT_MOUNT = "/opt/ide-broker-client.py"
+BROKER_SOCK_REL = ("data", "broker")
+BROKER_CLIENT_REL = ("infra", "scripts", "room-broker-client.py")
+# Container-path → host-path map for the room's mounts, published into each
+# turn so the broker translates a container cwd against what is ACTUALLY
+# mounted instead of assuming /workspace is the IDE root.
+MOUNT_MAP_ENV = "RETINUE_WORKSPACE_MOUNTS"
+
 
 def parse_workspace(value: object) -> str:
     raw = (str(value).strip().lower() if value is not None and str(value).strip() else WORKSPACE_SANDBOX)
@@ -134,6 +152,66 @@ def room_worktree_repos(room: Room) -> List[str]:
     return worktrees.parse_worktree_repos(getattr(room, "worktree_repos", None))
 
 
+def mounts_ide_root(room: Room) -> bool:
+    """True when this room's /workspace IS the whole IDE tree.
+
+    A room scoped to one repo is the supported shape, and several behaviours
+    (the root-scan fence, the briefing) are only correct for the unscoped
+    case. With no configured root there is nothing to compare against, so the
+    answer stays the conservative one: assume the big tree.
+    """
+    if parse_workspace(room.workspace) != WORKSPACE_IDE:
+        return False
+    root = configured_ide_root()
+    if not root:
+        return True
+    return os.path.realpath(resolve_ide_path(room.ide_path)) == os.path.realpath(root)
+
+
+def _broker_volumes() -> List[str]:
+    """Socket + client binds so the host broker is reachable from any ide room.
+
+    Silent when no IDE root is configured, or when the socket directory does
+    not exist yet — a host without the broker service simply has no broker,
+    which is the same answer the retainer got before, minus the misleading
+    "No such file" from a hard-coded /workspace path.
+    """
+    root = configured_ide_root()
+    if not root:
+        return []
+    specs: List[str] = []
+    sock_dir = os.path.join(root, *BROKER_SOCK_REL)
+    if os.path.isdir(sock_dir):
+        specs.append(f"{sock_dir}:{BROKER_MOUNT}:rw")
+    client = os.path.join(root, *BROKER_CLIENT_REL)
+    if os.path.isfile(client):
+        specs.append(f"{client}:{BROKER_CLIENT_MOUNT}:ro")
+    return specs
+
+
+def workspace_mount_map(room: Room) -> List[List[str]]:
+    """``[[container_path, host_path], ...]`` for *room*, longest prefix first.
+
+    The broker receives this per turn. Without it, it maps ``/workspace/x`` to
+    ``<ide_root>/x`` — right only for a room mounted at the IDE root, and
+    quietly wrong for a scoped room (host-git would act on the wrong tree) or
+    for a worktree room (whose nested bind is not under the IDE root at all).
+    """
+    if parse_workspace(room.workspace) != WORKSPACE_IDE:
+        return []
+    path = resolve_ide_path(room.ide_path)
+    pairs: List[List[str]] = [[CONTAINER_MOUNT, path]]
+    for rel in room_worktree_repos(room):
+        pairs.append(
+            [
+                f"{CONTAINER_MOUNT}/{rel}",
+                worktrees.worktree_path(room.id, rel, worktrees.resolve_worktree_root()),
+            ]
+        )
+    pairs.sort(key=lambda pair: len(pair[0]), reverse=True)
+    return pairs
+
+
 def _room_overlay_volumes(room: Room) -> List[str]:
     mode = parse_workspace(room.workspace)
     volumes: List[str] = []
@@ -153,6 +231,7 @@ def _room_overlay_volumes(room: Room) -> List[str]:
                     path,
                 )
             )
+        volumes.extend(_broker_volumes())
     shared = resolve_shared_dir()
     if shared:
         volumes.append(f"{shared}:{SHARED_MOUNT}:{shared_mode_for(room)}")
@@ -196,9 +275,14 @@ def overlay_env(room: Room, home_dir: Optional[str] = None) -> Dict[str, str]:
         os.makedirs(uploads, exist_ok=True)
         volumes.append(f"{uploads}:{CONTAINER_MOUNT}/uploads:ro")
     env["TERMINAL_DOCKER_VOLUMES"] = json.dumps(volumes)
-    if parse_workspace(room.workspace) == WORKSPACE_IDE:
+    if mounts_ide_root(room):
         # Arms the mount-root search fence for this room's commands
         # (workspace_context.ide_root_scan_refusal, novique-ai/retinue#165).
+        # Only for a room mounted at the IDE root: the fence exists because a
+        # root scan crosses every repo on the machine. In a room scoped to one
+        # repo, `grep -r /workspace` is the correct search, and refusing it
+        # (with a message that calls /workspace "the entire host IDE") sent
+        # the retainer hunting for paths that are not mounted.
         env[workspace_context.IDE_WORKSPACE_FLAG] = "1"
     return env
 
