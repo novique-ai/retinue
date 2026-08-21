@@ -44,6 +44,10 @@ def ide_root(tmp_path, monkeypatch):
     return root
 
 
+def worktree_for(room_id, rel, root):
+    return worktrees.worktree_path(room_id, rel, root)
+
+
 def _room(room_id: str, ide_root, repos):
     return Room(
         id=room_id,
@@ -211,3 +215,86 @@ def test_rooms_cannot_take_the_same_branch(ide_root):
         text=True,
     )
     assert proc.returncode != 0
+
+
+# ── the gitdir must be reachable in the container (#172) ─────────────────
+#
+# The first version of this feature shipped green and did not work: every
+# assertion was host-side, so nothing caught that git is unusable INSIDE a
+# room. A linked worktree's `.git` is a file holding an absolute pointer at
+# the source repo, and the worktree bind sits on top of /workspace/<rel>,
+# hiding it. These tests read the pointer git actually wrote and require the
+# mount list to cover it — tying the assertion to the real failure mode
+# rather than to a path string someone believed was right.
+
+
+def _mount_targets(specs):
+    """container path -> host path, from `host:container:mode` specs."""
+    out = {}
+    for spec in specs:
+        host, container, _mode = spec.rsplit(":", 2)
+        out[container] = host
+    return out
+
+
+def _recorded_gitdir(worktree: str) -> str:
+    marker = os.path.join(worktree, ".git")
+    assert os.path.isfile(marker), f"{marker} should be a gitdir pointer file"
+    text = open(marker, encoding="utf-8").read().strip()
+    assert text.startswith("gitdir:"), text
+    return text.split(":", 1)[1].strip()
+
+
+def test_the_recorded_gitdir_is_covered_by_a_mount(ide_root):
+    root = worktrees.resolve_worktree_root()
+    worktrees.ensure_worktree(str(ide_root), "infra", "r1", root)
+    gitdir = _recorded_gitdir(worktree_for("r1", "infra", root))
+
+    specs = worktrees.worktree_volumes(
+        "r1", ["infra"], root, "/workspace", str(ide_root)
+    )
+    targets = _mount_targets(specs)
+
+    covering = [
+        c for c in targets if gitdir == c or gitdir.startswith(c.rstrip("/") + os.sep)
+    ]
+    assert covering, (
+        f"nothing mounts {gitdir!r}, which is where the worktree's .git file "
+        f"points — git inside the room would fail with 'not a git repository'. "
+        f"mounts: {sorted(targets)}"
+    )
+
+
+def test_the_gitdir_mount_maps_host_path_to_the_identical_container_path(ide_root):
+    # Same path on both sides is what keeps the absolute pointer valid for the
+    # host too, so the operator can still merge the room's branch.
+    root = worktrees.resolve_worktree_root()
+    specs = worktrees.worktree_volumes(
+        "r1", ["infra"], root, "/workspace", str(ide_root)
+    )
+    git_spec = [s for s in specs if s.endswith(":rw") and "/.git:" in s]
+    assert git_spec, f"no .git bind in {specs}"
+    host, container, _ = git_spec[0].rsplit(":", 2)
+    assert host == container, f"gitdir mount is not path-identical: {git_spec[0]}"
+    assert host == str(ide_root / "infra" / ".git")
+
+
+def test_the_worktree_bind_still_shadows_the_shared_tree(ide_root):
+    # The .git mount must not disturb the ordering that gives the room its
+    # private checkout.
+    root = worktrees.resolve_worktree_root()
+    specs = worktrees.worktree_volumes(
+        "r1", ["infra"], root, "/workspace", str(ide_root)
+    )
+    targets = list(_mount_targets(specs))
+    assert "/workspace/infra" in targets
+
+
+def test_a_source_repo_that_is_itself_a_worktree_is_refused(ide_root, tmp_path):
+    # Its real git dir lives elsewhere, so one .git bind would not cover it.
+    root = worktrees.resolve_worktree_root()
+    nested = tmp_path / "IDE" / "nested"
+    _git(str(ide_root / "infra"), "worktree", "add", "-b", "nested", str(nested))
+    with pytest.raises(worktrees.WorktreeError) as err:
+        worktrees.ensure_worktree(str(ide_root), "nested", "r2", root)
+    assert "linked git worktree" in str(err.value)
