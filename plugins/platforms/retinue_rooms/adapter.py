@@ -62,6 +62,23 @@ def _evict_room_environment(cache_key: str) -> None:
 
     terminal_tool._evict_environment_for_task(cache_key)
 
+
+def _room_container_key(room: Optional[Room]) -> Optional[str]:
+    """This room's container key, or ``None`` if it cannot be computed.
+
+    Used to notice that an edit changed the room's container identity. A room
+    whose ide_path no longer resolves already fails at container start with a
+    real message; it must not also make an unrelated edit (a rename, an
+    invite) raise from the eviction bookkeeping.
+    """
+    if room is None:
+        return None
+    try:
+        return ide.container_key_for_room(room)
+    except Exception:
+        logger.debug("container key unavailable for room", exc_info=True)
+        return None
+
 # Parallel turns share one adapter.send(chat_id=room). The gateway's notify
 # metadata does not echo event.metadata, and send() runs AFTER the runner
 # leaves _profile_runtime_scope — so HERMES_HOME is the default home for
@@ -540,7 +557,17 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         if room is None:
             raise KeyError(room_id)
         touched = False
-        overlay_key_before: Optional[str] = None
+        # Computed BEFORE any mutation. The roster is part of the container's
+        # identity now (each member's skills are mounted, #188), and the
+        # members edit lands further down this method — reading the key after
+        # it would compare the new room against itself and evict nothing.
+        overlay_touched = any(
+            key in body
+            for key in ("workspace", "ide_path", "shared_mode", "worktree_repos", "members")
+        )
+        overlay_key_before: Optional[str] = (
+            _room_container_key(room) if overlay_touched else None
+        )
         overlay_key_after: Optional[str] = None
         if "name" in body:
             name = str(body.get("name") or "").strip()
@@ -582,12 +609,6 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         if "max_followup_rounds" in body and body.get("max_followup_rounds") is not None:
             room.max_followup_rounds = max(0, int(body.get("max_followup_rounds")))
             touched = True
-        overlay_touched = any(
-            key in body
-            for key in ("workspace", "ide_path", "shared_mode", "worktree_repos")
-        )
-        if overlay_touched:
-            overlay_key_before = ide.container_key_for_room(room)
         if "workspace" in body or "ide_path" in body or "worktree_repos" in body:
             ide.apply_workspace_fields(
                 room,
@@ -615,7 +636,7 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         if not touched:
             raise ValueError("nothing to update")
         if overlay_touched:
-            overlay_key_after = ide.container_key_for_room(room)
+            overlay_key_after = _room_container_key(room)
         self.store.update(room)
         if overlay_key_before and overlay_key_after and overlay_key_before != overlay_key_after:
             _evict_room_environment(overlay_key_before)
@@ -646,7 +667,13 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
                 raise ValueError(f"{member} is already a member")
             room.members.append(member)
 
+        # The newcomer's skills can only be mounted by a container created
+        # after they joined (#188), so the roster is part of the container
+        # key: the room re-keys here and the next cycle builds a container
+        # that has their dir. Dispose the old one instead of leaking it.
+        key_before = _room_container_key(self.store.get(room_id))
         self.store.mutate(room_id, add)
+        self._evict_on_rekey(room_id, key_before)
         posted = self._post_system(room_id, engine.member_joined_notice(member))
         head = posted.seq if posted is not None else 0
         room = self.store.mutate(
@@ -671,9 +698,21 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             # last_seen is left in place: a later re-invite resumes
             # at this cursor instead of replaying the room.
 
+        key_before = _room_container_key(self.store.get(room_id))
         room = self.store.mutate(room_id, drop)
+        # A departing member's skills stop being mounted for the same reason
+        # a joining member's start (#188).
+        self._evict_on_rekey(room_id, key_before)
         self._post_system(room_id, engine.member_left_notice(member))
         return self._room_payload(room)
+
+    def _evict_on_rekey(self, room_id: str, key_before: Optional[str]) -> None:
+        """Dispose the room's cached container when its identity changed."""
+        if not key_before:
+            return
+        key_after = _room_container_key(self.store.get(room_id))
+        if key_after and key_after != key_before:
+            _evict_room_environment(key_before)
 
     def _room_payload(self, room: Room) -> Dict[str, Any]:
         unknown = [m for m in room.members if not self._profile_exists(m)]
@@ -1978,6 +2017,17 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
                 )
             except Exception:
                 logger.debug("workspace mount map failed", exc_info=True)
+            try:
+                # Which of the room's member skill mounts is THIS member's
+                # (#188). The container holds every member's dir; only the
+                # turn knows whose turn it is. Unset when the member has no
+                # skills dir, so the var never names a path that is not
+                # mounted.
+                _skills = ide.member_skills_mount_for(member)
+                if _skills:
+                    _tenv[ide.MEMBER_SKILLS_ENV] = _skills
+            except Exception:
+                logger.debug("member skills path failed", exc_info=True)
             _tenv_token = _turn_env_mod.set_turn_env(_tenv)
         except Exception:
             logger.debug("broker token bind failed", exc_info=True)

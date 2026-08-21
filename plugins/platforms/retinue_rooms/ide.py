@@ -19,7 +19,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
+import re
 from contextlib import contextmanager
 from typing import Any, Dict, Iterator, List, Optional
 
@@ -56,6 +58,32 @@ BROKER_CLIENT_REL = ("infra", "scripts", "room-broker-client.py")
 # turn so the broker translates a container cwd against what is ACTUALLY
 # mounted instead of assuming /workspace is the IDE root.
 MOUNT_MAP_ENV = "RETINUE_WORKSPACE_MOUNTS"
+
+# Per-member skills (novique-ai/retinue#188).
+#
+# A room shares ONE container, created once. Upstream's skills mount
+# (tools/credential_files.get_skills_directory_mount) resolves whichever
+# profile's HERMES_HOME was active at creation, so exactly one member's
+# profiles/<slug>/skills landed in the container — at the canonical
+# /root/.hermes/skills that every skill's own documentation points at. Every
+# other member's skill scripts and their skill-local .env credentials were
+# absent, and the failure read as a missing credential rather than a mount
+# gap (patty's vikunja-pm token, room tally-punchlist-80bd6e).
+#
+# Turns are serialized within a room but the container is not per-member, so
+# a remount per turn is impossible. Instead EVERY member's skills dir is
+# mounted read-only at its own path at creation, and the per-turn env
+# (tools/turn_env.py) plus the briefing point the speaking member at its own.
+# The mount set is part of the container key, so a roster change re-keys the
+# room and the next cycle builds a container that has the new member's dir.
+MEMBER_SKILLS_MOUNT = "/root/.hermes/member_skills"
+MEMBER_SKILLS_ENV = "RETINUE_SKILLS_DIR"
+# Same shape hire.py enforces on a profile slug. A member name that cannot
+# pass this never builds a path, so neither the host source nor the container
+# destination can be steered out of profiles/<slug>/skills.
+_MEMBER_SLUG_OK = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+
+logger = logging.getLogger(__name__)
 
 
 def parse_workspace(value: object) -> str:
@@ -212,6 +240,96 @@ def workspace_mount_map(room: Room) -> List[List[str]]:
     return pairs
 
 
+def workspace_home() -> str:
+    """The home that holds ``profiles/<slug>/`` — never a member's own home.
+
+    Deliberately reads the PROCESS environment, the same way the adapter's
+    ``_home_dir`` does, and not ``get_hermes_home()``: during a member's turn
+    that resolves to ``.../profiles/<member>``, which would make the mount set
+    (and therefore the container key) depend on who spoke first.
+    """
+    return os.getenv("HERMES_HOME") or os.path.expanduser("~/.hermes")
+
+
+def _has_symlink(path: str) -> bool:
+    """True if anything under *path* is a symlink.
+
+    A bind mount follows symlinks, so a link inside a skills dir would publish
+    its target into the container. Upstream sanitises by copying instead, but
+    its sanitiser keeps ONE process-wide temp dir and deletes it at the start
+    of the next call — sanitising several member dirs in one pass would leave
+    every copy but the last empty. Refusing the mount is the honest answer:
+    the member is told nothing is mounted rather than silently handed a dir
+    that empties itself.
+    """
+    for root, dirs, files in os.walk(path, followlinks=False):
+        for name in dirs + files:
+            if os.path.islink(os.path.join(root, name)):
+                logger.warning(
+                    "rooms: skipping member skills mount, symlink at %s",
+                    os.path.join(root, name),
+                )
+                return True
+    return False
+
+
+def member_skills_host_dir(member: str) -> Optional[str]:
+    """Host ``profiles/<slug>/skills`` for *member*, or ``None``.
+
+    ``None`` covers every reason a mount must not be built: an invalid slug, a
+    member who simply has no skills, and a dir a bind mount cannot be trusted
+    with. A member without skills is normal and must never break the room.
+    """
+    slug = (member or "").strip()
+    if not _MEMBER_SLUG_OK.fullmatch(slug):
+        return None
+    home = workspace_home()
+    # The default profile keeps its skills at the workspace root, not under
+    # profiles/; it is a legal room member, so it gets its own path too.
+    path = (
+        os.path.join(home, "skills")
+        if slug == "default"
+        else os.path.join(home, "profiles", slug, "skills")
+    )
+    if not os.path.isdir(path):
+        return None
+    if _has_symlink(path):
+        return None
+    return os.path.abspath(path)
+
+
+def member_skills_container_path(member: str) -> str:
+    """Where *member*'s own skills are mounted inside the room container."""
+    return f"{MEMBER_SKILLS_MOUNT}/{(member or '').strip()}"
+
+
+def member_skills_mount_for(member: str) -> Optional[str]:
+    """Container path for *member*'s skills, or ``None`` when none is mounted.
+
+    The one question both the per-turn env and the briefing ask. Answering
+    ``None`` rather than a path is the point: advertising a path the container
+    does not have sends the member hunting for a directory that is not there.
+    """
+    if member_skills_host_dir(member) is None:
+        return None
+    return member_skills_container_path(member)
+
+
+def _member_skills_volumes(room: Room) -> List[str]:
+    """``<host skills>:<member path>:ro`` for every member that has skills.
+
+    Sorted and de-duplicated so the same roster in a different order is the
+    same container, and read-only because a room member reads its skills; the
+    host copy is edited on the host.
+    """
+    specs: List[str] = []
+    for slug in sorted({str(m).strip() for m in (room.members or []) if str(m).strip()}):
+        host = member_skills_host_dir(slug)
+        if host:
+            specs.append(f"{host}:{member_skills_container_path(slug)}:ro")
+    return specs
+
+
 def _room_overlay_volumes(room: Room) -> List[str]:
     mode = parse_workspace(room.workspace)
     volumes: List[str] = []
@@ -232,6 +350,9 @@ def _room_overlay_volumes(room: Room) -> List[str]:
                 )
             )
         volumes.extend(_broker_volumes())
+    # Both room kinds: a member's skills are the member's, not the workspace's
+    # — a sandbox room's members lose them exactly the same way (#188).
+    volumes.extend(_member_skills_volumes(room))
     shared = resolve_shared_dir()
     if shared:
         volumes.append(f"{shared}:{SHARED_MOUNT}:{shared_mode_for(room)}")

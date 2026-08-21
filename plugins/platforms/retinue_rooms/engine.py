@@ -1146,6 +1146,25 @@ def room_briefing(
             "This room is sandboxed. Your terminal /workspace is an isolated "
             "container with no host IDE mount."
         )
+    # Your skills, at YOUR path (#188). The room's container is shared, so
+    # the canonical /root/.hermes/skills holds whichever member's skills it
+    # was created from — a non-anchor member following its own skill's
+    # documented container path read someone else's tree, or nothing. Only
+    # said when the mount actually exists: naming a path the container does
+    # not have is worse than saying nothing.
+    from .ide import MEMBER_SKILLS_ENV, member_skills_mount_for
+
+    my_skills = member_skills_mount_for(member)
+    if my_skills:
+        parts.append(
+            f"Your own skills are mounted read-only in your terminal at "
+            f"{my_skills} (also ${MEMBER_SKILLS_ENV}). Run your skill scripts "
+            f"and read their skill-local .env from there, e.g. "
+            f"`python3 {my_skills}/<skill>/scripts/<script>.py`. Do not use "
+            f"/root/.hermes/skills — this room's container is shared, so that "
+            f"path is another member's skills, not yours, even when a SKILL.md "
+            f"says otherwise."
+        )
     # A mount nobody is told about is a mount nobody uses. Only mentioned
     # when it is actually configured, and the read-only case says so — an
     # agent that tries to write to a ro mount fails in the terminal instead

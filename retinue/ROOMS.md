@@ -739,6 +739,36 @@ nobody uses — and an agent that does not know a path is read-only
 discovers it as a terminal error mid-task. When the folder is unset, the
 briefing is unchanged.
 
+## Member skills (`/root/.hermes/member_skills/<slug>`)
+
+A room shares one container, created once. Hermes mounts the *active*
+profile's `skills/` at `/root/.hermes/skills`, so in a multi-member room that
+canonical path holds exactly one member's skills — whichever profile the
+container was created from. Every other member's skill scripts and their
+skill-local `.env` credentials were simply absent, and the failure read as a
+missing credential rather than a missing mount ([#188]).
+
+Every member's `profiles/<slug>/skills` is therefore mounted **read-only** at
+`/root/.hermes/member_skills/<slug>` when the container is created, in both
+`sandbox` and `ide` rooms. The speaking member's turn exports
+`RETINUE_SKILLS_DIR` with its own path, and the per-turn briefing names it —
+so a member runs `python3 $RETINUE_SKILLS_DIR/<skill>/scripts/<script>.py`
+and reads its own skill-local `.env`, whoever else is in the room.
+
+- A member with no skills directory gets no mount, no env var, and no
+  briefing line — the room is unaffected.
+- A skills directory containing a symlink is **not** mounted (a bind mount
+  follows symlinks out of the profile). Copy the file in instead.
+- The mount set is part of the room's container identity, so inviting or
+  removing a member re-keys the room: the next cycle builds a container with
+  the new mounts and the old container is disposed. Container-local state
+  (installed packages, `/root`) resets with it; `/workspace` is a host bind
+  and is untouched.
+- `/root/.hermes/skills` still exists and still holds the creating profile's
+  skills — members are briefed not to use it.
+
+[#188]: https://github.com/novique-ai/retinue/issues/188
+
 ## Deliberate v1 limits
 
 No token-streaming into the room (finals only — the
