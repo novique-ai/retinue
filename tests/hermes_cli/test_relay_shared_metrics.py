@@ -157,12 +157,37 @@ def _legacy_dimensions() -> dict[str, str]:
     }
 
 
+def _wait_out_contention() -> None:
+    """Let a contending writer in THIS process wait for the lock instead of losing it.
+
+    The cross-process tests below assert transactionality: N writers race, and
+    afterwards every increment is present exactly once. That property is about
+    the transaction, not about the clock — but the store's 250ms
+    ``busy_timeout`` is a production choice (telemetry must never stall the
+    agent, and its callers drop a lock error; see ``_export_or_yield``). Left at
+    250ms, ``assert value == 20`` silently doubles as "no writer ever waited
+    longer than 250ms on this runner", which is a wall-clock assertion wearing
+    a correctness assertion's clothes — the shape that made the barrier tests
+    flaky (#176) and the export test fail on `main` (#182).
+
+    Widening it here does not soften anything: a lost update, a torn read, or a
+    double-count still fails. It removes the only reason those tests could go
+    red without a bug. The 250ms path keeps its own coverage in
+    ``test_one_daily_package_survives_workers_losing_the_busy_timeout``.
+
+    Must run inside the child: ``mp.get_context("spawn")`` re-imports this
+    module, so a parent-side patch does not reach it.
+    """
+    SharedMetricsStore._connection.__wrapped__.__kwdefaults__["busy_timeout_ms"] = 30_000
+
+
 def _record_model_calls_in_process(
     database_path: str,
     outbox_directory: str,
     count: int,
     start_barrier: Any | None = None,
 ) -> None:
+    _wait_out_contention()
     if start_barrier is not None:
         start_barrier.wait()
     store = SharedMetricsStore(Path(database_path), Path(outbox_directory))
@@ -175,6 +200,7 @@ def _record_client_active_in_process(
     outbox_directory: str,
     start_barrier: Any,
 ) -> None:
+    _wait_out_contention()
     store = SharedMetricsStore(Path(database_path), Path(outbox_directory))
     start_barrier.wait()
     store.record_client_active(_resource())
@@ -1506,7 +1532,14 @@ def test_one_daily_package_survives_workers_losing_the_busy_timeout(
     assert store.counter_snapshot()[0]["packaged_value"] == 1
 
 
-def test_concurrent_model_call_updates_are_transactional(tmp_path):
+def test_concurrent_model_call_updates_are_transactional(tmp_path, monkeypatch):
+    # Same reasoning as _wait_out_contention: 20 write transactions across two
+    # threads must not double as an assertion that none waited past 250ms.
+    monkeypatch.setitem(
+        SharedMetricsStore._connection.__wrapped__.__kwdefaults__,
+        "busy_timeout_ms",
+        30_000,
+    )
     database_path = tmp_path / "metrics.sqlite3"
     outbox_directory = tmp_path / "outbox"
     SharedMetricsStore(database_path, outbox_directory)
