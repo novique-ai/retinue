@@ -2,7 +2,9 @@
 # Inherited Hermes CI still runs via ci.yml; this workflow is the
 # check contributors should watch on a rooms / web / docs PR.
 #
-# Branch protection should require the job named "Retinue delta".
+# The `Protect main` ruleset requires the job named "Retinue delta" — and, as
+# of 2026-08-21, only that job. ci.yaml's "All required checks pass" runs on
+# every PR and is worth reading, but does not gate a merge here.
 name: Retinue delta
 
 on:
