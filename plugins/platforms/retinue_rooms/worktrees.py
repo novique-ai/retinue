@@ -146,6 +146,16 @@ def ensure_worktree(ide_path: str, rel: str, room_id: str, root: str) -> str:
     """
     source = os.path.join(ide_path, rel.replace("/", os.sep))
     repo = _repo_root(source)
+    if repo is not None and os.path.isfile(os.path.join(repo, ".git")):
+        # `.git` as a FILE means this repo is itself a linked worktree, so its
+        # real git dir lives somewhere else entirely and the single bind-mount
+        # below would not cover it. Refuse rather than hand the room a
+        # checkout whose git cannot resolve (novique-ai/retinue#172).
+        raise WorktreeError(
+            f"{rel!r} is itself a linked git worktree ({source}); isolate the "
+            f"main checkout instead. A room worktree needs the source repo's "
+            f"own .git directory to bind-mount."
+        )
     if repo is None:
         raise WorktreeError(
             f"worktree_repos entry {rel!r} is not a git repository "
@@ -197,15 +207,37 @@ def ensure_worktrees(
     return prepared
 
 
+def source_git_dir(ide_path: str, rel: str) -> str:
+    """Host path of the source repo's ``.git`` for *rel*."""
+    return os.path.join(ide_path, rel.replace("/", os.sep), ".git")
+
+
 def worktree_volumes(
-    room_id: str, repos: List[str], root: str, container_mount: str
+    room_id: str, repos: List[str], root: str, container_mount: str, ide_path: str
 ) -> List[str]:
     """Mount specs layering each worktree over its place in the workspace.
 
     Ordered after the workspace mount by the caller so the nested bind wins.
+
+    Each worktree also needs the SOURCE repo's ``.git`` bound at its own host
+    path (novique-ai/retinue#172). A linked worktree's ``.git`` is a file
+    holding an absolute pointer — ``gitdir: /home/clay/IDE/infra/.git/
+    worktrees/<name>`` — and ``commondir`` resolves relative to that. Inside
+    the container that path does not exist: only the IDE tree is mounted, at
+    ``/workspace``. Worse, the worktree bind sits ON TOP of
+    ``/workspace/<rel>``, hiding the very ``.git`` it depends on. Without this
+    second mount every git command in an isolated room fails with
+    ``fatal: not a git repository`` — isolation that works and git that does
+    not, which is worse than the shared tree it replaced.
+
+    Binding it at the identical host path (rather than rewriting the pointer
+    to a container path) keeps the absolute gitdir valid on BOTH sides, so the
+    operator can still merge the room's branch from the host.
     """
     specs: List[str] = []
     for rel in repos:
         host = worktree_path(room_id, rel, root)
         specs.append(f"{host}:{container_mount}/{rel}:rw")
+        git_dir = source_git_dir(ide_path, rel)
+        specs.append(f"{git_dir}:{git_dir}:rw")
     return specs

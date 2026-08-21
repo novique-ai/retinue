@@ -146,7 +146,11 @@ def _room_overlay_volumes(room: Room) -> List[str]:
         if repos:
             volumes.extend(
                 worktrees.worktree_volumes(
-                    room.id, repos, worktrees.resolve_worktree_root(), CONTAINER_MOUNT
+                    room.id,
+                    repos,
+                    worktrees.resolve_worktree_root(),
+                    CONTAINER_MOUNT,
+                    path,
                 )
             )
     shared = resolve_shared_dir()

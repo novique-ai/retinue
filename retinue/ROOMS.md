@@ -358,6 +358,17 @@ retinue-rooms create "Infra work" --members mangus \
 - Worktrees live under `$HERMES_HOME/worktrees/<room-id>/<repo>`
   (`RETINUE_WORKTREE_ROOT` overrides) — outside the mounted tree, so one
   room's checkout never appears inside another room's mount.
+- The source repo's `.git` is bind-mounted into the room **at its own host
+  path**, alongside the worktree. A linked worktree's `.git` is a file holding
+  an absolute pointer (`gitdir: /…/infra/.git/worktrees/<name>`), and the
+  worktree bind sits on top of `/workspace/<repo>`, hiding the very `.git` it
+  needs. Without that second mount every git command in an isolated room fails
+  with `fatal: not a git repository` (#172). Binding it at the identical path
+  on both sides keeps the pointer valid for the host too, so you can still
+  merge the room's branch normally.
+- A repo that is itself a linked worktree cannot be isolated — its real git
+  dir lives elsewhere and one bind would not cover it. It is refused with a
+  message saying so.
 
 Everything under `/workspace` that is *not* declared remains the shared tree.
 
