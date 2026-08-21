@@ -1377,6 +1377,30 @@ def test_package_export_does_not_chase_concurrent_updates(tmp_path, monkeypatch)
     assert store.counter_snapshot()[0]["packaged_value"] == 2
 
 
+def _export_or_yield(worker_store: SharedMetricsStore, call: str) -> str:
+    """Run one contending export, reporting a busy-timeout loss as production does.
+
+    The store opens with ``busy_timeout=250ms`` deliberately: telemetry must
+    never stall the agent, and every production call site wraps these methods in
+    ``RelayRuntime._safe``, which logs the lock error and drops the work. So a
+    worker that loses a race and exceeds that timeout is behaving correctly, and
+    a test demanding all N workers return normally is asserting a promise the
+    store does not make — it was only ever green because the 5s barrier broke
+    before the contention it was supposed to create (#176).
+
+    The contract the callers below still assert in full is the invariant: one
+    package, one delta, no matter how many workers race. Any exception other
+    than the busy timeout propagates.
+    """
+    try:
+        getattr(worker_store, call)()
+    except sqlite3.OperationalError as exc:
+        if "database is locked" not in str(exc):
+            raise
+        return "busy"
+    return "ok"
+
+
 def test_concurrent_package_builders_commit_one_delta(tmp_path):
     database_path = tmp_path / "metrics.sqlite3"
     outbox_directory = tmp_path / "outbox"
@@ -1384,15 +1408,17 @@ def test_concurrent_package_builders_commit_one_delta(tmp_path):
     store.record_model_call(_dimensions(), _resource())
     ready = threading.Barrier(2)
 
-    def export() -> list[Path]:
+    def export() -> str:
         worker_store = SharedMetricsStore(database_path, outbox_directory)
         ready.wait(timeout=_RENDEZVOUS_TIMEOUT_S)
-        return worker_store.create_and_export_package()
+        return _export_or_yield(worker_store, "create_and_export_package")
 
     with ThreadPoolExecutor(max_workers=2) as executor:
         futures = [executor.submit(export) for _ in range(2)]
-        for future in futures:
-            future.result()
+        outcomes = [future.result() for future in futures]
+
+    # A race where nobody committed is a real failure, not a tolerated loss.
+    assert "ok" in outcomes, outcomes
 
     with sqlite3.connect(database_path) as connection:
         [outbox_count] = connection.execute(
@@ -1413,15 +1439,63 @@ def test_concurrent_due_exports_create_one_daily_package(tmp_path):
     store.record_model_call(_dimensions(), _resource())
     ready = threading.Barrier(8)
 
-    def export() -> None:
+    def export() -> str:
         worker_store = SharedMetricsStore(database_path, outbox_directory)
         ready.wait(timeout=_RENDEZVOUS_TIMEOUT_S)
-        worker_store.create_and_export_package_if_due()
+        return _export_or_yield(worker_store, "create_and_export_package_if_due")
 
     with ThreadPoolExecutor(max_workers=8) as executor:
         futures = [executor.submit(export) for _ in range(8)]
-        for future in futures:
-            future.result()
+        outcomes = [future.result() for future in futures]
+
+    assert "ok" in outcomes, outcomes
+
+    with sqlite3.connect(database_path) as connection:
+        [outbox_count] = connection.execute(
+            "SELECT COUNT(*) FROM package_outbox"
+        ).fetchone()
+    assert outbox_count == 1
+    assert len(list(outbox_directory.glob("*.json"))) == 1
+    assert store.counter_snapshot()[0]["packaged_value"] == 1
+
+
+def test_one_daily_package_survives_workers_losing_the_busy_timeout(
+    tmp_path, monkeypatch
+):
+    """The same race with the busy timeout guaranteed to be exceeded.
+
+    The test above only reaches this state when the runner is loaded enough for
+    a worker to wait out 250ms — which is how it read green here and failed in
+    CI. Squeezing the timeout to 1ms makes the loss certain, so the invariant is
+    asserted against contention every run rather than when the machine happens
+    to be slow.
+
+    `_connection` binds `_BUSY_TIMEOUT_MS` as a keyword-only default at def
+    time, so the module constant is not the knob. `_ensure_schema` passes
+    `_SCHEMA_BUSY_TIMEOUT_MS` explicitly and stays generous, which is what keeps
+    this a write-contention test and not a schema-init one.
+    """
+    monkeypatch.setitem(
+        SharedMetricsStore._connection.__wrapped__.__kwdefaults__,
+        "busy_timeout_ms",
+        1,
+    )
+    database_path = tmp_path / "metrics.sqlite3"
+    outbox_directory = tmp_path / "outbox"
+    store = SharedMetricsStore(database_path, outbox_directory)
+    store.record_model_call(_dimensions(), _resource())
+    ready = threading.Barrier(8)
+
+    def export() -> str:
+        worker_store = SharedMetricsStore(database_path, outbox_directory)
+        ready.wait(timeout=_RENDEZVOUS_TIMEOUT_S)
+        return _export_or_yield(worker_store, "create_and_export_package_if_due")
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [executor.submit(export) for _ in range(8)]
+        outcomes = [future.result() for future in futures]
+
+    assert "ok" in outcomes, outcomes
 
     with sqlite3.connect(database_path) as connection:
         [outbox_count] = connection.execute(
