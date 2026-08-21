@@ -177,6 +177,13 @@ CASES = {
         [".prettierrc"],
         _lanes(python=True, ci_review=True),
     ),
+    # The required-check gate's own body. A PR editing it is editing the thing
+    # that decides whether that PR may merge, so it needs the review label
+    # exactly like a workflow file does.
+    "required-check evaluator → ci_review": (
+        ["scripts/ci/evaluate_required_checks.py"],
+        _lanes(python=True, scan=True, ci_review=True),
+    ),
     "workflow yml → ci_review (also fail-open all)": (
         [".github/workflows/typecheck.yml"],
         DEFAULT,

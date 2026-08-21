@@ -8,6 +8,23 @@ import pytest
 from tools.process_registry import ProcessRegistry
 
 
+def _await_bytes(path, timeout: float) -> bytes:
+    """Block until ``path`` holds a complete newline-terminated payload.
+
+    Returns whatever was last read when the deadline expires, so the caller's
+    assertion reports the actual content instead of a bare timeout.
+    """
+    deadline = time.monotonic() + timeout
+    data = b""
+    while time.monotonic() < deadline:
+        if path.exists():
+            data = path.read_bytes()
+            if data.endswith(b"\n"):
+                return data
+        time.sleep(0.05)
+    return data
+
+
 def test_write_stdin_pty_surrogateescape_roundtrip(tmp_path):
     registry = ProcessRegistry()
     out = tmp_path / "out.bin"
@@ -30,9 +47,13 @@ def test_write_stdin_pty_surrogateescape_roundtrip(tmp_path):
             session.id, b"\xff".decode("utf-8", "surrogateescape") + "\n"
         )
         assert result["status"] == "ok", result
-        deadline = time.monotonic() + 10
-        while time.monotonic() < deadline and not out.exists():
-            time.sleep(0.05)
-        assert out.read_bytes() == b"\xff\n"
+        # Wait for the CONTENT, not the path. `open(out, 'wb')` in the child
+        # creates the file before it writes a byte, so an `out.exists()` wait
+        # can return the instant the file is empty and then assert on b"".
+        # That is the #176 flake: green whenever the child happened to finish
+        # inside one 50ms tick, red when a loaded runner scheduled it between
+        # the create and the write.
+        data = _await_bytes(out, timeout=30)
+        assert data == b"\xff\n"
     finally:
         registry.kill_process(session.id)

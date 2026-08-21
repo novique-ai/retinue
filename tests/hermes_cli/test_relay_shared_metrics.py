@@ -88,6 +88,18 @@ SCHEMA_PATH = (
 )
 LEGACY_SCHEMA_PATH = SCHEMA_PATH.with_name("hermes.shared_metrics.v1.schema.json")
 
+# How long a rendezvous in the concurrency tests below may take to form.
+#
+# These bounds are startup budgets, not assertions: the barrier exists to make
+# every worker contend at once, and the joins exist so a wedged worker cannot
+# hang the suite forever. Nothing about the property under test depends on the
+# rendezvous being fast. Sized at 5s, they were measuring the CI runner's
+# scheduling latency instead — the #176 flake, where a thread that reached the
+# barrier late broke it for all eight and every future re-raised
+# BrokenBarrierError. A generous bound cannot mask a real failure: a worker
+# that never arrives still trips it, just later.
+_RENDEZVOUS_TIMEOUT_S = 120
+
 
 def _schema_validator(path: Path = SCHEMA_PATH):
     jsonschema = pytest.importorskip("jsonschema")
@@ -1374,7 +1386,7 @@ def test_concurrent_package_builders_commit_one_delta(tmp_path):
 
     def export() -> list[Path]:
         worker_store = SharedMetricsStore(database_path, outbox_directory)
-        ready.wait(timeout=5)
+        ready.wait(timeout=_RENDEZVOUS_TIMEOUT_S)
         return worker_store.create_and_export_package()
 
     with ThreadPoolExecutor(max_workers=2) as executor:
@@ -1403,7 +1415,7 @@ def test_concurrent_due_exports_create_one_daily_package(tmp_path):
 
     def export() -> None:
         worker_store = SharedMetricsStore(database_path, outbox_directory)
-        ready.wait(timeout=5)
+        ready.wait(timeout=_RENDEZVOUS_TIMEOUT_S)
         worker_store.create_and_export_package_if_due()
 
     with ThreadPoolExecutor(max_workers=8) as executor:
@@ -1455,7 +1467,7 @@ def test_cross_process_model_call_updates_are_transactional(tmp_path):
     for process in processes:
         process.start()
     for process in processes:
-        process.join(timeout=15)
+        process.join(timeout=_RENDEZVOUS_TIMEOUT_S)
         assert not process.is_alive()
         assert process.exitcode == 0
 
@@ -1479,7 +1491,7 @@ def test_cross_process_client_active_attempts_record_one_install(tmp_path):
     for process in processes:
         process.start()
     for process in processes:
-        process.join(timeout=15)
+        process.join(timeout=_RENDEZVOUS_TIMEOUT_S)
         assert not process.is_alive()
         assert process.exitcode == 0
 
