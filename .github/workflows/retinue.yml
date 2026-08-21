@@ -55,7 +55,12 @@ jobs:
         working-directory: retinue-web
         run: |
           npm ci
-          node --experimental-strip-types --test src/voice/ptt.test.ts
+          # Colocated src/**/*.test.ts, named explicitly: a glob that matches
+          # nothing exits 0 under `node --test`, so an added-then-renamed suite
+          # would stop running without anything going red.
+          node --experimental-strip-types --test \
+            src/voice/ptt.test.ts \
+            src/thinking.test.ts
           npm run build
 
   retinue-delta:

@@ -766,19 +766,40 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             for i, item in enumerate(layout["items"])
             if item.get("kind") == "agent"
         }
-        busy = self.busy_slugs()
+        busy_rooms = self.busy_rooms_by_slug()
         for agent in agents:
             slug = str(agent.get("slug") or "")
             agent["team"] = team_of.get(slug)
-            agent["busy"] = slug in busy
+            # ``busy`` is gateway-global — true while this profile has a turn
+            # in ANY room. Keep it: the model-switch guard needs exactly that.
+            # ``busy_rooms`` is what a room view must read, or an agent working
+            # in room A renders as thinking in every other room he is a member
+            # of, which looks like a hung turn and invites a needless Stop.
+            agent["busy_rooms"] = busy_rooms.get(slug, [])
+            agent["busy"] = bool(agent["busy_rooms"])
         auth.annotate_agents(self._home_dir(), agents)
         agents.sort(key=lambda a: (order.get(str(a.get("slug") or ""), 10_000), str(a.get("slug") or "")))
         return agents
 
     def busy_slugs(self) -> set:
-        """Profile names that currently have an in-flight room turn."""
+        """Profile names that currently have an in-flight room turn, any room."""
         with self._pending_lock:
             return {member for (_room, member) in self._pending}
+
+    def busy_rooms_by_slug(self) -> Dict[str, List[str]]:
+        """Room ids each profile currently has an in-flight turn in.
+
+        Same ``_pending`` set as :meth:`busy_slugs`, without projecting the room
+        away. A profile can hold turns in several rooms at once, so the value is
+        a list; a profile with no in-flight turn is absent rather than mapped to
+        an empty list.
+        """
+        with self._pending_lock:
+            pairs = sorted(self._pending)
+        by_slug: Dict[str, List[str]] = {}
+        for room_id, member in pairs:
+            by_slug.setdefault(member, []).append(room_id)
+        return by_slug
 
     def list_model_presets(self) -> List[Dict[str, Any]]:
         try:

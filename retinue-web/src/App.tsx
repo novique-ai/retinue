@@ -49,7 +49,7 @@ import {
   type SaveRoutineFormState,
 } from "./cron";
 import { LOGO_SRC, YOU_SRC, agentIcon } from "./icons";
-import { includeBusyThinkers, remainingThinkers, remainingThinkersAfter } from "./thinking";
+import { includeBusyThinkers, isWorkingIn, remainingThinkers, remainingThinkersAfter } from "./thinking";
 import { PushToTalkButton } from "./voice/PushToTalkButton";
 import { usePushToTalk } from "./voice/usePushToTalk";
 
@@ -795,7 +795,7 @@ function MessageRow({
           fallback={msg.speaker}
           label={msg.speaker}
           size={32}
-          working={!!agentsBySlug[msg.speaker]?.busy}
+          working={isWorkingIn(agentsBySlug[msg.speaker], roomId)}
         />
       )}
       <div className={mine ? "bubble mine" : "bubble"}>
@@ -897,8 +897,8 @@ function RoomView({
     [agents],
   );
   const visibleThinking = useMemo(
-    () => includeBusyThinkers(thinking, room.members, agentsBySlug),
-    [thinking, room.members, agentsBySlug],
+    () => includeBusyThinkers(thinking, room.members, agentsBySlug, room.id),
+    [thinking, room.members, agentsBySlug, room.id],
   );
   const mentionQuery = mentionOff ? null : mentionPartial(draft, caret);
   const mentionChoices = mentionQuery
@@ -1223,7 +1223,7 @@ function RoomView({
                   fallback={m}
                   label={handleOf(m)}
                   size={24}
-                  working={!!agentsBySlug[m]?.busy}
+                  working={isWorkingIn(agentsBySlug[m], room.id)}
                 />
                 <span className="chip" style={{ color: identityColor(agentsBySlug[m]?.identity.color) }}>
                   @{handleOf(m)}
@@ -3460,7 +3460,7 @@ export default function App() {
                         fallback={m}
                         label={m}
                         size={18}
-                        working={!!agentsBySlug[m]?.busy}
+                        working={isWorkingIn(agentsBySlug[m], r.id)}
                       />
                     ))}
                   </span>
