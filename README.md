@@ -31,10 +31,11 @@ Retinue brings that experience home:
 | **Rooms** | A shared transcript where N agents and you converse, with turn-taking — built as a Hermes platform adapter | **v1 shipped** |
 | **Web UI** | Native chat interface plus a three-field "hire an agent" flow that templates a persona, model, and toolset per agent | **v1 shipped** |
 | **Podman execution** | A long-lived workspace container as the team's shared computer, or stricter per-agent isolation | **v1 shipped** |
-| **Routines & take-over view** | Save a room's user prompts and replay them; workspace-computer status + attach | **v1 shipped** (noVNC screen take-over later) |
+| **Routines** | Save a room demonstration as a per-retainer skill plus an editable schedule. Jobs run in the destination room's workspace | **v1 shipped** |
+| **Workspace take-over view** | Workspace-computer status + attach command | **v1 shipped** (noVNC screen take-over later) |
 | **Voice** | Hold-to-talk in the room UI (xAI STT/TTS, or an OpenAI-compatible sidecar) | **v1 testable** |
 | **Sidebar** | Edit / archive / delete rooms and bots, team separators, drag-reorder | **v1 shipped** |
-| **IDE-attached rooms** | Opt-in bind-mount of a host path into a room's workspace | **designed, not shipped** |
+| **IDE-attached rooms** | Opt-in bind-mount of a host path at `/workspace`. Each room has its own container so the mount cannot leak into a sandbox room | **v1 shipped** |
 
 Everything Hermes already does — the agent loop, tools (terminal, browser, files, computer use, MCP), skills, memory, messaging-platform gateways — is inherited, not reimplemented.
 
@@ -46,10 +47,10 @@ Retinue is **Linux-first**. The product UI is a local web app (any modern browse
 
 | Surface | Notes |
 |---|---|
-| **OS** | Linux. Developed against current Debian/Ubuntu-class hosts. Other distros should work if Python, Node, and (optionally) podman are available. |
+| **OS** | Linux. Developed against current Debian/Ubuntu-class hosts. Other distros should work if Python, Node, and podman or docker are available. |
 | **Python** | 3.11–3.13 (same bound as upstream Hermes) |
 | **Node.js** | 20+ to *build* the web UI (`retinue-web/`). Runtime serving is Python. |
-| **Containers** | Optional. `podman` or `docker` for the shared workspace computer. Live-verified with rootless podman. |
+| **Containers** | Required for rooms. `podman` or `docker` (`TERMINAL_ENV=docker`; podman is auto-detected). Live-verified with rootless podman. |
 | **Display** | Wayland and X11 are both fine for the browser UI. They only become relevant for future screen take-over / desktop packaging. |
 | **macOS / Windows / WSL** | Hermes itself runs there (`scripts/install.ps1` on Windows). Retinue's rooms + podman path is not claimed as supported yet — reports welcome. |
 
@@ -69,6 +70,7 @@ That installs Python deps into an isolated venv, builds `retinue-web/`, and prin
 export HERMES_HOME="${HERMES_HOME:-$HOME/.retinue}"
 export RETINUE_ROOMS_ENABLED=1
 export GATEWAY_MULTIPLEX_PROFILES=true
+export TERMINAL_ENV=docker   # rooms need a container backend; podman is fine
 
 # Configure at least one LLM provider (API key or `hermes auth login`), then:
 hermes gateway
