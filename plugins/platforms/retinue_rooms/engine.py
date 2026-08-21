@@ -26,7 +26,13 @@ KIND_SYSTEM = "system"
 CYCLE_INTERNAL_ERROR_PREFIX = "internal error running the turn cycle"
 CYCLE_BUDGET_PREFIX = "turn budget"
 CYCLE_STOPPED_PREFIX = "Stopped."
+CYCLE_ROUND_BUDGET_PREFIX = "⚠️ round budget reached"
 DID_NOT_REPLY_INFIX = " did not reply ("
+
+# Why a planned/mentioned speaker was dropped. Adapter posts one notice
+# per exhaustion event; the engine only reports.
+REASON_AGENT_TURNS = "agent_turns"
+REASON_FOLLOWUP_ROUNDS = "followup_rounds"
 
 DEFAULT_MAX_AGENT_TURNS = 8
 # Room-wide speak-or-pass laps are a deliberate mode, not the resting
@@ -721,6 +727,94 @@ def followup_round_settled(spoke: List[str]) -> bool:
     return not spoke
 
 
+@dataclass(frozen=True)
+class DroppedPending:
+    """Speakers the engine declined because a budget ran out (#189)."""
+
+    speakers: tuple[str, ...]
+    reason: str
+    used: int
+
+
+def pending_mentioned(
+    room: Room,
+    replies: List[tuple[str, str]],
+    attempted: List[str],
+    display_names: Optional[Dict[str, str]] = None,
+    exclude: Optional[List[str]] = None,
+) -> List[str]:
+    """Members @mentioned in *replies* who did not take a later turn.
+
+    Each reply is aligned with the next unused occurrence of its speaker
+    in *attempted* so a member who speaks twice is matched to the right
+    mention. *exclude* is leftover queue already named by
+    ``cycle_budget_notice`` — those speakers are not double-reported.
+    Self-mentions do not count.
+    """
+    blocked = set(exclude or [])
+    pending: List[str] = []
+    seen: set[str] = set()
+    used = 0
+    for speaker, text in replies:
+        try:
+            rel = attempted.index(speaker, used)
+        except ValueError:
+            rel = max(used - 1, 0) if attempted else -1
+        used = rel + 1
+        later = set(attempted[rel + 1 :]) if rel >= 0 else set()
+        for member in parse_mentions(text or "", room.members, display_names):
+            if (
+                member == speaker
+                or member in later
+                or member in blocked
+                or member in seen
+            ):
+                continue
+            pending.append(member)
+            seen.add(member)
+    return pending
+
+
+def dropped_pending(
+    speakers: List[str],
+    *,
+    reason: str,
+    used: int,
+) -> Optional[DroppedPending]:
+    """None when nothing was dropped — the adapter must not post a notice."""
+    ordered = tuple(dict.fromkeys(s for s in speakers if s))
+    if not ordered:
+        return None
+    return DroppedPending(speakers=ordered, reason=reason, used=int(used))
+
+
+def dropped_pending_notice(
+    drop: Optional[DroppedPending],
+    display_names: Optional[Dict[str, str]] = None,
+    members: Optional[List[str]] = None,
+) -> Optional[str]:
+    """Rate-limited system line for a budget drop. None if *drop* is empty."""
+    if drop is None or not drop.speakers:
+        return None
+    names = display_names or {}
+    candidates = list(members or drop.speakers)
+    handles = [
+        f"@{mention_handle(slug, names.get(slug), candidates, names)}"
+        for slug in drop.speakers
+    ]
+    who = ", ".join(handles)
+    if drop.reason == REASON_FOLLOWUP_ROUNDS:
+        unit = "followup round" if drop.used == 1 else "followup rounds"
+        used_clause = f"{drop.used} {unit} used"
+    else:
+        unit = "agent turn" if drop.used == 1 else "agent turns"
+        used_clause = f"{drop.used} {unit} used"
+    return (
+        f"{CYCLE_ROUND_BUDGET_PREFIX} — {who} did not get a turn "
+        f"({used_clause}). A new user message grants fresh turns."
+    )
+
+
 def did_not_reply_notice(member: str, reason: str) -> str:
     """System line posted when a planned speaker produces no agent message."""
     return f"{member}{DID_NOT_REPLY_INFIX}{reason})"
@@ -808,6 +902,7 @@ def is_cycle_abort_notice(text: str) -> bool:
         body.startswith(CYCLE_INTERNAL_ERROR_PREFIX)
         or body.startswith(CYCLE_BUDGET_PREFIX)
         or body.startswith(CYCLE_STOPPED_PREFIX)
+        or body.startswith(CYCLE_ROUND_BUDGET_PREFIX)
     )
 
 

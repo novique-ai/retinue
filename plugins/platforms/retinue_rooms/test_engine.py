@@ -558,6 +558,81 @@ def test_followup_round_cap_is_a_bounded_loop():
     assert spoken == ["scout", "editor"]
 
 
+# ── budget-exhaustion drop report (#189) ─────────────────────────────────
+
+
+def test_pending_mentioned_exposes_mentions_that_did_not_run():
+    """Last-round @mention of a member who already spoke is still pending.
+
+    merge_followups skips already-attempted members, so the assignment
+    dies with the round cap unless the engine reports the drop.
+    """
+    room = _room(members=["scout", "claude"], lead="scout")
+    replies = [
+        ("scout", "lead start"),
+        ("claude", "claude first"),
+        ("scout", "@claude go on T5-T8"),
+    ]
+    attempted = ["scout", "claude", "scout"]
+    pending = engine.pending_mentioned(room, replies, attempted)
+    assert pending == ["claude"]
+    drop = engine.dropped_pending(
+        pending, reason=engine.REASON_FOLLOWUP_ROUNDS, used=2
+    )
+    assert drop is not None
+    assert drop.speakers == ("claude",)
+    assert drop.reason == engine.REASON_FOLLOWUP_ROUNDS
+    assert drop.used == 2
+    text = engine.dropped_pending_notice(drop)
+    assert text == (
+        "⚠️ round budget reached — @claude did not get a turn "
+        "(2 followup rounds used). A new user message grants fresh turns."
+    )
+    assert text.startswith(engine.CYCLE_ROUND_BUDGET_PREFIX)
+    assert engine.is_cycle_abort_notice(text)
+
+
+def test_pending_mentioned_empty_when_mentioned_member_ran_after():
+    room = _room(members=["scout", "claude"], lead="scout")
+    replies = [("scout", "@claude please take this"), ("claude", "on it")]
+    attempted = ["scout", "claude"]
+    assert engine.pending_mentioned(room, replies, attempted) == []
+    assert (
+        engine.dropped_pending([], reason=engine.REASON_FOLLOWUP_ROUNDS, used=2)
+        is None
+    )
+
+
+def test_dropped_pending_empty_when_nothing_pending():
+    assert engine.dropped_pending([], reason=engine.REASON_AGENT_TURNS, used=8) is None
+    notice = engine.dropped_pending_notice(None)
+    assert notice is None
+
+
+def test_pending_mentioned_ignores_self_mentions_and_already_noticed():
+    room = _room(members=["scout", "claude", "editor"], lead="scout")
+    replies = [("scout", "@scout keep going. @claude and @editor please.")]
+    attempted = ["scout"]
+    # leftover queue already named by cycle_budget_notice
+    pending = engine.pending_mentioned(
+        room, replies, attempted, exclude=["editor"]
+    )
+    assert pending == ["claude"]
+
+
+def test_dropped_pending_notice_turn_budget_and_several_speakers():
+    drop = engine.dropped_pending(
+        ["claude", "editor"], reason=engine.REASON_AGENT_TURNS, used=1
+    )
+    text = engine.dropped_pending_notice(drop)
+    assert text.startswith(engine.CYCLE_ROUND_BUDGET_PREFIX)
+    assert "@claude" in text and "@editor" in text
+    assert "did not get a turn" in text
+    assert "1 agent turn used" in text
+    assert "A new user message grants fresh turns." in text
+    assert engine.is_cycle_abort_notice(text)
+
+
 def test_briefing_teaches_the_structured_pass():
     text = engine.room_briefing(_room(lead="scout"), "scout", ["Mark"])
     token = engine.pass_payload_text()
@@ -645,6 +720,7 @@ def test_web_thinking_prefixes_stay_in_lockstep():
         engine.CYCLE_INTERNAL_ERROR_PREFIX,
         engine.CYCLE_BUDGET_PREFIX,
         engine.CYCLE_STOPPED_PREFIX,
+        engine.CYCLE_ROUND_BUDGET_PREFIX,
         engine.DID_NOT_REPLY_INFIX,
     ):
         assert prefix in thinking, prefix
@@ -732,6 +808,20 @@ def test_cycle_abort_clears_the_whole_queue():
         engine.remaining_thinkers(
             waiting,
             [RoomMessage(1, 1, KIND_SYSTEM, "room", engine.cycle_stopped_notice("Mark"))],
+        )
+        == []
+    )
+    drop = engine.dropped_pending(
+        ["claude"], reason=engine.REASON_FOLLOWUP_ROUNDS, used=2
+    )
+    assert (
+        engine.remaining_thinkers(
+            waiting,
+            [
+                RoomMessage(
+                    1, 1, KIND_SYSTEM, "room", engine.dropped_pending_notice(drop)
+                )
+            ],
         )
         == []
     )
