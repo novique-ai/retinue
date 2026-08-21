@@ -803,7 +803,7 @@ def _ide_root_with_broker(tmp_path):
     root = tmp_path / "IDE"
     (root / "data" / "broker").mkdir(parents=True)
     (root / "infra" / "scripts").mkdir(parents=True)
-    (root / "infra" / "scripts" / "room-broker-client.py").write_text("# client\n")
+    (root / "infra" / "scripts" / "room-broker-client.py").write_text("# client\n", encoding="utf-8")
     return root
 
 
