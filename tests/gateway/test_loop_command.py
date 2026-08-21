@@ -28,6 +28,38 @@ class _FakeSessionStore:
         return "agent:main:discord:channel:loop-test"
 
 
+def _set_goal_durably(session_id: str, text: str, timeout_s: float = 30.0) -> None:
+    """Set a goal and wait until it is actually readable.
+
+    `GoalManager.set` is best-effort by design. On an event-loop thread with a
+    cold `_DB_CACHE`, `_get_session_db` kicks a background SessionDB bootstrap
+    and waits a bounded window — `_DB_BOOTSTRAP_INIT_WAIT_S` (1.5s) on the call
+    that starts it, `_DB_BOOTSTRAP_LOOP_WAIT_S` (0.25s) after — so a contended
+    schema init cannot stall the gateway's loop-liveness watchdog into a hard
+    exit (the exit-75 crash loop). Miss that window and it returns None,
+    `save_goal` drops the write, and `set` still hands back a GoalState.
+
+    `loop_env` clears the cache before every test and these tests are async, so
+    every one of them takes exactly that path. Asserting on the handler without
+    confirming the write landed makes the assertion a race against how loaded
+    the runner is — #183, where it failed on `main` with the goal note simply
+    absent. Retrying works because the background bootstrap keeps going and
+    caches on success; the timeout is real, not cosmetic — a bootstrap that
+    never completes fails here rather than as a confusing assertion downstream.
+    """
+    deadline = time.monotonic() + timeout_s
+    while True:
+        goals.GoalManager(session_id=session_id).set(text)
+        if goals.load_goal(session_id) is not None:
+            return
+        if time.monotonic() >= deadline:
+            pytest.fail(
+                f"goal for {session_id} never persisted within {timeout_s:.0f}s — "
+                "the SessionDB bootstrap never completed"
+            )
+        time.sleep(0.05)
+
+
 @pytest.fixture
 def loop_env(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
@@ -96,9 +128,7 @@ async def test_gateway_loop_status_pause_stop(loop_env):
 
 @pytest.mark.asyncio
 async def test_gateway_loop_goal_note_when_goal_active(loop_env):
-    from hermes_cli.goals import GoalManager
-
-    GoalManager(session_id="sid-gateway-loop").set("finish the migration")
+    _set_goal_durably("sid-gateway-loop", "finish the migration")
     runner = _make_runner()
     response = await GatewayRunner._handle_loop_command(runner, _make_event("/loop 5m poll CI"))
     assert "active /goal" in response

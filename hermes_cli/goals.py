@@ -859,7 +859,20 @@ def save_goal(session_id: str, state: GoalState) -> None:
     try:
         db.set_meta(_meta_key(session_id), state.to_json())
     except Exception as exc:
-        logger.debug("GoalManager: set_meta failed: %s", exc)
+        # Warning, not debug. The two ways a goal fails to persist had opposite
+        # volumes: the unavailable-DB path calls _warn_dropped_write and is
+        # audible, while an actual write failure was logged below the default
+        # level. Either way the user set a goal and it is gone, and `set`
+        # returns a GoalState regardless — so a silent debug line is the whole
+        # diagnosis anyone gets. SessionDB._execute_write already retries lock
+        # contention with jitter, so reaching here means something durable went
+        # wrong, not that the DB was momentarily busy (#183).
+        logger.warning(
+            "GoalManager: goal for %s not persisted — set_meta failed: %s",
+            session_id,
+            exc,
+            exc_info=True,
+        )
 
 
 def clear_goal(session_id: str) -> None:
