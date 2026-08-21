@@ -17,15 +17,17 @@ Status words mean:
 | Item | Notes |
 |---|---|
 | Public fork + plugin-delta policy | [retinue/FORK-POLICY.md](../retinue/FORK-POLICY.md) |
-| Rooms | Shared transcript, `@mention` turn-taking, turn budget, sequential turns |
+| Rooms | Shared transcript, `@mention` turn-taking, turn budget, sequential turns, lead itinerary |
 | Web UI + hire flow | `retinue-web/`, three-field brief, served by the adapter |
-| Workspace computer | Shared podman/docker container via carried patch |
-| Routines | Save / replay a room's user prompts |
+| Workspace computer | Per-room podman/docker container (`TERMINAL_ENV=docker`) |
+| Routines | Per-retainer skill + editable schedule; jobs run in the destination room's workspace |
 | Workspace status | `GET /workspace` + attach command (not screen take-over) |
+| IDE-attached rooms | Opt-in host bind-mount at `/workspace`; per-room container so sandbox rooms stay isolated |
 | Hot-hire | New profile joins without a gateway restart |
 | SSE transcript | `GET /rooms/{id}/stream` |
-| Sidebar | Edit / archive / delete, team separators, drag-reorder |
+| Sidebar | Edit / archive / delete, team separators, drag-reorder; projects group rooms |
 | Model presets | Per-hire `model:` block; bundled versioned cloud presets |
+| Transcript media | Workspace files named in a reply render inline or as download links |
 
 ## Testable
 
@@ -46,12 +48,10 @@ before starting one. Ready-to-file issue drafts:
 [contributor-issues.md](contributor-issues.md).
 
 - Token streaming into the room (v1 is finals only).
-- Richer mention UX (display aliases; composer autocomplete beyond the chip bar).
-- Media in the transcript (v1 is plain text).
 - Approval UX that is more than the gateway text fallback.
 - Linux packaging (distro package, Flatpak, or similar).
 - Wayland/X11-specific desktop integration (only needed beyond the browser UI).
-- First-run empty states and a short recorded demo.
+- A short recorded demo.
 
 ## What will not be done in this repo
 
