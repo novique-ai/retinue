@@ -101,7 +101,12 @@ export interface AgentMeta {
   turn_timeout?: number;
   archived?: boolean;
   team?: string | null;
+  /** In-flight turn in ANY room. Use for the model-switch guard, never for a
+   * per-room thinking bubble — see `busy_rooms`. */
   busy?: boolean;
+  /** Room ids this agent has an in-flight turn in. Absent from a gateway that
+   * predates it; `isWorkingIn` falls back to `busy` in that case. */
+  busy_rooms?: string[];
   auth_status?: AuthStatus;
   auth_provider?: string | null;
   auth_error?: string | null;

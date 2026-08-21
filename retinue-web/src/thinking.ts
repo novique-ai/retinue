@@ -59,15 +59,38 @@ export function remainingThinkersAfter(
   return remainingThinkers(waiting, messages.slice(lastUser + 1));
 }
 
+export type BusyAgent = { busy?: boolean; busy_rooms?: string[] };
+
+/** Is this agent mid-turn *in this room*?
+
+`busy` is gateway-global — true while the agent has a turn in any room — so
+reading it inside a room view painted a thinking bubble on every other room the
+agent belongs to, which reads as a hung turn. `busy_rooms` carries the rooms
+those turns are actually in.
+
+A gateway that predates `busy_rooms` omits the field entirely; fall back to the
+global flag there rather than silently dropping every bubble. An empty array is
+not that case — it means busy in no room, and must not fall back.
+*/
+export function isWorkingIn(
+  agent: BusyAgent | undefined,
+  roomId: string,
+): boolean {
+  if (!agent?.busy) return false;
+  if (agent.busy_rooms === undefined) return true;
+  return agent.busy_rooms.includes(roomId);
+}
+
 export function includeBusyThinkers(
   waiting: string[],
   members: string[],
-  agentsBySlug: Record<string, { busy?: boolean } | undefined>,
+  agentsBySlug: Record<string, BusyAgent | undefined>,
+  roomId: string,
 ): string[] {
   const merged = [...waiting];
   const seen = new Set(waiting);
   for (const member of members) {
-    if (seen.has(member) || !agentsBySlug[member]?.busy) continue;
+    if (seen.has(member) || !isWorkingIn(agentsBySlug[member], roomId)) continue;
     seen.add(member);
     merged.push(member);
   }
