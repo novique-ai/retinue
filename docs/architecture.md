@@ -77,18 +77,23 @@ member's turn.
 ## Workspace computer
 
 Hermes already runs terminal commands in Docker, and `find_docker()`
-already falls back to `podman` on `PATH`. Retinue adds *sharing*: the
-carried `TERMINAL_DOCKER_SHARED_CONTAINER_KEY` makes every room member
-attach to one long-lived container instead of one container per
-profile.
+already falls back to `podman` on `PATH`. Rooms **require**
+`TERMINAL_ENV=docker` (podman is auto-detected). Retinue adds *sharing*:
+each room has its own container identity so members of that room share
+files, and a sandbox room cannot inherit an IDE mount.
 
 Only the terminal tool family runs in that container today.
 Browser / file / MCP tools remain host-side unless you change Hermes
 config.
 
-A later increment (not shipped) adds two room kinds: `sandbox`
-(isolated container) and `ide` (same container plus an opt-in bind-mount
-of a host path on the machine running the gateway).
+Two room kinds (shipped):
+
+- **sandbox** (default) — isolated workspace computer, no host tree.
+- **ide** — same runtime, plus an opt-in bind-mount of a host path
+  (`ide_path` / `RETINUE_IDE_ROOT`) at `/workspace`. Concurrent ide
+  rooms can isolate via per-room git worktrees. A scheduled job whose
+  destination is a room runs under that room's mount, same as a mention
+  turn.
 
 ## State on disk
 

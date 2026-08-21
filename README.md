@@ -10,7 +10,7 @@ Retinue is a thin, plugin-layer fork of [hermes-agent](https://github.com/NousRe
 
 **Retinue is an independent open-source Linux application. It is not affiliated with or endorsed by xAI, Anthropic, OpenAI, or any model vendor.**
 
-![The Retinue web UI: hired retainers in the sidebar, ready to join a room](retinue/assets/room-ui.png)
+![The Retinue web UI: an IDE-attached room with itinerary, projects in the sidebar, and retainers taking turns](retinue/assets/GithubReadme2.png)
 
 ## Why it exists
 
@@ -84,7 +84,7 @@ Full walkthrough: [`docs/development.md`](docs/development.md).
 
 ## Screenshots and demo
 
-- Room UI screenshot: [`retinue/assets/room-ui.png`](retinue/assets/room-ui.png)
+- Room UI screenshot: [`retinue/assets/GithubReadme2.png`](retinue/assets/GithubReadme2.png)
 - Logo: [`retinue/assets/logo.png`](retinue/assets/logo.png)
 
 A short recorded demo is not in the repo yet — contributions welcome.
