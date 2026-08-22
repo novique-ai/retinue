@@ -124,6 +124,39 @@ class TestSkillsDirectoryMount:
 
         assert mounts[0]["host_path"] == str(skills_dir)
 
+    def test_include_profile_skills_false_omits_profile_keeps_shared(self, tmp_path):
+        """Rooms skip the creating profile's skills (novique-ai/retinue#192).
+
+        External and project skill dirs are shared repo checkouts, not
+        per-member credentials, and must still be mounted.
+        """
+        hermes_home = tmp_path / ".hermes"
+        skills_dir = hermes_home / "skills"
+        skills_dir.mkdir(parents=True)
+        (skills_dir / "profile-skill").mkdir()
+        external = tmp_path / "external-skills"
+        external.mkdir()
+        project = tmp_path / "project-skills"
+        project.mkdir()
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}), \
+                patch("agent.skill_utils.get_external_skills_dirs", return_value=[external]), \
+                patch("agent.skill_utils.get_project_skills_dirs", return_value=[project]):
+            omitted = get_skills_directory_mount(include_profile_skills=False)
+            included = get_skills_directory_mount(include_profile_skills=True)
+
+        omitted_paths = {m["container_path"] for m in omitted}
+        included_paths = {m["container_path"] for m in included}
+        omitted_hosts = {m["host_path"] for m in omitted}
+        assert "/root/.hermes/skills" not in omitted_paths
+        assert "/root/.hermes/external_skills/0" in omitted_paths
+        assert "/root/.hermes/project_skills/0" in omitted_paths
+        assert str(external) in omitted_hosts
+        assert str(project) in omitted_hosts
+        assert "/root/.hermes/skills" in included_paths
+        assert "/root/.hermes/external_skills/0" in included_paths
+        assert "/root/.hermes/project_skills/0" in included_paths
+
 
 class TestIterSkillsFiles:
     def test_returns_files_skipping_symlinks(self, tmp_path):

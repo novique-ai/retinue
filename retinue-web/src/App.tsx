@@ -529,7 +529,8 @@ function MemberMenu({
 /**
  * Room-header invite control. Only agents not already in the room are
  * offered. The 20-message window is stated up front so the newcomer's
- * blind spot isn't a surprise.
+ * blind spot isn't a surprise. The shared-container trust boundary is
+ * stated here too: inviting someone hands them every member's skills.
  */
 function InviteMenu({
   candidates,
@@ -565,6 +566,9 @@ function InviteMenu({
         <div className="invite-menu">
           <p className="invite-note">
             New members see roughly the last 20 messages, not the full transcript.
+            Everyone in a room shares one container, so they can read each
+            other&apos;s skills and skill-local credentials. Don&apos;t invite
+            an agent you wouldn&apos;t hand those credentials to.
           </p>
           {candidates.length === 0 ? (
             <p className="invite-empty">Everyone available is already here.</p>
@@ -2213,6 +2217,12 @@ function NewRoomPanel({
         confirm={ideOk}
         onConfirm={setIdeOk}
       />
+      <span className="field-label">Who is in this room?</span>
+      <p className="note">
+        Everyone in a room shares one container, so they can read each
+        other&apos;s skills and skill-local credentials. Don&apos;t add an
+        agent you wouldn&apos;t hand those credentials to.
+      </p>
       <div className="member-pick">
         {agents
           .filter((a) => !a.archived)
@@ -2310,6 +2320,12 @@ function EditRoomPanel({
         Room name
         <input value={name} onChange={(e) => setName(e.target.value)} />
       </label>
+      <span className="field-label">Who is in this room?</span>
+      <p className="note">
+        Everyone in a room shares one container, so they can read each
+        other&apos;s skills and skill-local credentials. Don&apos;t add an
+        agent you wouldn&apos;t hand those credentials to.
+      </p>
       <div className="member-pick">
         {visible.map((a) => (
           <button

@@ -1048,7 +1048,19 @@ class DockerEnvironment(BaseEnvironment):
 
             # Mount skill directories (local + external) so skill
             # scripts/templates are available inside the container.
-            for skills_mount in get_skills_directory_mount():
+            # Rooms skip the profile-local /root/.hermes/skills mount
+            # (novique-ai/retinue#192): that path is the container-creating
+            # profile's skills, readable by every member. Members reach
+            # their own skills via member_skills/<slug> instead. Parse
+            # matches TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE; read through
+            # workspace_context so a room overlay is visible without a
+            # process-wide env write.
+            skip_profile_skills = workspace_context.getenv(
+                "TERMINAL_DOCKER_SKIP_PROFILE_SKILLS_MOUNT", "false"
+            ).lower() in {"true", "1", "yes"}
+            for skills_mount in get_skills_directory_mount(
+                include_profile_skills=not skip_profile_skills,
+            ):
                 src = Path(skills_mount["host_path"])
                 if not src.is_dir():
                     logger.warning(

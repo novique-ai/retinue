@@ -741,9 +741,9 @@ briefing is unchanged.
 
 ## Member skills (`/root/.hermes/member_skills/<slug>`)
 
-A room shares one container, created once. Hermes mounts the *active*
+A room shares one container, created once. Hermes used to mount the *active*
 profile's `skills/` at `/root/.hermes/skills`, so in a multi-member room that
-canonical path holds exactly one member's skills — whichever profile the
+canonical path held exactly one member's skills — whichever profile the
 container was created from. Every other member's skill scripts and their
 skill-local `.env` credentials were simply absent, and the failure read as a
 missing credential rather than a missing mount ([#188]).
@@ -755,6 +755,17 @@ Every member's `profiles/<slug>/skills` is therefore mounted **read-only** at
 so a member runs `python3 $RETINUE_SKILLS_DIR/<skill>/scripts/<script>.py`
 and reads its own skill-local `.env`, whoever else is in the room.
 
+Room containers **do not** mount `/root/.hermes/skills` at all ([#192]). That
+path was the creating profile's tree, readable by every member for no reason.
+An agent following a stale `SKILL.md` that names it now gets "no such file"
+instead of silently reading someone else's skills. External and project skill
+dirs (shared repo checkouts) still mount as before.
+
+A room is a trust boundary. Every member in a room can read every other
+member's skills directory and its skill-local `.env` credentials, because
+the container is shared. Do not put an agent in a room with agents you
+would not hand its credentials to.
+
 - A member with no skills directory gets no mount, no env var, and no
   briefing line — the room is unaffected.
 - A skills directory containing a symlink is **not** mounted (a bind mount
@@ -764,10 +775,9 @@ and reads its own skill-local `.env`, whoever else is in the room.
   the new mounts and the old container is disposed. Container-local state
   (installed packages, `/root`) resets with it; `/workspace` is a host bind
   and is untouched.
-- `/root/.hermes/skills` still exists and still holds the creating profile's
-  skills — members are briefed not to use it.
 
 [#188]: https://github.com/novique-ai/retinue/issues/188
+[#192]: https://github.com/novique-ai/retinue/issues/192
 
 ## Deliberate v1 limits
 

@@ -246,6 +246,8 @@ def get_credential_file_mounts() -> List[Dict[str, str]]:
 
 def get_skills_directory_mount(
     container_base: str = "/root/.hermes",
+    *,
+    include_profile_skills: bool = True,
 ) -> list[Dict[str, str]]:
     """Return mount info for all skill directories (local + external).
 
@@ -262,11 +264,17 @@ def get_skills_directory_mount(
     Returns a list of dicts with ``host_path`` and ``container_path`` keys.
     The local skills dir mounts at ``<container_base>/skills``, external dirs
     at ``<container_base>/external_skills/<index>``.
+
+    ``include_profile_skills`` (default True) gates only the profile-local
+    ``<hermes_home>/skills`` entry. Shared-room containers set this False so
+    the creating profile is not privileged over other members
+    (novique-ai/retinue#192). External and project skill dirs are shared
+    repo checkouts, not per-member credentials, and are always returned.
     """
     mounts = []
     hermes_home = _resolve_hermes_home()
     skills_dir = hermes_home / "skills"
-    if skills_dir.is_dir():
+    if include_profile_skills and skills_dir.is_dir():
         host_path = _safe_skills_path(skills_dir)
         mounts.append({
             "host_path": host_path,

@@ -59,7 +59,7 @@ BROKER_CLIENT_REL = ("infra", "scripts", "room-broker-client.py")
 # mounted instead of assuming /workspace is the IDE root.
 MOUNT_MAP_ENV = "RETINUE_WORKSPACE_MOUNTS"
 
-# Per-member skills (novique-ai/retinue#188).
+# Per-member skills (novique-ai/retinue#188, #192).
 #
 # A room shares ONE container, created once. Upstream's skills mount
 # (tools/credential_files.get_skills_directory_mount) resolves whichever
@@ -76,6 +76,12 @@ MOUNT_MAP_ENV = "RETINUE_WORKSPACE_MOUNTS"
 # (tools/turn_env.py) plus the briefing point the speaking member at its own.
 # The mount set is part of the container key, so a roster change re-keys the
 # room and the next cycle builds a container that has the new member's dir.
+#
+# overlay_env also sets TERMINAL_DOCKER_SKIP_PROFILE_SKILLS_MOUNT so the
+# docker backend omits /root/.hermes/skills entirely (#192). An anchor that
+# is itself a member still has member_skills/<anchor>; a stale SKILL.md
+# that names the canonical path now fails loud instead of reading someone
+# else's tree.
 MEMBER_SKILLS_MOUNT = "/root/.hermes/member_skills"
 MEMBER_SKILLS_ENV = "RETINUE_SKILLS_DIR"
 # Same shape hire.py enforces on a profile slug. A member name that cannot
@@ -390,6 +396,11 @@ def overlay_env(room: Room, home_dir: Optional[str] = None) -> Dict[str, str]:
         "TERMINAL_DOCKER_SHARED_CONTAINER_KEY": container_key_for_room(room),
         "TERMINAL_CWD": CONTAINER_MOUNT,
         "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE": "0",
+        # Suppress the creating profile's /root/.hermes/skills mount so
+        # the anchor is not privileged over other members
+        # (novique-ai/retinue#192). Members keep their own path via
+        # member_skills/<slug>.
+        "TERMINAL_DOCKER_SKIP_PROFILE_SKILLS_MOUNT": "1",
     }
     if home_dir:
         uploads = attachments._dir(home_dir, room.id)
