@@ -153,7 +153,10 @@ def test_sequential_tool_timeout_emits_result_and_continues(tmp_path, monkeypatc
     finally:
         release_first.set()
 
-    assert first_started.is_set()
+    assert first_started.wait(timeout=5), (
+        "hung tool was never dispatched — the sequential timeout fired "
+        "before the worker thread reached handle_function_call"
+    )
     assert time.monotonic() - started < 10.0
     assert dispatched == ["hung", "next"]
     assert [message["tool_call_id"] for message in messages] == ["hung", "next"]

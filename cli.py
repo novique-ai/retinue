@@ -9130,6 +9130,31 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # Pre-assembly list: /tools is a discovery/inspection surface, so it
         # must show the full catalog including tools deferred behind the
         # tool_search bridge (users check this to verify an MCP installed).
+        #
+        # Background MCP discovery is joined at startup with the short
+        # interactive bound (mcp_discovery_timeout, default 1.5s) so a dead
+        # server can't freeze the first turn; stragglers are meant to land
+        # via the TUI's late-refresh. Slash workers are a separate process
+        # with no late-refresh, and get_tool_definitions() re-waits with
+        # that same 1.5s bound — so a slow stdio handshake answers /tools
+        # with a catalog that's missing the still-connecting server.
+        # Join in-flight discovery here, but only in a slash worker
+        # (HERMES_SLASH_WORKER=1). The TUI already late-refreshes and must
+        # not wait — an ungated join would make a human's /tools block the
+        # full 30s on a hung/dead MCP server. join returns the instant
+        # discovery completes; a server that never connects still fails,
+        # just later.
+        if os.environ.get("HERMES_SLASH_WORKER") == "1":
+            try:
+                from hermes_cli.mcp_startup import join_mcp_discovery
+            except ImportError:
+                logger.debug(
+                    "join_mcp_discovery unavailable; /tools will not wait for "
+                    "in-flight MCP discovery",
+                    exc_info=True,
+                )
+            else:
+                join_mcp_discovery(timeout=30.0)
         tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets, quiet_mode=True,
                                      skip_tool_search_assembly=True)
         

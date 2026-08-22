@@ -26,6 +26,33 @@ class TestToolsSlashNoSubcommand:
         mock_show.assert_called_once()
 
 
+# ── show_tools MCP join is slash-worker only ────────────────────────────────
+
+
+class TestShowToolsMcpDiscoveryJoin:
+    """show_tools joins in-flight MCP discovery only in slash workers.
+
+    Slash workers have no late-refresh; the TUI does. An ungated join would
+    make a human's /tools wait up to 30s for a hung/dead MCP server — the
+    interactive regression the HERMES_SLASH_WORKER gate removes.
+    """
+
+    def test_does_not_join_when_slash_worker_marker_absent(self, monkeypatch):
+        monkeypatch.delenv("HERMES_SLASH_WORKER", raising=False)
+        cli_obj = _make_cli()
+        with patch("hermes_cli.mcp_startup.join_mcp_discovery") as mock_join, \
+             patch("cli.get_tool_definitions", return_value=[]):
+            cli_obj.show_tools()
+        mock_join.assert_not_called()
+
+    def test_joins_when_slash_worker_marker_set(self, monkeypatch):
+        monkeypatch.setenv("HERMES_SLASH_WORKER", "1")
+        cli_obj = _make_cli()
+        with patch("hermes_cli.mcp_startup.join_mcp_discovery") as mock_join, \
+             patch("cli.get_tool_definitions", return_value=[]):
+            cli_obj.show_tools()
+        mock_join.assert_called_once_with(timeout=30.0)
+
 
 # ── /tools list ─────────────────────────────────────────────────────────────
 

@@ -610,7 +610,10 @@ async def test_session_hygiene_timeout_continues_to_agent_and_sets_cooldown(monk
     # multiple seconds), not a precise latency. 0.15s missed by ~1-8ms on
     # busy CI shards twice on 2026-07-23.
     assert elapsed < 2.0
-    assert worker_started.is_set()
+    assert worker_started.wait(timeout=5), (
+        "hygiene compression worker never started — the 0.01s hygiene "
+        "timeout fired before the worker thread was scheduled"
+    )
     assert runner._run_agent.await_count == 1
     # Cooldown must be persisted to the state DB (survives restart, #74136),
     # not stashed in an in-memory dict.
