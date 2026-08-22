@@ -12,6 +12,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Added
+
+- Projects in the left pane drag-reorder (⋮⋮ + up/down), same chrome as
+  rooms. Order lives in ``retinue_projects.json`` ``order`` — not in
+  ``/sidebar``. Unfiled stays last and is not a project.
+
 ### Fixed
 
 - Phone browsers no longer get the desktop three-pane squeezed into a sliver.

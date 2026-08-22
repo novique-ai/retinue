@@ -2921,8 +2921,8 @@ function KeyPanel({ onDone }: { onDone: () => void }) {
 // ── shell ────────────────────────────────────────────────────────────────
 
 type Modal = "hire" | "room" | "key" | "edit-room" | "edit-agent" | "reauth" | "settings" | "cron-job" | "save-routine" | null;
-type DragPayload = { list: "rooms" | "items"; id: string };
-type DropHint = { list: "rooms" | "items"; id: string; place: "before" | "after" } | null;
+type DragPayload = { list: "rooms" | "items" | "projects"; id: string };
+type DropHint = { list: "rooms" | "items" | "projects"; id: string; place: "before" | "after" } | null;
 
 export default function App() {
   const [rooms, setRooms] = useState<RoomMeta[]>([]);
@@ -3317,6 +3317,28 @@ export default function App() {
     e.dataTransfer.effectAllowed = "move";
   };
 
+  const persistProjectOrder = async (order: string[]) => {
+    try {
+      const payload = await api.putProjects({ order });
+      setProjects(payload.projects);
+    } catch (e) {
+      alert(String(e));
+    }
+  };
+
+  const dropOnProject = (e: DragEvent, targetId: string) => {
+    e.preventDefault();
+    setDropHint(null);
+    const drag = parseDrag(e);
+    if (!drag || drag.list !== "projects" || drag.id === targetId) return;
+    const ids = projects.map((p) => p.id);
+    const from = ids.indexOf(drag.id);
+    const to = ids.indexOf(targetId);
+    if (from < 0 || to < 0) return;
+    const insertAt = placeFromEvent(e) === "after" ? to + 1 : to;
+    void persistProjectOrder(relocate(ids, from, insertAt));
+  };
+
   const dropOnRoom = (e: DragEvent, targetId: string) => {
     e.preventDefault();
     setDropHint(null);
@@ -3343,13 +3365,15 @@ export default function App() {
     void persistLayout({ ...layout, items: relocate(layout.items, from, insertAt) });
   };
 
-  // Keyboard reorder steps over what the user can SEE. Archived rooms and
-  // agents keep their slot in the stored layout but render nothing, so
+  // Keyboard reorder steps over what the user can SEE. Archived rooms,
+  // projects, and agents keep their slot in the stored layout but render
+  // nothing, so
   // stepping through the stored order would swap a row past a hidden one and
   // paint no change — a control that looks actionable and does nothing, which
   // is the failure these buttons exist to remove. Swap with the nearest
   // VISIBLE neighbour instead, and derive the disabled ends from that same
   // list so "no neighbour" and "button disabled" can never disagree.
+  const visibleProjectIds = visibleProjects.map((p) => p.id);
   const visibleRoomIds = visibleRooms.map((r) => r.id);
   const visibleItemKeys = layout.items
     .filter((item) => {
@@ -3370,6 +3394,16 @@ export default function App() {
     next[a] = target;
     next[b] = id;
     return next;
+  };
+
+  const moveProject = (projectId: string, dir: -1 | 1) => {
+    const next = stepped(
+      projects.map((p) => p.id),
+      visibleProjectIds,
+      projectId,
+      dir,
+    );
+    if (next) void persistProjectOrder(next);
   };
 
   const moveRoom = (roomId: string, dir: -1 | 1) => {
@@ -3512,8 +3546,35 @@ export default function App() {
               +
             </button>
           </div>
-          {visibleProjects.map((p) => (
-            <div key={p.id} className={`nav-row${p.archived ? " archived" : ""}`}>
+          {visibleProjects.map((p) => {
+            const hint = dropHint?.list === "projects" && dropHint.id === p.id ? dropHint.place : "";
+            const projectIdx = visibleProjectIds.indexOf(p.id);
+            return (
+            <div
+              key={p.id}
+              className={`nav-row${p.archived ? " archived" : ""}${hint ? ` drop-${hint}` : ""}`}
+              onDragOver={(e) => {
+                e.preventDefault();
+                setDropHint({ list: "projects", id: p.id, place: placeFromEvent(e) });
+              }}
+              onDragLeave={() => setDropHint((h) => (h?.id === p.id ? null : h))}
+              onDrop={(e) => dropOnProject(e, p.id)}
+            >
+              <span
+                className="drag-handle"
+                title="Drag to reorder"
+                draggable
+                onDragStart={(e) => startDrag(e, { list: "projects", id: p.id })}
+              >
+                ⋮⋮
+              </span>
+              <ReorderButtons
+                what={`project ${p.name}`}
+                canUp={projectIdx > 0}
+                canDown={projectIdx >= 0 && projectIdx < visibleProjectIds.length - 1}
+                onUp={() => moveProject(p.id, -1)}
+                onDown={() => moveProject(p.id, 1)}
+              />
               <button
                 className={selectedProjectId === p.id ? "nav-item active" : "nav-item"}
                 onClick={() => selectProject(p.id)}
@@ -3532,7 +3593,8 @@ export default function App() {
                 ]}
               />
             </div>
-          ))}
+            );
+          })}
           {/* Unfiled is pinned last — not a real project, not in `order`. */}
           <div className="nav-row">
             <button
