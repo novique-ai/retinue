@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import subprocess
 
 import pytest
 
@@ -383,3 +384,151 @@ def test_podman_mounts_two_members_skills_at_their_own_paths(tmp_path, monkeypat
         assert wrote.returncode != 0, "member skills must be read-only"
     finally:
         run([runtime, "rm", "-f", name], timeout=30)
+
+
+def test_overlay_env_sets_skip_profile_skills_mount(monkeypatch):
+    """Rooms tell the docker backend not to mount the creating profile's skills.
+
+    novique-ai/retinue#192: /root/.hermes/skills is the anchor's tree, readable
+    by every member. overlay_env suppresses that mount; members keep their
+    own path via member_skills/<slug>.
+    """
+    monkeypatch.delenv("RETINUE_SHARED_DIR", raising=False)
+    env = ide.overlay_env(_room(workspace="sandbox"))
+    assert env["TERMINAL_DOCKER_SKIP_PROFILE_SKILLS_MOUNT"] == "1"
+    assert env["TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE"] == "0"
+
+
+def test_briefing_does_not_claim_canonical_skills_path_is_another_member(
+    tmp_path, monkeypatch
+):
+    """#192: /root/.hermes/skills is not mounted in rooms. Fail loud, not silent."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _skills(tmp_path, "patty")
+    mine = room_briefing(_room(workspace="sandbox"), "patty", ["You"])
+    assert "another member's skills" not in mine
+    assert "/root/.hermes/skills is not mounted" in mine
+
+
+def _docker_run_calls(monkeypatch):
+    """Capture ``docker run`` argv from DockerEnvironment construction."""
+    from tools.environments import docker as docker_env
+
+    docker_env._cgroup_limits_ok = True
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = []
+
+    def _run(cmd, **kwargs):
+        calls.append(list(cmd) if isinstance(cmd, list) else cmd)
+        if isinstance(cmd, list) and len(cmd) >= 2:
+            if cmd[1] == "version":
+                return subprocess.CompletedProcess(
+                    cmd, 0, stdout="Docker version", stderr=""
+                )
+            if cmd[1] == "run":
+                return subprocess.CompletedProcess(
+                    cmd, 0, stdout="fake-container-id\n", stderr=""
+                )
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+    return docker_env, calls
+
+
+def _last_docker_run(calls):
+    run_calls = [
+        c for c in calls if isinstance(c, list) and len(c) >= 2 and c[1] == "run"
+    ]
+    assert run_calls, "docker run should have been called"
+    return " ".join(run_calls[-1])
+
+
+def test_docker_honours_skip_profile_skills_mount(tmp_path, monkeypatch):
+    """Flag off: canonical skills volume present. Flag on: omitted.
+
+    External skill dirs stay either way — they are shared checkouts, not
+    per-member credentials (novique-ai/retinue#192).
+    """
+    hermes_home = tmp_path / ".hermes"
+    skills_dir = hermes_home / "skills"
+    skills_dir.mkdir(parents=True)
+    (skills_dir / "profile-skill").mkdir()
+    external = tmp_path / "external-skills"
+    external.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setattr(
+        "agent.skill_utils.get_external_skills_dirs", lambda: [external]
+    )
+    monkeypatch.setattr("agent.skill_utils.get_project_skills_dirs", lambda: [])
+    monkeypatch.setattr(
+        "tools.credential_files.get_credential_file_mounts", lambda: []
+    )
+    monkeypatch.setattr(
+        "tools.credential_files.get_cache_directory_mounts", lambda: []
+    )
+
+    docker_env, calls = _docker_run_calls(monkeypatch)
+
+    monkeypatch.delenv("TERMINAL_DOCKER_SKIP_PROFILE_SKILLS_MOUNT", raising=False)
+    docker_env.DockerEnvironment(
+        image="python:3.11",
+        persistent_filesystem=False,
+        cpu=0,
+        memory=0,
+        disk=0,
+        task_id="skills-unset",
+    )
+    unset_args = _last_docker_run(calls)
+    assert ":/root/.hermes/skills:ro" in unset_args
+    assert ":/root/.hermes/external_skills/0:ro" in unset_args
+
+    calls.clear()
+    monkeypatch.setenv("TERMINAL_DOCKER_SKIP_PROFILE_SKILLS_MOUNT", "1")
+    docker_env.DockerEnvironment(
+        image="python:3.11",
+        persistent_filesystem=False,
+        cpu=0,
+        memory=0,
+        disk=0,
+        task_id="skills-set",
+    )
+    set_args = _last_docker_run(calls)
+    assert ":/root/.hermes/skills:ro" not in set_args
+    assert ":/root/.hermes/external_skills/0:ro" in set_args
+
+
+def test_room_overlay_makes_docker_skip_the_canonical_skills_volume(
+    tmp_path, monkeypatch
+):
+    """The rooms path: overlay_env bound via workspace_context, not process env."""
+    from tools import workspace_context
+
+    hermes_home = tmp_path / ".hermes"
+    skills_dir = hermes_home / "skills"
+    skills_dir.mkdir(parents=True)
+    (skills_dir / "profile-skill").mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.delenv("RETINUE_SHARED_DIR", raising=False)
+    monkeypatch.delenv("TERMINAL_DOCKER_SKIP_PROFILE_SKILLS_MOUNT", raising=False)
+    monkeypatch.setattr("agent.skill_utils.get_external_skills_dirs", lambda: [])
+    monkeypatch.setattr("agent.skill_utils.get_project_skills_dirs", lambda: [])
+    monkeypatch.setattr(
+        "tools.credential_files.get_credential_file_mounts", lambda: []
+    )
+    monkeypatch.setattr(
+        "tools.credential_files.get_cache_directory_mounts", lambda: []
+    )
+
+    docker_env, calls = _docker_run_calls(monkeypatch)
+    overlay = ide.overlay_env(_room(workspace="sandbox"))
+    with workspace_context.workspace(overlay):
+        docker_env.DockerEnvironment(
+            image="python:3.11",
+            persistent_filesystem=False,
+            cpu=0,
+            memory=0,
+            disk=0,
+            task_id="skills-overlay",
+        )
+    args = _last_docker_run(calls)
+    assert ":/root/.hermes/skills:ro" not in args

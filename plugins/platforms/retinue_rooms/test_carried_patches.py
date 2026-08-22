@@ -254,3 +254,48 @@ def test_image_capabilities_pass_backend_upscale_through(monkeypatch):
     info = igt._active_image_capabilities()
     assert info.get("supports_upscale") is True
     assert info.get("upscale_note") == "note text"
+
+
+def test_include_profile_skills_gate_patch_present():
+    """#92329 / retinue#192: profile-local skills mount is gated."""
+    src = _read("tools/credential_files.py")
+    func = src.split("def get_skills_directory_mount(")[1].split("\ndef ")[0]
+    # Keyword-only, default True so non-room callers are unchanged.
+    # Assert on the signature, not the docstring — a comment quoting the
+    # name is not the patch.
+    sig = func.split('"""', 1)[0]
+    assert "include_profile_skills: bool = True" in sig, (
+        "include_profile_skills carried patch was clobbered (likely by an "
+        "upstream sync) — shared-room containers would remount the creating "
+        "profile's skills at /root/.hermes/skills for every member. "
+        "Reapply per retinue/FORK-POLICY.md."
+    )
+    # The flag must actually gate the profile-local entry. External and
+    # project dirs stay mounted regardless.
+    body = func.split('"""', 2)[-1]
+    assert "if include_profile_skills and skills_dir.is_dir():" in body, (
+        "include_profile_skills is declared but no longer gates the "
+        "profile-local skills entry — the creating profile's private "
+        "skills would still bind-mount. Reapply per retinue/FORK-POLICY.md."
+    )
+
+
+def test_skip_profile_skills_mount_call_site_patch_present():
+    """#92329 / retinue#192: docker honors the skip via include_profile_skills."""
+    src = _read("tools/environments/docker.py")
+    # The override must feed include_profile_skills — guard the exact
+    # composition. A comment quoting the env var is not the patch.
+    call = src.split("for skills_mount in get_skills_directory_mount(")[1].split(
+        "):", 1
+    )[0]
+    assert "include_profile_skills=not skip_profile_skills" in call, (
+        "skip-profile-skills docker call-site patch was clobbered (likely "
+        "by an upstream sync) — shared-room containers would remount the "
+        "creating profile's skills at /root/.hermes/skills for every member. "
+        "Reapply per retinue/FORK-POLICY.md."
+    )
+    # Reads through workspace_context, not os.getenv: the skip flag is
+    # carried per-room overlay so concurrent rooms do not race process env.
+    assign = src.split("skip_profile_skills =", 1)[1].split("for skills_mount", 1)[0]
+    assert "workspace_context.getenv(" in assign
+    assert '"TERMINAL_DOCKER_SKIP_PROFILE_SKILLS_MOUNT"' in assign
