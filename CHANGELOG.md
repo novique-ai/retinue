@@ -12,6 +12,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Fixed
+
+- Phone browsers no longer get the desktop three-pane squeezed into a sliver.
+  Below 720px the sidebar is an overlay drawer (closed by default), the team
+  home and room transcript are full width, and the composer stays pinned
+  above the home indicator. Settings is a top-bar control, not a clipped
+  "Settin" chip.
+
 ### Changed
 
 - A timed-out or failed room turn speaks in the retainer's voice

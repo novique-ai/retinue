@@ -52,6 +52,7 @@ import { LOGO_SRC, YOU_SRC, agentIcon } from "./icons";
 import { includeBusyThinkers, isWorkingIn, remainingThinkers, remainingThinkersAfter } from "./thinking";
 import { PushToTalkButton } from "./voice/PushToTalkButton";
 import { usePushToTalk } from "./voice/usePushToTalk";
+import { shellClassName, useKeyboardInset, useNarrowViewport } from "./viewport";
 
 /** Shared outer ring/tooltip/working-pulse frame for every avatar shape. */
 function AvatarFrame({
@@ -1244,7 +1245,7 @@ function RoomView({
             <InviteMenu candidates={inviteCandidates} onInvite={(slug) => void inviteMember(slug)} />
           </div>
         </div>
-        <div className="room-header-actions">
+        <div className="room-header-actions desktop-room-actions">
           <button
             type="button"
             className={`mini wide${visibleThinking.length ? " danger-btn" : ""}`}
@@ -1293,6 +1294,36 @@ function RoomView({
           >
             Save routine
           </button>
+        </div>
+        <div className="room-overflow">
+          <button
+            type="button"
+            className={`room-stop${visibleThinking.length ? " danger-btn" : ""}`}
+            title="Stop this room's turn and Speak Replies (Esc)"
+            onClick={() => void stopTurn()}
+          >
+            Stop
+          </button>
+          <RowMenu
+            actions={[
+              { label: "Edit", onClick: onEdit },
+              { label: room.archived ? "Unarchive" : "Archive", onClick: onArchive },
+              { label: "Delete", danger: true, onClick: onDelete },
+              {
+                label: itineraryOpen ? "Hide itinerary" : "Show itinerary",
+                onClick: () => {
+                  const next = !itineraryOpen;
+                  setItineraryOpen(next);
+                  try {
+                    localStorage.setItem(`retinue:itinerary:${room.id}`, next ? "1" : "0");
+                  } catch {
+                    /* ignore */
+                  }
+                },
+              },
+              { label: "Save routine", onClick: onSaveRoutine },
+            ]}
+          />
         </div>
       </header>
       {roomRoutines.length > 0 && (
@@ -2940,6 +2971,17 @@ export default function App() {
     () => localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1",
   );
   const [settingsDirty, setSettingsDirty] = useState(false);
+  const narrow = useNarrowViewport();
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  useKeyboardInset();
+
+  useEffect(() => {
+    if (!narrow) setDrawerOpen(false);
+  }, [narrow]);
+
+  useEffect(() => {
+    if (modal) setDrawerOpen(false);
+  }, [modal]);
 
   const refresh = useCallback(async () => {
     try {
@@ -3027,7 +3069,13 @@ export default function App() {
     return () => window.clearInterval(t);
   }, []);
 
+  const closeDrawer = useCallback(() => setDrawerOpen(false), []);
+
   const toggleSidebar = useCallback(() => {
+    if (narrow) {
+      setDrawerOpen((open) => !open);
+      return;
+    }
     setSidebarCollapsed((prev) => {
       const next = !prev;
       try {
@@ -3037,12 +3085,24 @@ export default function App() {
       }
       return next;
     });
+  }, [narrow]);
+
+  const openRoom = useCallback((room: RoomMeta) => {
+    setCurrent(room);
+    setDrawerOpen(false);
   }, []);
 
   // Ctrl+B / Cmd+B, the conventional sidebar toggle — but not while the user
-  // is typing somewhere.
+  // is typing somewhere. On a narrow viewport this opens the overlay drawer
+  // instead of collapsing the desktop rail.
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && drawerOpen) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        setDrawerOpen(false);
+        return;
+      }
       if (e.key.toLowerCase() !== "b" || !(e.ctrlKey || e.metaKey)) return;
       const target = e.target as HTMLElement | null;
       const tag = target?.tagName;
@@ -3050,9 +3110,9 @@ export default function App() {
       e.preventDefault();
       toggleSidebar();
     };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [toggleSidebar]);
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [toggleSidebar, drawerOpen]);
 
   const persistLayout = useCallback(
     async (next: SidebarLayout) => {
@@ -3088,6 +3148,9 @@ export default function App() {
     } catch {
       /* ignore */
     }
+    // Stay in the drawer: picking a project filters the room list, which
+    // is still in the overlay. Closing here sent people back to team-home
+    // before they could open a room.
   };
 
   const visibleProjects = projects.filter((p) => showArchived || !p.archived);
@@ -3345,9 +3408,62 @@ export default function App() {
           </button>
         </div>
       )}
-      <div className="shell">
-      <aside className={sidebarCollapsed ? "sidebar collapsed" : "sidebar"}>
-        {sidebarCollapsed ? (
+      <div className={shellClassName({ narrow, drawerOpen })}>
+      <header className="mobile-topbar">
+        <button
+          type="button"
+          className="mobile-icon-btn"
+          aria-label={drawerOpen ? "Close menu" : "Open menu"}
+          aria-expanded={drawerOpen}
+          aria-controls="retinue-sidebar"
+          onClick={() => setDrawerOpen((open) => !open)}
+        >
+          {drawerOpen ? (
+            <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+              <path
+                fill="currentColor"
+                d="M18.3 5.71 12 12.01 5.7 5.7 4.29 7.11 10.59 13.4 4.29 19.7 5.7 21.11 12 14.83l6.29 6.29 1.41-1.41-6.29-6.3 6.3-6.29z"
+              />
+            </svg>
+          ) : (
+            <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+              <path
+                fill="currentColor"
+                d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"
+              />
+            </svg>
+          )}
+        </button>
+        <h1 className="mobile-title">{current?.name ?? "Retinue"}</h1>
+        <button
+          type="button"
+          className="mobile-icon-btn"
+          aria-label="Settings"
+          onClick={() => setModal("settings")}
+        >
+          <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+            <path
+              fill="currentColor"
+              d="M19.14 12.94c.04-.31.06-.63.06-.94s-.02-.63-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.03 7.03 0 0 0-1.63-.94l-.36-2.54A.5.5 0 0 0 13.9 2h-3.8a.5.5 0 0 0-.49.42l-.36 2.54c-.6.24-1.15.55-1.63.94l-2.39-.96a.5.5 0 0 0-.6.22L2.81 8.48a.5.5 0 0 0 .12.64l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94L2.93 14.1a.5.5 0 0 0-.12.64l1.92 3.32c.13.23.4.32.64.22l2.39-.96c.48.39 1.03.7 1.63.94l.36 2.54c.05.24.25.42.49.42h3.8c.24 0 .44-.18.49-.42l.36-2.54c.6-.24 1.15-.55 1.63-.94l2.39.96c.24.1.51 0 .64-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58zM12 15.5A3.5 3.5 0 1 1 12 8.5a3.5 3.5 0 0 1 0 7z"
+            />
+          </svg>
+        </button>
+      </header>
+      {drawerOpen && (
+        <button
+          type="button"
+          className="drawer-scrim"
+          aria-label="Close menu"
+          onClick={closeDrawer}
+        />
+      )}
+      <aside
+        id="retinue-sidebar"
+        className={sidebarCollapsed && !narrow ? "sidebar collapsed" : "sidebar"}
+        aria-hidden={narrow && !drawerOpen}
+        inert={narrow && !drawerOpen ? true : undefined}
+      >
+        {sidebarCollapsed && !narrow ? (
           <nav className="rail" aria-label="Rooms">
             <button
               type="button"
@@ -3364,7 +3480,7 @@ export default function App() {
                 key={r.id}
                 room={r}
                 active={current?.id === r.id}
-                onClick={() => setCurrent(r)}
+                onClick={() => openRoom(r)}
               />
             ))}
           </nav>
@@ -3373,8 +3489,20 @@ export default function App() {
         <div className="brand">
           <img className="brand-logo" src={LOGO_SRC} alt="" />
           Retinue
-          <button className="mini" style={{ marginLeft: "auto" }} onClick={() => setModal("settings")}>
+          <button
+            className="mini wide brand-settings"
+            style={{ marginLeft: "auto" }}
+            onClick={() => setModal("settings")}
+          >
             Settings
+          </button>
+          <button
+            type="button"
+            className="mini wide sidebar-close"
+            aria-label="Close menu"
+            onClick={closeDrawer}
+          >
+            Close
           </button>
         </div>
         <div className="section">
@@ -3453,7 +3581,7 @@ export default function App() {
                 />
                 <button
                   className={current?.id === r.id ? "nav-item active" : "nav-item"}
-                  onClick={() => setCurrent(r)}
+                  onClick={() => openRoom(r)}
                 >
                   {r.name}
                   {r.archived ? " (archived)" : ""}
