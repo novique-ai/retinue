@@ -472,7 +472,13 @@ class TestDelegationCleanup:
         parent._active_children.append(child)
         relay_host = MagicMock()
         monkeypatch.setattr(relay_runtime, "get_runtime", lambda **_kwargs: relay_host)
-        monkeypatch.setattr("tools.delegate_tool._get_child_timeout", lambda: 0.1)
+        # The parent timeout must fire WHILE the child still holds its relay
+        # turn. 0.1s was too short for the worker thread to be scheduled on a
+        # loaded CI runner (the child never reached child_started.set(), so
+        # this asserted a timing precondition rather than waiting for it).
+        # 5s is plenty of time to schedule a thread; the child holds 30s so
+        # it cannot finish first. A child that never starts still fails.
+        monkeypatch.setattr("tools.delegate_tool._get_child_timeout", lambda: 5.0)
 
         def run_conversation(**kwargs):
             lease = relay_runtime.SESSION_COORDINATOR.acquire_conversation(
@@ -487,7 +493,7 @@ class TestDelegationCleanup:
             )
             child_started.set()
             try:
-                release_child.wait(timeout=5)
+                release_child.wait(timeout=30)
                 return {
                     "final_response": "late result",
                     "completed": True,
@@ -512,7 +518,11 @@ class TestDelegationCleanup:
                 parent_agent=parent,
             )
 
-            assert child_started.is_set()
+            assert child_started.wait(timeout=10), (
+                "child thread never reached run_conversation — the timeout "
+                "fired before the worker was scheduled, so this is not a "
+                "timed-out-while-holding-a-turn case"
+            )
             assert result["status"] == "timeout"
             assert relay_runtime.SESSION_COORDINATOR.has_active_turn(
                 profile_key=str(profile_home),
@@ -521,7 +531,9 @@ class TestDelegationCleanup:
             relay_host.unregister_subagent.assert_not_called()
 
             release_child.set()
-            assert child_finished.wait(timeout=5)
+            assert child_finished.wait(timeout=10), (
+                "timed-out child never unwound its relay turn"
+            )
             assert not relay_runtime.SESSION_COORDINATOR.has_active_turn(
                 profile_key=str(profile_home),
                 session_id=child.session_id,
