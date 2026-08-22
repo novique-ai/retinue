@@ -999,6 +999,30 @@ def test_briefing_roster_uses_display_handles():
     assert "@Sheila please make a 16:9 header" in text
 
 
+def test_briefing_roster_carries_job_titles():
+    # #203: the roster answers "what is this handle FOR", not just who is here.
+    room = _room(members=["scout", "digest", "editor"], lead="scout")
+    text = engine.room_briefing(
+        room,
+        "scout",
+        ["Mark"],
+        jobs={"digest": "Content Research Assistant", "scout": "fast factual research"},
+    )
+    assert "@digest — Content Research Assistant" in text
+    # A member with no job gets a bare handle, never a dangling separator.
+    assert "@editor —" not in text
+    assert "@editor" in text
+    # The member's own job is not in the roster (the roster lists others).
+    assert "fast factual research" not in text
+
+
+def test_briefing_roster_without_jobs_is_unchanged():
+    room = _room(members=["scout", "editor"], lead="scout")
+    assert engine.room_briefing(room, "scout", ["Mark"]) == engine.room_briefing(
+        room, "scout", ["Mark"], jobs={}
+    )
+
+
 # ── store ────────────────────────────────────────────────────────────────
 
 

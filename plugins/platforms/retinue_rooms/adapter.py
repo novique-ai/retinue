@@ -811,6 +811,17 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
                 names[slug] = str(agent.get("display_name") or slug)
         return names
 
+    def _member_jobs(self, room: Room) -> Dict[str, str]:
+        """slug → one-line job title for members of *room* (absent if unset)."""
+        jobs: Dict[str, str] = {}
+        for agent in hire.list_agents(self._home_dir()):
+            slug = str(agent.get("slug") or "")
+            if slug in room.members:
+                job = str(agent.get("job") or "").strip()
+                if job:
+                    jobs[slug] = job
+        return jobs
+
     # ── agents (the hire flow) ───────────────────────────────────────────
 
     def list_agents(self) -> List[Dict[str, Any]]:
@@ -1975,6 +1986,7 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
                 self.store.list_rooms(), member, room.id
             ),
             governed_contract=governed_contract,
+            jobs=self._member_jobs(room),
         )
 
         speaker_display = (

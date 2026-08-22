@@ -1087,6 +1087,7 @@ def room_briefing(
     principal_name: Optional[str] = None,
     other_rooms: Optional[List["Room"]] = None,
     governed_contract: Optional[str] = None,
+    jobs: Optional[Dict[str, str]] = None,
 ) -> str:
     """Per-turn channel prompt: who you are, who is here, how to behave.
 
@@ -1095,8 +1096,14 @@ def room_briefing(
     final word of the briefing. The adapter only passes it for governed
     members in ide rooms, and fails the turn closed rather than passing
     None for a governed member whose contract is unreadable.
+
+    ``jobs`` (slug → one-line job title) annotates each roster entry so a
+    member knows what a teammate is *for*, not just their handle (#203).
+    The when/how of delegation stays in each hire's SOUL; this is only the
+    directory line.
     """
     names = display_names or {}
+    member_jobs = jobs or {}
     me_name = names.get(member) or member
     me_handle = mention_handle(member, me_name, room.members, names)
     others = [m for m in room.members if m != member]
@@ -1104,7 +1111,9 @@ def room_briefing(
     for slug in others:
         handle = mention_handle(slug, names.get(slug), room.members, names)
         extra = f" (`{slug}`)" if handle.lower() != slug.lower() else ""
-        roster.append(f"@{handle}{extra}")
+        job = str(member_jobs.get(slug) or "").strip()
+        title = f" — {job}" if job else ""
+        roster.append(f"@{handle}{extra}{title}")
     people = ", ".join(user_names) if user_names else "the user"
     you_handle = principal_mention_handle(principal_name)
     escalate = "Escalate a real judgment call with @user"

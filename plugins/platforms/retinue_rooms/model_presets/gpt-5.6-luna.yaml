@@ -1,0 +1,4 @@
+# Cloud: OpenAI GPT-5.6 Luna (fast tier) via workspace device-code login.
+model:
+  default: gpt-5.6-luna
+  provider: openai-codex

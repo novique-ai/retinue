@@ -1,4 +1,0 @@
-# Cloud: OpenAI Codex via workspace device-code login.
-model:
-  default: gpt-5.4
-  provider: openai-codex
