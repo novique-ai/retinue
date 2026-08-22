@@ -283,6 +283,9 @@ convention: no `RETINUE_ROOMS_API_KEY` → localhost-only):
 | `GET /rooms/{id}/cron/jobs` | scheduled jobs targeting this room |
 | `GET/PUT /rooms/{id}/itinerary` | living outline. The **lead** authors it (fenced `itinerary` block in their reply). The user can view/edit the right pane. |
 | `GET/PUT /sidebar` | room order + team separators + agent order (`{rooms[], items:[{kind:team,id,label}|{kind:agent,slug}]}`) |
+| `GET/POST /projects` | list (`{projects[], order[]}`) / create (`{name}`). `order` is display order in `$HERMES_HOME/retinue_projects.json`. Unfiled is not a project and is not in `order`. |
+| `PUT /projects` | rewrite `order` (`{order:[id…]}`). Unknown ids dropped; missing ids append. Do not send Unfiled. |
+| `PATCH/DELETE /projects/{id}` | rename / archive (`{name?, archived?}`) / remove. Delete unfiles rooms; transcripts stay. |
 | `POST /rooms/{id}/messages` | user speaks (`{text, from?}`) → 202, cycle runs async |
 | `POST /rooms/{id}/stop` | abort this room's in-flight cycle (`{from?}`) → 200 `{stopped, idle?}`. Posts `Stopped.`. Idle is a no-op. Other rooms are untouched. |
 | `POST /rooms/{id}/attachments` | raw file body + `filename=` query → `{path:/workspace/uploads/…}` (composer `+`) |

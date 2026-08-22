@@ -97,6 +97,16 @@ def list_projects(home_dir: str) -> List[Dict[str, Any]]:
     return load(home_dir)["projects"]
 
 
+def reorder(home_dir: str, order: Iterable[str]) -> Dict[str, Any]:
+    """Rewrite display order. Unknown ids are dropped; missing ids append.
+
+    Unfiled is not a project and must never appear in ``order``.
+    """
+    data = load(home_dir)
+    data["order"] = [str(pid) for pid in order]
+    return save(home_dir, data)
+
+
 def create_project(home_dir: str, name: str) -> Dict[str, Any]:
     name = (name or "").strip()
     if not name:

@@ -81,6 +81,39 @@ def test_create_patch_delete_project(tmp_path):
     assert projects.delete_project(home, pid) is False
 
 
+def test_reorder_persists_and_drops_unknowns(tmp_path):
+    home = str(tmp_path)
+    a = projects.create_project(home, "Alpha")
+    b = projects.create_project(home, "Beta")
+    c = projects.create_project(home, "Gamma")
+    assert projects.load(home)["order"] == [a["id"], b["id"], c["id"]]
+
+    saved = projects.reorder(home, [c["id"], a["id"], "ghost", b["id"]])
+    assert saved["order"] == [c["id"], a["id"], b["id"]]
+    assert [p["id"] for p in saved["projects"]] == [c["id"], a["id"], b["id"]]
+    assert projects.load(home)["order"] == [c["id"], a["id"], b["id"]]
+
+
+def test_reorder_keeps_archived_in_saved_slot(tmp_path):
+    home = str(tmp_path)
+    a = projects.create_project(home, "Alpha")
+    b = projects.create_project(home, "Beta")
+    c = projects.create_project(home, "Gamma")
+    projects.patch_project(home, b["id"], {"archived": True})
+    saved = projects.reorder(home, [c["id"], b["id"], a["id"]])
+    assert saved["order"] == [c["id"], b["id"], a["id"]]
+    archived = [p for p in saved["projects"] if p["archived"]]
+    assert [p["id"] for p in archived] == [b["id"]]
+
+
+def test_reorder_appends_ids_missing_from_the_payload(tmp_path):
+    home = str(tmp_path)
+    a = projects.create_project(home, "Alpha")
+    b = projects.create_project(home, "Beta")
+    saved = projects.reorder(home, [b["id"]])
+    assert saved["order"] == [b["id"], a["id"]]
+
+
 # ── adapter integration ──────────────────────────────────────────────────
 
 
@@ -209,6 +242,18 @@ def test_http_projects_routes(tmp_path, monkeypatch):
         status, payload = call("GET", "/projects")
         assert status == 200
         assert [p["id"] for p in payload["projects"]] == [pid]
+        assert payload["order"] == [pid]
+
+        other = call("POST", "/projects", {"name": "Ops"})[1]
+        status, payload = call("PUT", "/projects", {"order": [other["id"], pid]})
+        assert status == 200
+        assert payload["order"] == [other["id"], pid]
+        assert [p["id"] for p in payload["projects"]] == [other["id"], pid]
+        on_disk = projects.load(str(tmp_path))
+        assert on_disk["order"] == [other["id"], pid]
+
+        status, payload = call("PUT", "/projects", {})
+        assert status == 400
 
         status, payload = call("PATCH", f"/projects/{pid}", {"name": "Launch v2"})
         assert status == 200
@@ -224,9 +269,13 @@ def test_http_projects_routes(tmp_path, monkeypatch):
         status, payload = call("DELETE", f"/projects/{pid}")
         assert status == 404
 
+        status, payload = call("DELETE", f"/projects/{other['id']}")
+        assert status == 200
+
         status, payload = call("GET", "/projects")
         assert status == 200
         assert payload["projects"] == []
+        assert payload["order"] == []
     finally:
         httpd.shutdown()
         httpd.server_close()

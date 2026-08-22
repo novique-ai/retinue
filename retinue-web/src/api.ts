@@ -481,7 +481,9 @@ export const api = {
     req<{ deleted: string }>("DELETE", `/agents/${slug}`),
   getSidebar: () => req<SidebarLayout>("GET", "/sidebar"),
   putSidebar: (layout: SidebarLayout) => req<SidebarLayout>("PUT", "/sidebar", layout),
-  listProjects: () => req<{ projects: ProjectMeta[] }>("GET", "/projects"),
+  listProjects: () => req<{ projects: ProjectMeta[]; order: string[] }>("GET", "/projects"),
+  putProjects: (body: { order: string[] }) =>
+    req<{ projects: ProjectMeta[]; order: string[] }>("PUT", "/projects", body),
   createProject: (name: string) => req<ProjectMeta>("POST", "/projects", { name }),
   patchProject: (id: string, body: { name?: string; archived?: boolean }) =>
     req<ProjectMeta>("PATCH", `/projects/${encodeURIComponent(id)}`, body),

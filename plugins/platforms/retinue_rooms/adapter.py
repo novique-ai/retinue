@@ -755,6 +755,16 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
     def list_projects(self) -> List[Dict[str, Any]]:
         return projects.list_projects(self._home_dir())
 
+    def projects_payload(self) -> Dict[str, Any]:
+        """``{projects, order}`` — list is already in ``order``."""
+        return projects.load(self._home_dir())
+
+    def put_projects(self, body: Dict[str, Any]) -> Dict[str, Any]:
+        order = body.get("order")
+        if not isinstance(order, list):
+            raise ValueError("order must be a list of project ids")
+        return projects.reorder(self._home_dir(), order)
+
     def _project_exists(self, project_id: str) -> bool:
         return any(p["id"] == project_id for p in projects.list_projects(self._home_dir()))
 
@@ -2500,7 +2510,7 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
         if parts == ["sidebar"]:
             return self._json(200, adapter.get_sidebar())
         if parts == ["projects"]:
-            return self._json(200, {"projects": adapter.list_projects()})
+            return self._json(200, adapter.projects_payload())
         if parts == ["auth"] or (len(parts) == 2 and parts[0] == "auth" and parts[1] == "reauth"):
             query = parse_qs(parsed.query)
             session_id = (query.get("session") or [""])[0].strip()
@@ -2942,6 +2952,11 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
         if parts == ["sidebar"]:
             try:
                 return self._json(200, self.server.adapter.put_sidebar(body))
+            except ValueError as e:
+                return self._json(400, {"error": str(e)})
+        if parts == ["projects"]:
+            try:
+                return self._json(200, self.server.adapter.put_projects(body))
             except ValueError as e:
                 return self._json(400, {"error": str(e)})
         if len(parts) == 3 and parts[0] == "rooms" and parts[2] == "itinerary":
