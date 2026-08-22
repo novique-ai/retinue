@@ -24,6 +24,19 @@ def _read(rel: str) -> str:
         return f.read()
 
 
+def _executable_lines(src: str) -> list[str]:
+    """Non-empty, non-comment lines.
+
+    A guard that can fire on a *comment* quoting the patched names is a
+    guard that gets muted (see the SKILLS_GUIDANCE note in this module).
+    """
+    return [
+        line
+        for line in src.splitlines()
+        if line.lstrip() and not line.lstrip().startswith("#")
+    ]
+
+
 def test_skills_guidance_avoids_the_content_filter_wording():
     """#82154: the stock first sentence trips Anthropic's content filter.
 
@@ -254,6 +267,64 @@ def test_image_capabilities_pass_backend_upscale_through(monkeypatch):
     info = igt._active_image_capabilities()
     assert info.get("supports_upscale") is True
     assert info.get("upscale_note") == "note text"
+
+
+def test_slash_worker_marker_patch_present():
+    """#92330 / retinue#193: slash workers mark themselves for the show_tools join."""
+    src = _read("tui_gateway/slash_worker.py")
+    # Module-level helper; the next sibling is a top-level def.
+    region = src.split("def _prepare_slash_worker_runtime(", 1)[1].split("\ndef ", 1)[0]
+    code = "\n".join(_executable_lines(region))
+    # Assignment, not a comment quoting the name. The comment in this
+    # function mentions HERMES_INTERACTIVE=1, not this statement.
+    assert 'os.environ["HERMES_SLASH_WORKER"] = "1"' in code, (
+        "HERMES_SLASH_WORKER marker was clobbered (likely by an "
+        "upstream sync) — slash-worker /tools would skip the MCP "
+        "discovery join and list a catalog that's still missing the "
+        "connecting server. Reapply per retinue/FORK-POLICY.md — "
+        "novique-ai/retinue#193 and NousResearch/hermes-agent#92330."
+    )
+
+
+def test_show_tools_slash_worker_join_patch_present():
+    """#92330 / retinue#193: show_tools joins MCP discovery only in slash workers.
+
+    Slash workers have no late-refresh, so /tools must wait for in-flight
+    discovery. The join is gated on HERMES_SLASH_WORKER; an ungated join is
+    a different defect (a human's /tools blocks 30s on a hung MCP server),
+    not a passing state.
+    """
+    src = _read("cli.py")
+    # show_tools is a class method; the next sibling is indented ``def``.
+    region = src.split("def show_tools(", 1)[1].split("\n    def ", 1)[0]
+    # The hunk's comment quotes HERMES_SLASH_WORKER and "join". A guard
+    # satisfied by that comment is a guard that gets muted.
+    lines = _executable_lines(region)
+    gate = 'if os.environ.get("HERMES_SLASH_WORKER") == "1":'
+    gate_lines = [line for line in lines if gate in line]
+    assert gate_lines, (
+        "show_tools HERMES_SLASH_WORKER gate was clobbered (likely by an "
+        "upstream sync) — slash-worker /tools would answer with a catalog "
+        "that's still missing a slow-connecting MCP server. Reapply per "
+        "retinue/FORK-POLICY.md — novique-ai/retinue#193 and "
+        "NousResearch/hermes-agent#92330."
+    )
+    gate_line = gate_lines[0]
+    gate_indent = len(gate_line) - len(gate_line.lstrip())
+    gate_idx = lines.index(gate_line)
+    body = []
+    for line in lines[gate_idx + 1 :]:
+        indent = len(line) - len(line.lstrip())
+        if indent <= gate_indent:
+            break
+        body.append(line)
+    assert any("join_mcp_discovery(timeout=30.0)" in line for line in body), (
+        "show_tools MCP join is missing or no longer nested under the "
+        "HERMES_SLASH_WORKER gate — an ungated join is an interactive "
+        "regression (a human's /tools blocks 30s on a hung MCP server). "
+        "Reapply per retinue/FORK-POLICY.md — novique-ai/retinue#193 and "
+        "NousResearch/hermes-agent#92330."
+    )
 
 
 def test_include_profile_skills_gate_patch_present():

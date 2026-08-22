@@ -65,6 +65,13 @@ def _prepare_slash_worker_runtime() -> None:
     """
     import logging
 
+    # Slash workers have no late-refresh (the TUI does), so show_tools must
+    # join in-flight MCP discovery here or a slow stdio handshake answers
+    # /tools with a catalog that's still missing the connecting server.
+    # HERMES_INTERACTIVE=1 is already set in main() and means the opposite
+    # (interactive session / TUI-or-CLI), so it is not a usable signal.
+    os.environ["HERMES_SLASH_WORKER"] = "1"
+
     from hermes_cli.mcp_startup import (
         start_background_mcp_discovery,
         wait_for_mcp_discovery,
