@@ -49,6 +49,11 @@ body,
   height: 100%;
 }
 
+html,
+body {
+  overflow: hidden;
+}
+
 body {
   background: var(--bg);
   color: var(--text);
@@ -59,6 +64,8 @@ body {
   display: flex;
   flex-direction: column;
   height: 100%;
+  height: calc(100dvh - var(--keyboard-inset, 0px));
+  max-height: calc(100dvh - var(--keyboard-inset, 0px));
 }
 
 .shell {
@@ -345,6 +352,8 @@ body {
   padding: 3px 6px;
   font-size: 11px;
   border-radius: 6px;
+  width: 100%;
+  max-width: 100%;
 }
 
 .agent-model:disabled {
@@ -476,6 +485,7 @@ body {
 .welcome h1 {
   font-size: 34px;
   margin-bottom: 8px;
+  text-wrap: balance;
 }
 
 .welcome.empty-state .empty-state-copy {
@@ -862,11 +872,12 @@ body {
 
 .composer {
   border-top: 1px solid var(--border);
-  padding: 10px 20px 14px;
+  padding: 10px 20px calc(14px + env(safe-area-inset-bottom, 0px));
 }
 
 .mention-bar {
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
   margin-bottom: 8px;
 }
@@ -1082,15 +1093,20 @@ select:focus {
 .overlay {
   position: fixed;
   inset: 0;
+  z-index: 80;
   background: rgba(8, 9, 14, 0.6);
   display: flex;
   align-items: center;
   justify-content: center;
+  overflow-y: auto;
+  padding: max(8px, env(safe-area-inset-top, 0px)) 8px max(8px, env(safe-area-inset-bottom, 0px));
 }
 
 .panel {
   width: 420px;
   max-width: 92vw;
+  max-height: min(100dvh - 16px, 100%);
+  overflow-y: auto;
   background: var(--bg-raised);
   border: 1px solid var(--border);
   border-radius: 14px;
@@ -1323,6 +1339,10 @@ select:focus {
   min-width: 0;
 }
 
+.row-menu-wrap {
+  position: relative;
+}
+
 .row-menu-btn {
   flex: none;
   width: 22px;
@@ -1443,6 +1463,10 @@ select:focus {
   background: var(--accent);
   color: var(--accent-text);
   border-color: var(--accent);
+}
+
+.room-overflow {
+  display: none;
 }
 
 .room-routines {
@@ -1631,4 +1655,440 @@ select:focus {
 
 .danger-btn {
   color: #f7768e;
+}
+
+/* Hidden on desktop — shown inside the NARROW_BREAKPOINT query. */
+.mobile-topbar,
+.drawer-scrim,
+.sidebar-close {
+  display: none;
+}
+
+/* ── NARROW_BREAKPOINT: 720px ──────────────────────────────────────────
+ * Keep in lockstep with viewport.ts (`NARROW_BREAKPOINT` / `NARROW_MEDIA`).
+ *
+ * At this width the sidebar MUST be a position:fixed overlay drawer, NEVER
+ * a docked 292px flex column (`.sidebar { width: 292px; flex: none }` in
+ * the base rules). `.shell` still has `display: flex` here — that is the
+ * column shell (top bar + main), not a two-pane dock. JS adds `.narrow`
+ * and `.drawer-open` (see shellClassName) so the hamburger/scrim contract
+ * matches; the media query itself is what un-docks the column, so a phone
+ * first-paints correctly even before JS.
+ *
+ * Regression: if `.sidebar` is once again in normal flow at 375px, the
+ * main pane collapses to a sliver. Grep this comment + `max-width: 720px`.
+ * ──────────────────────────────────────────────────────────────────── */
+@media (max-width: 720px) {
+  .shell,
+  .shell.narrow {
+    flex-direction: column;
+    min-width: 0;
+  }
+
+  .mobile-topbar {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex: none;
+    min-height: calc(44px + env(safe-area-inset-top, 0px));
+    padding: env(safe-area-inset-top, 0px) 8px 0;
+    padding-left: max(8px, env(safe-area-inset-left, 0px));
+    padding-right: max(8px, env(safe-area-inset-right, 0px));
+    background: var(--bg-raised);
+    border-bottom: 1px solid var(--border);
+    z-index: 55;
+    position: relative;
+  }
+
+  .app-root:has(.auth-banner) .mobile-topbar {
+    padding-top: 0;
+    min-height: 44px;
+  }
+
+  .auth-banner {
+    padding-top: calc(8px + env(safe-area-inset-top, 0px));
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  .mobile-icon-btn {
+    flex: none;
+    width: 44px;
+    height: 44px;
+    border: 0;
+    border-radius: 10px;
+    background: transparent;
+    color: var(--text);
+    font-size: 22px;
+    line-height: 1;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    touch-action: manipulation;
+  }
+
+  .mobile-icon-btn:focus-visible {
+    outline: 1px solid var(--accent);
+    outline-offset: 1px;
+  }
+
+  .mobile-title {
+    flex: 1;
+    min-width: 0;
+    margin: 0;
+    font-size: 16px;
+    font-weight: 650;
+    letter-spacing: 0.2px;
+    text-align: center;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .drawer-scrim {
+    display: none;
+    position: fixed;
+    inset: 0;
+    z-index: 40;
+    border: 0;
+    padding: 0;
+    margin: 0;
+    background: rgba(8, 9, 14, 0.55);
+    cursor: pointer;
+  }
+
+  .shell.drawer-open .drawer-scrim {
+    display: block;
+  }
+
+  /*
+   * Overlay drawer — taken out of flex flow so `.main` is full width.
+   * Width is min(292px, 100vw - 48px) so Settings is never "Settin".
+   * Off-canvas until `.drawer-open`. `.sidebar.collapsed` must NOT shrink
+   * to the 64px rail here.
+   */
+  .sidebar,
+  .sidebar.collapsed {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: min(292px, calc(100vw - 48px));
+    max-width: calc(100vw - 48px);
+    z-index: 50;
+    transform: translateX(-100%);
+    transition: transform 0.2s ease;
+    padding-top: calc(44px + env(safe-area-inset-top, 0px));
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    box-shadow: none;
+  }
+
+  .shell.drawer-open .sidebar,
+  .shell.drawer-open .sidebar.collapsed {
+    transform: translateX(0);
+    box-shadow: 8px 0 32px rgba(0, 0, 0, 0.45);
+  }
+
+  /*
+   * Top bar already has Close (hamburger → X) and Settings (gear).
+   * Keeping the sidebar's Settings + Close chips next to the wordmark
+   * stacked a second chrome row and clipped "Retinue" on a 292px drawer.
+   */
+  .brand-settings,
+  .sidebar-close {
+    display: none;
+  }
+
+  .brand {
+    padding-right: 12px;
+  }
+
+  .main {
+    flex: 1;
+    width: 100%;
+    min-width: 0;
+    min-height: 0;
+  }
+
+  .welcome {
+    padding: 20px 16px 32px;
+    max-width: 100%;
+  }
+
+  .welcome-logo {
+    width: 104px;
+    height: 104px;
+  }
+
+  .welcome h1 {
+    font-size: 28px;
+  }
+
+  .retinue-cast {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+    margin-top: 22px;
+  }
+
+  .cast-member {
+    flex-direction: row;
+    justify-content: flex-start;
+    gap: 12px;
+    width: 100%;
+    font-size: 15px;
+    color: var(--text);
+    padding: 4px 0;
+  }
+
+  .cast-member + .cast-member {
+    border-top: 1px solid var(--border);
+    padding-top: 12px;
+  }
+
+  .mini,
+  .row-menu-btn {
+    width: 44px;
+    height: 44px;
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  .mini.wide {
+    width: auto;
+    min-width: 44px;
+    padding: 0 12px;
+    font-size: 13px;
+  }
+
+  /*
+   * Member-chip ⋯ and +invite live in a wrapping cloud next to @handles.
+   * The 44px rule above turns that cloud into a vertical stack of giant
+   * buttons (live 375 screenshot). Keep those compact; the room Stop /
+   * overflow ⋯ stay 44px via .room-overflow.
+   */
+  .room-members .row-menu-btn,
+  .member-chip .row-menu-btn,
+  .member-chip .mini {
+    width: 28px;
+    height: 28px;
+    min-width: 28px;
+    min-height: 28px;
+    margin-top: 0;
+  }
+
+  .invite-wrap .mini,
+  .invite-wrap .mini.wide {
+    width: auto;
+    height: 32px;
+    min-width: 0;
+    min-height: 32px;
+    padding: 0 10px;
+  }
+
+  .nav-item {
+    min-height: 44px;
+    padding: 12px 10px;
+  }
+
+  .section-head .mini {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  /*
+   * Drag-grip + up/down chevrons are a desktop power path. On a phone they
+   * steal the left edge of every room/agent row (name + faces already wrap).
+   * Reorder stays available on the docked desktop sidebar.
+   */
+  .drag-handle,
+  .reorder-btns {
+    display: none;
+  }
+
+  .team-label,
+  .nav-sub {
+    white-space: normal;
+    overflow: visible;
+    text-overflow: unset;
+  }
+
+  .room-header {
+    flex-wrap: nowrap;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 10px 12px;
+  }
+
+  .room-header-main {
+    flex: 1 1 auto;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+    min-width: 0;
+    width: auto;
+  }
+
+  .room-header h2 {
+    font-size: 15px;
+    text-wrap: balance;
+  }
+
+  .desktop-room-actions {
+    display: none;
+  }
+
+  .room-overflow {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex: none;
+    margin-left: 0;
+    align-self: flex-start;
+    position: relative;
+  }
+
+  .room-overflow .row-menu {
+    right: 0;
+    left: auto;
+  }
+
+  .room-stop {
+    min-height: 44px;
+    min-width: 44px;
+    padding: 0 14px;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    background: var(--bg-input);
+    color: var(--text);
+    font-weight: 600;
+    cursor: pointer;
+    touch-action: manipulation;
+  }
+
+  .room-stop.danger-btn {
+    color: #f7768e;
+  }
+
+  .room-members {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: wrap;
+    width: 100%;
+    gap: 6px 8px;
+  }
+
+  .member-chip {
+    flex: none;
+  }
+
+  .room-view,
+  .room-chat {
+    min-height: 0;
+  }
+
+  .room-body {
+    flex-direction: column;
+    min-height: 0;
+  }
+
+  .itinerary-pane {
+    width: 100%;
+    max-height: min(42vh, 320px);
+    flex: none;
+    border-left: 0;
+    border-bottom: 1px solid var(--border);
+    order: -1;
+  }
+
+  .messages {
+    padding: 14px 12px;
+    overscroll-behavior: contain;
+  }
+
+  .bubble {
+    max-width: 88%;
+  }
+
+  .composer {
+    padding: 10px 12px calc(12px + env(safe-area-inset-bottom, 0px));
+  }
+
+  .composer-row {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .composer-input {
+    flex: 1 1 100%;
+    order: -1;
+  }
+
+  .attach-btn,
+  .send-btn,
+  .talk-btn {
+    min-height: 44px;
+    min-width: 44px;
+  }
+
+  .send-btn,
+  .talk-btn {
+    padding: 10px 16px;
+  }
+
+  textarea,
+  input,
+  select {
+    font-size: 16px;
+  }
+
+  .panel,
+  .cron-panel,
+  .settings-panel {
+    width: min(420px, 100%);
+    max-width: 100%;
+    max-height: 100dvh;
+    overflow-y: auto;
+  }
+
+  .panel-actions {
+    flex-wrap: wrap;
+    position: sticky;
+    bottom: 0;
+    background: var(--bg-raised);
+    padding-top: 8px;
+  }
+
+  .panel-actions button,
+  .panel-actions .primary {
+    min-height: 44px;
+  }
+
+  .invite-menu {
+    left: auto;
+    right: 0;
+    max-width: calc(100vw - 24px);
+  }
+
+  .row-menu button,
+  .invite-opt,
+  .mention-btn {
+    min-height: 44px;
+  }
+
+  .primary,
+  .empty-state-cta {
+    min-height: 44px;
+  }
+}
+
+@media (max-width: 720px) and (prefers-reduced-motion: reduce) {
+  .sidebar,
+  .sidebar.collapsed {
+    transition: none;
+  }
 }
