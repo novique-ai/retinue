@@ -132,6 +132,13 @@ class _PendingTurn:
 
 
 class RetinueRoomsAdapter(BasePlatformAdapter):
+    # A room transcript has no platform message-length cap, so cron
+    # deliver=origin payloads must arrive whole. Without this the gateway
+    # truncates them at MAX_PLATFORM_OUTPUT (4000, sized for Telegram) with a
+    # host-path footer the web viewer cannot open (issue #201); the
+    # gateway/delivery.py gate hands full payloads to adapters declaring this.
+    splits_long_messages = True
+
     def __init__(self, config):
         super().__init__(config=config, platform=Platform("retinue_rooms"))
         # Shared-group sessions => the gateway prefixes "[speaker]" on inbound

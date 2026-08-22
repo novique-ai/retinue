@@ -166,3 +166,31 @@ def test_origin_delivery_still_blocked_when_platform_explicitly_disabled(
 
     assert "not configured/enabled" in (error or "")
     assert adapter.store.read_since("novique-demo", 0) == []
+
+
+def test_rooms_adapter_handles_long_messages_natively():
+    """Issue #201 — the gateway truncates cron deliveries at MAX_PLATFORM_OUTPUT
+    (4000, sized for Telegram) unless the adapter declares
+    ``splits_long_messages = True`` (gateway/delivery.py gate). A room
+    transcript has no platform length limit, so the rooms adapter must opt in
+    or a long scheduled report (e.g. a 15KB morning brief) reaches the room
+    cut off with a host-path footer the web viewer cannot open."""
+    assert RetinueRoomsAdapter.splits_long_messages is True
+
+
+@pytest.mark.asyncio
+async def test_cron_send_appends_full_long_payload(adapter):
+    """The other half of #201: send() itself must append the full payload —
+    a transcript line, unlike a chat platform, carries no length cap."""
+    body = "brief-line\n" * 1200  # ~13KB, well past MAX_PLATFORM_OUTPUT
+    result = await adapter.send(
+        "novique-demo",
+        body,
+        metadata={"job_id": "868ee7b5b3f6", "thread_id": "sally"},
+    )
+    assert result.success is True
+    lines = adapter.store.read_since("novique-demo", 0)
+    assert len(lines) == 1
+    assert lines[0].text == body.rstrip("\n")  # append strips one trailing newline
+    assert len(lines[0].text) > 10_000
+    assert "[truncated" not in lines[0].text
