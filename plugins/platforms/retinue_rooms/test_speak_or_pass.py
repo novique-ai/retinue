@@ -418,16 +418,101 @@ def test_lead_can_still_pull_a_teammate_in_with_rounds_off(tmp_path, monkeypatch
     assert calls == ["scout", "critic"]
 
 
+# ── mention-back grants a bounded second turn (#205) ─────────────────────
+
+
+def test_mention_back_gives_the_lead_a_review_turn(tmp_path, monkeypatch):
+    """A junior's "@lead ready for review" re-queues the lead in the SAME
+    directed cycle. Before #205 the lead was deduped as already-spoken and
+    the cycle ended with the review never happening."""
+    adapter = _adapter(tmp_path, monkeypatch)
+    room = _room(max_followup_rounds=2)
+    adapter.store.create(room)
+    user_message = adapter.store.append(
+        room.id,
+        RoomMessage(
+            seq=0, ts=0, kind=KIND_USER, speaker="Mark", text="@scout build it"
+        ),
+    )
+    calls: list[str] = []
+
+    async def fake_turn(_room, member):
+        calls.append(member)
+        if member == "scout" and calls.count("scout") == 1:
+            return True, "brief written. @editor implement it."
+        if member == "editor":
+            return True, "done. @scout ready for your review."
+        return True, "reviewed: pass. Done."
+
+    monkeypatch.setattr(adapter, "_agent_turn", fake_turn)
+    asyncio.run(_run_locked(adapter, room, user_message))
+
+    assert calls == ["scout", "editor", "scout"]
+    speakers = [s for s, _ in _agent_texts(adapter.store, room.id)]
+    assert speakers == ["scout", "editor", "scout"]
+
+
+def test_respeak_is_capped_at_one_plus_followup_rounds(tmp_path, monkeypatch):
+    """Two members @-ing each other every turn stop at 1 + max_followup_rounds
+    speaks apiece — the round dial bounds the ping-pong."""
+    adapter = _adapter(tmp_path, monkeypatch)
+    room = _room(max_followup_rounds=1, max_agent_turns=12)
+    adapter.store.create(room)
+    user_message = adapter.store.append(
+        room.id,
+        RoomMessage(
+            seq=0, ts=0, kind=KIND_USER, speaker="Mark", text="@scout volley"
+        ),
+    )
+    calls: list[str] = []
+
+    async def fake_turn(_room, member):
+        calls.append(member)
+        other = "editor" if member == "scout" else "scout"
+        return True, f"@{other} your serve"
+
+    monkeypatch.setattr(adapter, "_agent_turn", fake_turn)
+    asyncio.run(_run_locked(adapter, room, user_message))
+
+    # cap = 1 + 1 = 2 speaks each, then the re-mention is dropped.
+    assert calls.count("scout") == 2
+    assert calls.count("editor") == 2
+
+
+def test_rounds_off_keeps_the_speak_once_dedup(tmp_path, monkeypatch):
+    """Default max_followup_rounds=0 stays byte-identical to the old
+    behavior: a mention back to a spoken member is dropped."""
+    adapter = _adapter(tmp_path, monkeypatch)
+    room = _room(max_followup_rounds=0)
+    adapter.store.create(room)
+    user_message = adapter.store.append(
+        room.id,
+        RoomMessage(
+            seq=0, ts=0, kind=KIND_USER, speaker="Mark", text="@scout build it"
+        ),
+    )
+    calls: list[str] = []
+
+    async def fake_turn(_room, member):
+        calls.append(member)
+        if member == "scout":
+            return True, "brief written. @editor implement it."
+        return True, "done. @scout ready for your review."
+
+    monkeypatch.setattr(adapter, "_agent_turn", fake_turn)
+    asyncio.run(_run_locked(adapter, room, user_message))
+
+    assert calls == ["scout", "editor"]
+
+
 # ── round/turn budget drop is transcript-visible (#189) ──────────────────
 
 
-def test_round_cap_posts_notice_when_mention_is_dropped(tmp_path, monkeypatch):
-    """Last followup round @mentions a member who already spoke.
-
-    There is no next round, so the assignment would vanish without a
-    system line. Budget behaviour is unchanged: claude is not given
-    another turn.
-    """
+def test_round_mention_of_spoken_member_now_runs_within_cap(tmp_path, monkeypatch):
+    """Pre-#205 contract: a follow-up-round mention of a member who already
+    spoke was dropped with a notice. Under #205 the assignment actually
+    reaches them — claude is under the re-speak cap (1 + 2 rounds), so he
+    gets the turn and NO drop notice is posted (nothing vanished)."""
     adapter = _adapter(tmp_path, monkeypatch)
     room = _room(
         members=["scout", "claude"],
@@ -446,7 +531,7 @@ def test_round_cap_posts_notice_when_mention_is_dropped(tmp_path, monkeypatch):
         calls.append(member)
         if member == "scout" and calls.count("scout") == 1:
             return True, "lead start"
-        if member == "claude":
+        if member == "claude" and calls.count("claude") == 1:
             return True, "claude first"
         if member == "scout":
             return True, "@claude go on T5-T8"
@@ -455,16 +540,48 @@ def test_round_cap_posts_notice_when_mention_is_dropped(tmp_path, monkeypatch):
     monkeypatch.setattr(adapter, "_agent_turn", fake_turn)
     asyncio.run(_run_locked(adapter, room, user_message))
 
-    assert calls == ["scout", "claude", "scout"]
-    assert [speaker for speaker, _text in _agent_texts(adapter.store, room.id)] == [
-        "scout",
-        "claude",
-        "scout",
-    ]
-    expected = engine.dropped_pending_notice(
+    assert calls == ["scout", "claude", "scout", "claude"]
+    dropped = engine.dropped_pending_notice(
         engine.dropped_pending(
             ["claude"], reason=engine.REASON_FOLLOWUP_ROUNDS, used=2
         )
+    )
+    assert dropped not in _system_texts(adapter.store, room.id)
+
+
+def test_cap_dropped_mention_posts_notice(tmp_path, monkeypatch):
+    """A mention dropped by the #205 re-speak cap stays transcript-visible
+    (#189's invariant): the room says the member did not get a turn, once."""
+    adapter = _adapter(tmp_path, monkeypatch)
+    room = _room(
+        members=["scout", "editor"],
+        lead="scout",
+        max_followup_rounds=1,
+        max_agent_turns=12,
+    )
+    adapter.store.create(room)
+    user_message = adapter.store.append(
+        room.id,
+        RoomMessage(
+            seq=0, ts=0, kind=KIND_USER, speaker="Mark", text="@scout volley"
+        ),
+    )
+
+    async def fake_turn(_room, member):
+        other = "editor" if member == "scout" else "scout"
+        return True, f"@{other} your serve"
+
+    monkeypatch.setattr(adapter, "_agent_turn", fake_turn)
+    asyncio.run(_run_locked(adapter, room, user_message))
+
+    # cap = 1 + 1 = 2 speaks each; editor's last "@scout your serve" is
+    # dropped by the cap and must be announced, exactly once.
+    expected = engine.dropped_pending_notice(
+        engine.dropped_pending(
+            ["scout"], reason=engine.REASON_FOLLOWUP_ROUNDS, used=1
+        ),
+        None,
+        ["scout", "editor"],
     )
     assert expected in _system_texts(adapter.store, room.id)
     assert _system_texts(adapter.store, room.id).count(expected) == 1

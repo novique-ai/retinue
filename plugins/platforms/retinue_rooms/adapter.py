@@ -1689,19 +1689,53 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             self._note_posted(room_id, posted)
             return engine.TURN_SPEAK, reply
 
+        # A fresh @mention may hand the floor BACK to a member who already
+        # spoke — that is how a junior's "@Lead ready for your review" gets
+        # the lead a review turn inside the same cycle (#205). Unbounded,
+        # that is a ping-pong loop, so each member may speak at most
+        # 1 + max_followup_rounds times per cycle: the room's own round
+        # dial bounds the back-and-forth, and max_agent_turns stays the
+        # hard ceiling. With the default max_followup_rounds=0 this is
+        # byte-identical to the old speak-once dedup.
+        respeak_cap = 1 + max_rounds
+        cap_noticed: set[str] = set()
+
+        def capped_speakers() -> List[str]:
+            return [m for m in set(attempted) if attempted.count(m) >= respeak_cap]
+
         def merge_into(target: List[str], member: str, posted_text: str) -> None:
             if posted_text:
                 replies.append((member, posted_text))
+            capped = capped_speakers()
             target.extend(
                 engine.merge_followups(
                     engine.with_members(room, cycle_members),
                     [(member, posted_text)],
                     target,
-                    attempted,
+                    capped,
                     budget - turns_taken,
                     names,
                 )
             )
+            # A mention dropped by the re-speak cap must stay transcript-
+            # visible (#189's invariant, extended to the #205 cap): the
+            # assignment would otherwise vanish silently.
+            dropped = [
+                m
+                for m in engine.parse_mentions(posted_text or "", cycle_members, names)
+                if m in capped and m != member and m not in target and m not in cap_noticed
+            ]
+            if dropped:
+                text = engine.dropped_pending_notice(
+                    engine.dropped_pending(
+                        dropped, reason=engine.REASON_FOLLOWUP_ROUNDS, used=max_rounds
+                    ),
+                    names,
+                    cycle_members,
+                )
+                if text:
+                    self._post_system(room_id, text)
+                    cap_noticed.update(dropped)
 
         def note_queued(queued: List[str]) -> None:
             noticed.extend(queued)
