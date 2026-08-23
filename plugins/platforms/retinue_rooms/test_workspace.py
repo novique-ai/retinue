@@ -174,3 +174,32 @@ def test_http_serves_ide_workspace_image(tmp_path, monkeypatch):
     finally:
         httpd.shutdown()
         httpd.server_close()
+
+
+def test_container_ids_prefer_running_then_newest(monkeypatch):
+    """#209: serve the CURRENT epoch — running before stopped, newest first
+    within each bucket — never whatever order ``ps`` happened to print."""
+    from . import workspace as ws
+
+    rows = "\n".join(
+        [
+            "old-run\tUp 2 hours\t2026-08-22 16:06:43 -0500 CDT",
+            "exited-new\tExited (143) About an hour ago\t2026-08-22 17:00:00 -0500 CDT",
+            "new-run\tUp 50 minutes\t2026-08-22 17:38:00 -0500 CDT",
+            "exited-old\tExited (143) 2 hours ago\t2026-08-22 15:00:00 -0500 CDT",
+        ]
+    )
+
+    class _Proc:
+        stdout = rows
+
+    monkeypatch.setattr(ws, "_runtime", lambda: "podman")
+    monkeypatch.setattr(ws.subprocess, "run", lambda *a, **k: _Proc())
+    room = ws.Room(id="r-1", name="T", members=["scout"], lead="scout")
+    monkeypatch.setattr(ws.ide, "container_key_for_room", lambda _r: "key-1")
+    assert ws._container_ids_for_room(room) == [
+        "new-run",
+        "old-run",
+        "exited-new",
+        "exited-old",
+    ]

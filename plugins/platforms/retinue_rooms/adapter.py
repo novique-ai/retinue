@@ -2153,7 +2153,32 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             logger.debug("turn visibility bind failed", exc_info=True)
         try:
             try:
-                await self.handle_message(event)
+                # Dispatch under the member's Hermes-home override. The
+                # gateway scopes model/SOUL/credential resolution itself, but
+                # config-reading side paths — most visibly the tool
+                # registry's availability check_fns — otherwise evaluate
+                # against the workspace ROOT config and silently drop
+                # per-profile capabilities like image_gen from the turn
+                # (novique-ai/retinue#207). Deliberately ONLY the home
+                # override (hermes_constants, a leaf module): entering the
+                # gateway's full _profile_runtime_scope here would import
+                # gateway.run and re-hydrate secret scopes mid-dispatch.
+                # The override is a contextvar stack, so the gateway
+                # re-scoping the same profile downstream is harmless.
+                from hermes_constants import (
+                    reset_hermes_home_override,
+                    set_hermes_home_override,
+                )
+
+                profile_home = os.path.join(self._home_dir(), "profiles", member)
+                if os.path.isdir(profile_home):
+                    _home_token = set_hermes_home_override(profile_home)
+                    try:
+                        await self.handle_message(event)
+                    finally:
+                        reset_hermes_home_override(_home_token)
+                else:
+                    await self.handle_message(event)
             except Exception as e:
                 self._resolve_pending(
                     room.id, ok=False, text=f"dispatch failed: {e}", member=member
