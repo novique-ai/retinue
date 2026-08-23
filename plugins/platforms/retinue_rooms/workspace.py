@@ -192,7 +192,7 @@ def _container_ids_for_room(room: Room) -> List[str]:
                 "--filter",
                 f"label=hermes-profile={label}",
                 "--format",
-                "{{.ID}}\t{{.Status}}",
+                "{{.ID}}\t{{.Status}}\t{{.CreatedAt}}",
             ],
             check=False,
             capture_output=True,
@@ -204,16 +204,25 @@ def _container_ids_for_room(room: Room) -> List[str]:
         )
     except (OSError, subprocess.TimeoutExpired) as e:
         raise WorkspaceFileError(503, f"container inspect failed: {e}") from e
-    running: List[str] = []
-    stopped: List[str] = []
+    # A room accumulates container epochs across gateway restarts (the
+    # runtime never reaps superseded ones — novique-ai/retinue#209), and
+    # ``ps`` order is not a contract. Serve from the CURRENT epoch: running
+    # containers before stopped ones, newest-created first within each
+    # bucket — otherwise a stale epoch that still holds an old version of a
+    # file answers before the container the turns actually write to.
+    running: List[tuple[str, str]] = []
+    stopped: List[tuple[str, str]] = []
     for line in (proc.stdout or "").splitlines():
         parts = line.split("\t")
         if not parts or not parts[0].strip():
             continue
         cid = parts[0].strip()
         st = (parts[1] if len(parts) > 1 else "").lower()
-        (running if st.startswith("up") else stopped).append(cid)
-    return running + stopped
+        created = parts[2].strip() if len(parts) > 2 else ""
+        (running if st.startswith("up") else stopped).append((created, cid))
+    running.sort(reverse=True)
+    stopped.sort(reverse=True)
+    return [cid for _, cid in running] + [cid for _, cid in stopped]
 
 
 def _read_from_container(cid: str, path: str) -> bytes:

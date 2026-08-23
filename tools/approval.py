@@ -311,6 +311,42 @@ def _is_gateway_approval_context() -> bool:
     return bool(_get_session_platform())
 
 
+def _is_room_workspace_approval_context() -> bool:
+    """True when this tool call runs inside a shared-workspace room turn.
+
+    Retinue rooms bind a workspace overlay (tools/workspace_context.py,
+    carrying the shared container key) for every member turn. A room turn is
+    a gateway session, but the humans in the room never see approval UI — a
+    pending approval has no listener and blocks the turn for its full
+    timeout, the same no-listener shape as cron and single-query
+    (novique-ai/retinue#208, NousResearch/hermes-agent#92577). Governed by
+    ``approvals.room_mode`` (default deny). Cron keeps precedence: a cron
+    job that inherits a room's workspace mount is still governed by
+    ``approvals.cron_mode``.
+    """
+    if _is_cron_approval_context():
+        return False
+    try:
+        from tools import workspace_context
+
+        return bool(workspace_context.shared_container_key())
+    except Exception:
+        return False
+
+
+def _get_room_approval_mode() -> str:
+    """Read the room approval mode from config. Returns 'deny' or 'approve'."""
+    try:
+        from hermes_cli.config import load_config_readonly
+        config = load_config_readonly()
+        mode = str(cfg_get(config, "approvals", "room_mode", default="deny")).lower().strip()
+        if mode in {"approve", "off", "allow", "yes"}:
+            return "approve"
+        return "deny"
+    except Exception:
+        return "deny"
+
+
 def _resolve_cli_approval_callback(approval_callback=None):
     """Return an interactive CLI approval callback when one is available.
 
@@ -3489,6 +3525,12 @@ def _run_approval_gate(
         is_cli = False
         is_gateway = False
 
+    # Room turns: a gateway session whose humans never see approval prompts —
+    # same no-listener shape as cron/single-query (novique-ai/retinue#208).
+    if _is_room_workspace_approval_context():
+        is_cli = False
+        is_gateway = False
+
     if not is_cli and not is_gateway:
         # Single-query (-q) sessions: respect single_query_mode config
         if _is_single_query_approval_context():
@@ -3506,6 +3548,31 @@ def _run_approval_gate(
             logger.warning(
                 "%s (pattern: %s): %s — single-query auto-approve "
                 "(approvals.single_query_mode: approve).",
+                autoapprove_log_prefix, pattern_key, description,
+            )
+            return {"approved": True, "message": None}
+        # Room turns: respect room_mode config (novique-ai/retinue#208).
+        if _is_room_workspace_approval_context():
+            if _get_room_approval_mode() == "deny":
+                return {
+                    "approved": False,
+                    "message": (
+                        f"BLOCKED: approval required ({description}) but room "
+                        "turns run without a user present to approve it. Do "
+                        "NOT retry or rephrase; find an approach that avoids "
+                        "this action, or say so in the room and stop. To "
+                        "allow it, set approvals.room_mode: approve in "
+                        "config.yaml."
+                    ),
+                    "pattern_key": pattern_key,
+                    "description": description,
+                }
+            # room_mode: approve — like single_query above, return here so
+            # the plugin-escalation fail_closed branch below cannot re-block
+            # the very action room_mode: approve just authorized.
+            logger.warning(
+                "%s (pattern: %s): %s — room auto-approve "
+                "(approvals.room_mode: approve).",
                 autoapprove_log_prefix, pattern_key, description,
             )
             return {"approved": True, "message": None}
@@ -4412,6 +4479,13 @@ def check_all_command_guards(command: str, env_type: str,
         # either here) — ignore it so single_query_mode actually takes effect.
         is_ask = False
 
+    # Room turns: a gateway session whose humans never see approval prompts —
+    # same no-listener shape as cron/single-query (novique-ai/retinue#208).
+    if _is_room_workspace_approval_context():
+        is_cli = False
+        is_gateway = False
+        is_ask = False
+
     # Preserve the existing non-interactive behavior: outside CLI/gateway/ask
     # flows, we do not block on approvals and we skip external guard work.
     if not is_cli and not is_gateway and not is_ask:
@@ -4483,6 +4557,42 @@ def check_all_command_guards(command: str, env_type: str,
                         }
                     # else: tirith_fail_open is True — allow as before
             # single_query_mode: approve — fall through to auto-approve below.
+        # Room turns: respect room_mode config (novique-ai/retinue#208).
+        # Mirrors the cron block below: pattern detection + tirith content
+        # checks resolve deterministically instead of a prompt nobody sees.
+        if _is_room_workspace_approval_context():
+            if _get_room_approval_mode() == "deny":
+                is_dangerous, _pk, description = detect_dangerous_command(command)
+                if is_dangerous:
+                    return {
+                        "approved": False,
+                        "message": (
+                            f"BLOCKED: Command flagged as dangerous ({description}) "
+                            "but room turns run without a user present to approve "
+                            "it. Do NOT retry or rephrase; find an alternative "
+                            "approach that avoids this command. To allow dangerous "
+                            "commands in rooms, set approvals.room_mode: approve "
+                            "in config.yaml."
+                        ),
+                    }
+                try:
+                    from tools.tirith_security import check_command_security
+                    _room_tirith = check_command_security(command)
+                    if _room_tirith.get("action") in ("block", "warn"):
+                        _room_desc = _format_tirith_description(_room_tirith)
+                        return {
+                            "approved": False,
+                            "message": (
+                                f"BLOCKED: {_room_desc} "
+                                "but room turns run without a user present to "
+                                "approve it. Do NOT retry or rephrase; find an "
+                                "alternative approach that avoids this command. "
+                                "To allow it, set approvals.room_mode: approve "
+                                "in config.yaml."
+                            ),
+                        }
+                except ImportError:
+                    pass
         # Cron sessions: respect cron_mode config
         if _is_cron_approval_context():
             if _get_cron_approval_mode() == "deny":
@@ -5059,6 +5169,28 @@ def check_execute_code_guard(code: str, env_type: str,
                     "to approve it. Use normal tools instead, or set "
                     "approvals.cron_mode: approve only if this cron profile "
                     "is intentionally trusted."
+                ),
+                "pattern_key": pattern_key,
+                "description": description,
+                "outcome": "blocked",
+                "user_consent": False,
+            }
+        return {"approved": True, "message": None}
+
+    # Room turns: no user is present to approve arbitrary code
+    # (novique-ai/retinue#208). Mirrors cron/single-query above.
+    if _is_room_workspace_approval_context():
+        if _get_room_approval_mode() == "deny":
+            return {
+                "approved": False,
+                "message": (
+                    "BLOCKED: execute_code runs arbitrary local Python "
+                    "(including subprocess calls that bypass shell-string "
+                    "approval checks). Room turns run without a user present "
+                    "to approve it. Use the terminal or other normal tools "
+                    "instead — do NOT retry execute_code. To allow it, set "
+                    "approvals.room_mode: approve only if this workspace is "
+                    "intentionally trusted."
                 ),
                 "pattern_key": pattern_key,
                 "description": description,
