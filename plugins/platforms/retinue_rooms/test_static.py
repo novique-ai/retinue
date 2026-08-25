@@ -203,3 +203,26 @@ def test_json_404_preserved_for_missing_asset_within_existing_dist(tmp_path, htt
     assert status == 404
     assert content_type == "application/json"
     assert b"web UI not built" in body
+
+
+def test_source_tree_ships_apple_touch_icon():
+    """iOS home-screen bookmarks ignore the small favicon PNG. The SPA must
+    ship a 180x180 apple-touch-icon and declare it in index.html so Vite
+    copies it into dist/ (the adapter serves dist/ from disk)."""
+    here = os.path.abspath(adapter_module.__file__)
+    repo_root = os.path.dirname(
+        os.path.dirname(os.path.dirname(os.path.dirname(here)))
+    )
+    index = os.path.join(repo_root, "retinue-web", "index.html")
+    png = os.path.join(repo_root, "retinue-web", "public", "apple-touch-icon.png")
+    with open(index, encoding="utf-8") as f:
+        html = f.read()
+    assert 'rel="apple-touch-icon"' in html
+    assert "apple-touch-icon.png" in html
+    assert os.path.isfile(png), png
+    with open(png, "rb") as f:
+        header = f.read(24)
+    assert header[:8] == b"\x89PNG\r\n\x1a\n"
+    width = int.from_bytes(header[16:20], "big")
+    height = int.from_bytes(header[20:24], "big")
+    assert (width, height) == (180, 180)
