@@ -40,16 +40,39 @@ STAFF_VOICES: Dict[str, str] = {
     "scribe": "celeste",
 }
 
+# The eight ids this tuple held until 2026-08-26. Kept because
+# `pin_existing_voices()` must reproduce the OLD derivation to pin an agent to
+# the voice it actually had — deriving from the grown tuple would pin the
+# already-reshuffled result and defeat the migration. Do not edit.
+_LEGACY_AVAILABLE_VOICES = ("eve", "leo", "rex", "rigel", "ursa", "celeste", "lux", "iris")
+
 # Available narrator ids for derivation. Collisions are accepted —
 # stability beats distinctness: an agent's voice must not change because
-# somebody else was hired. Do not reorder or grow this tuple — Auto
-# voices are index-into-this-list.
-AVAILABLE_VOICES = ("eve", "leo", "rex", "rigel", "ursa", "celeste", "lux", "iris")
+# somebody else was hired. Do not reorder this tuple — Auto voices are
+# index-into-this-list, so a reorder silently reassigns every agent that
+# never picked a voice. GROWING it has the same effect (the index is modulo
+# the length), which is why `pin_existing_voices()` exists: run it before a
+# grown tuple goes live and every existing agent keeps its voice.
+#
+# These are xAI's 28 built-in TTS voices (Voice Overview, 2026-07-28;
+# enumerable via GET https://api.x.ai/v1/tts/voices). The vocabulary is the
+# provider's, not an invention, so a Track B backend can be made to answer to
+# the same names. The original eight lead, then the rest in xAI's order.
+AVAILABLE_VOICES = (
+    # the original eight
+    "eve", "leo", "rex", "rigel", "ursa", "celeste", "lux", "iris",
+    # added 2026-08-26 — an 8-id roster collapses on a 19-agent staff
+    "carina", "zagan", "helix", "orion", "luna", "altair", "zenith",
+    "perseus", "helios", "kepler", "cosmo", "sirius", "lumen", "castor",
+    "naksh", "atlas", "aurora", "liora", "ara", "sal",
+)
 _FALLBACK_VOICES = AVAILABLE_VOICES
 
-# Extra narrator ids accepted on hire / patch / RETINUE_VOICE_MAP (docs
-# and tests use helix) that are not in the derivation tuple.
-_EXTRA_NARRATORS = ("helix",)
+# Narrator ids accepted on hire / patch / RETINUE_VOICE_MAP but NOT offered for
+# derivation. Empty since 2026-08-26: helix used to live here and is now a
+# first-class member of AVAILABLE_VOICES. Kept as the extension point for any
+# future id that should be assignable without entering the rotation.
+_EXTRA_NARRATORS: tuple = ()
 NARRATOR_VOICES = frozenset(AVAILABLE_VOICES) | frozenset(_EXTRA_NARRATORS)
 
 
@@ -134,6 +157,83 @@ def _hired_slugs(home_dir: str) -> List[str]:
         for name in names
         if name and os.path.isdir(os.path.join(profiles, name))
     ]
+
+
+def legacy_voice_for(slug: str) -> str:
+    """The voice *slug* resolved to under the pre-2026-08-26 eight-id tuple.
+
+    Only the derivation arm is reproduced. A stored voice and a
+    ``RETINUE_VOICE_MAP`` entry are unaffected by the tuple growing, and a
+    ``STAFF_VOICES`` default is matched by slug rather than by index, so none
+    of those three can move. Derivation is the one arm that does.
+    """
+    from .identity import stable_index
+
+    slug = (slug or "").strip().lower()
+    if not slug:
+        return _LEGACY_AVAILABLE_VOICES[0]
+    return _LEGACY_AVAILABLE_VOICES[
+        stable_index(slug, len(_LEGACY_AVAILABLE_VOICES))
+    ]
+
+
+def pin_existing_voices(
+    home_dir: str, *, dry_run: bool = False
+) -> Dict[str, Dict[str, str]]:
+    """Freeze derivation-assigned voices into profiles before the tuple grows.
+
+    ``AVAILABLE_VOICES`` grew from 8 to 28 on 2026-08-26. Auto-assignment is
+    ``AVAILABLE_VOICES[stable_index(slug, len(AVAILABLE_VOICES))]``, so a longer
+    tuple silently reassigns every agent that never picked a voice — exactly the
+    churn the tuple's own comment warns about. Running this first writes each
+    such agent's CURRENT voice into its profile, after which the stored value
+    wins and derivation never runs for it again.
+
+    Idempotent, and safe to run before or after the grow: it derives from
+    :data:`_LEGACY_AVAILABLE_VOICES`, never from the live tuple.
+
+    Agents holding a stored voice, a ``RETINUE_VOICE_MAP`` entry, or a
+    ``STAFF_VOICES`` role default are left alone — none of them can move.
+
+    Returns ``{"pinned": {...}, "skipped": {...}}``, slug -> voice or reason.
+    """
+    override = _voice_map_override()
+    pinned: Dict[str, str] = {}
+    skipped: Dict[str, str] = {}
+
+    for slug in sorted(_hired_slugs(home_dir)):
+        if is_narrator(override.get(slug) or ""):
+            skipped[slug] = "voice-map override"
+            continue
+        if is_narrator(_read_stored_voice(slug, home_dir) or ""):
+            skipped[slug] = "already stored"
+            continue
+        if slug in STAFF_VOICES:
+            skipped[slug] = "staff default (slug-keyed, cannot move)"
+            continue
+
+        voice = legacy_voice_for(slug)
+        path = os.path.join(home_dir, "profiles", slug, "retinue-agent.json")
+        try:
+            with open(path, encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, ValueError):
+            skipped[slug] = "no readable retinue-agent.json"
+            continue
+        if not isinstance(data, dict):
+            skipped[slug] = "retinue-agent.json is not an object"
+            continue
+
+        if not dry_run:
+            data["voice"] = voice
+            tmp = f"{path}.tmp"
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(data, fh, indent=2, sort_keys=True)
+                fh.write("\n")
+            os.replace(tmp, path)
+        pinned[slug] = voice
+
+    return {"pinned": pinned, "skipped": skipped}
 
 
 def _voice_map_override() -> Dict[str, str]:

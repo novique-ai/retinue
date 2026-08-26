@@ -484,3 +484,90 @@ def test_synthesize_dispatch_hands_an_override_the_spoken_script(monkeypatch):
 
     with pytest.raises(voice.VoiceError, match="empty text"):
         voice.synthesize_dispatch(ITINERARY_ONLY, "mangus")
+
+
+# --- AVAILABLE_VOICES growth + pin migration (2026-08-26) -------------------
+
+
+def test_available_voices_are_unique_and_all_narrators():
+    assert len(voice.AVAILABLE_VOICES) == len(set(voice.AVAILABLE_VOICES))
+    for name in voice.AVAILABLE_VOICES:
+        assert voice.is_narrator(name), name
+
+
+def test_legacy_ids_survive_the_grow():
+    """The original eight must stay valid — agents already hold them."""
+    for name in ("eve", "leo", "rex", "rigel", "ursa", "celeste", "lux", "iris"):
+        assert name in voice.AVAILABLE_VOICES
+    # helix was accepted via _EXTRA_NARRATORS before it joined the tuple.
+    assert voice.is_narrator("helix")
+
+
+def test_roster_is_large_enough_to_avoid_collapse():
+    """An 8-id roster put five agents on one voice; guard the regression."""
+    assert len(voice.AVAILABLE_VOICES) >= 19
+
+
+def _write_profile(home, slug, data):
+    d = home / "profiles" / slug
+    d.mkdir(parents=True, exist_ok=True)
+    import json as _json
+
+    (d / "retinue-agent.json").write_text(_json.dumps(data), encoding="utf-8")
+    return d / "retinue-agent.json"
+
+
+def test_pin_preserves_the_voice_an_agent_actually_had(tmp_path, monkeypatch):
+    """The point of the migration: a derived voice must not move when the
+    tuple grows. Pin, then confirm voice_for() still returns the old value."""
+    monkeypatch.delenv("RETINUE_VOICE_MAP", raising=False)
+    slug = "dave"
+    assert slug not in voice.STAFF_VOICES  # must be derivation-assigned
+    _write_profile(tmp_path, slug, {"name": "Dave"})
+
+    before = voice.legacy_voice_for(slug)
+    result = voice.pin_existing_voices(str(tmp_path))
+
+    assert result["pinned"][slug] == before
+    assert voice.voice_for(slug, home_dir=str(tmp_path)) == before
+
+
+def test_pin_leaves_stored_and_staff_agents_alone(tmp_path, monkeypatch):
+    monkeypatch.delenv("RETINUE_VOICE_MAP", raising=False)
+    _write_profile(tmp_path, "scout", {"name": "Scout"})          # staff default
+    _write_profile(tmp_path, "claude", {"name": "C", "voice": "rex"})  # stored
+
+    result = voice.pin_existing_voices(str(tmp_path))
+
+    assert "scout" not in result["pinned"]
+    assert "claude" not in result["pinned"]
+    assert voice.voice_for("scout", home_dir=str(tmp_path)) == "ursa"
+    assert voice.voice_for("claude", home_dir=str(tmp_path)) == "rex"
+
+
+def test_pin_is_idempotent_and_preserves_other_profile_fields(tmp_path, monkeypatch):
+    import json as _json
+
+    monkeypatch.delenv("RETINUE_VOICE_MAP", raising=False)
+    path = _write_profile(tmp_path, "dave", {"name": "Dave", "model": "grok-4.6"})
+
+    first = voice.pin_existing_voices(str(tmp_path))
+    second = voice.pin_existing_voices(str(tmp_path))
+
+    assert first["pinned"]["dave"]
+    assert "dave" not in second["pinned"]           # already stored the 2nd time
+    data = _json.loads(path.read_text(encoding="utf-8"))
+    assert data["model"] == "grok-4.6"              # untouched
+    assert data["name"] == "Dave"
+
+
+def test_pin_dry_run_writes_nothing(tmp_path, monkeypatch):
+    import json as _json
+
+    monkeypatch.delenv("RETINUE_VOICE_MAP", raising=False)
+    path = _write_profile(tmp_path, "dave", {"name": "Dave"})
+
+    result = voice.pin_existing_voices(str(tmp_path), dry_run=True)
+
+    assert result["pinned"]["dave"]
+    assert "voice" not in _json.loads(path.read_text(encoding="utf-8"))
