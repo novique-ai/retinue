@@ -291,11 +291,28 @@ def _path_inside(path: str, root: str) -> bool:
     """
     if not root:
         return False
+    return _inside(_resolve_candidate(path, root), root)
+
+
+def _resolve_candidate(path: str, cwd: str) -> str:
+    """Absolute, symlink-resolved form of a tool-call target path.
+
+    Relative paths resolve against *cwd* — grok's tools run there — and
+    the realpath is taken on the DIRNAME so a symlinked directory cannot
+    smuggle a target out of a tree while a not-yet-existing file still
+    resolves.
+    """
+    candidate = path if os.path.isabs(path) else os.path.join(cwd, path)
+    parent_real = os.path.realpath(os.path.dirname(candidate) or cwd)
+    return os.path.join(parent_real, os.path.basename(candidate))
+
+
+def _inside(resolved: str, root: str) -> bool:
+    """Containment for an already-resolved candidate (see _resolve_candidate)."""
+    if not root:
+        return False
     root_real = os.path.realpath(root)
-    candidate = path if os.path.isabs(path) else os.path.join(root, path)
-    parent_real = os.path.realpath(os.path.dirname(candidate) or root)
-    target = os.path.join(parent_real, os.path.basename(candidate))
-    return target == root_real or target.startswith(root_real + os.sep)
+    return resolved == root_real or resolved.startswith(root_real + os.sep)
 
 
 def decide_permission(
@@ -304,6 +321,8 @@ def decide_permission(
     mode: str,
     cwd: str,
     mcp_server_names: frozenset = frozenset(),
+    extra_roots: Tuple[str, ...] = (),
+    denied_roots: Optional[Dict[str, str]] = None,
 ) -> Tuple[bool, str]:
     """Answer one ``session/request_permission`` without human input.
 
@@ -314,13 +333,23 @@ def decide_permission(
     * ``always``     — allow everything (explicit operator opt-in).
     * ``read-only``  — allow only tools flagged read-only / safe kinds.
     * ``workspace``  — allow safe kinds; allow file mutations whose every
-      target stays inside the session cwd; allow command execution (the
-      command runs with the project as cwd — the same trust class as an
-      ide room's shell, but on the HOST, which is why grok-build members
-      are documented as ide-trust); allow MCP calls to servers the
-      workspace ``mcp.json`` declares (declaring a server IS the
-      operator's grant, #220); reject anything else, including any file
-      mutation that names a path outside the tree.
+      target stays inside the session cwd or an ``extra_roots`` tree;
+      allow command execution (the command runs with the project as cwd —
+      the same trust class as an ide room's shell, but on the HOST, which
+      is why grok-build members are documented as ide-trust); allow MCP
+      calls to servers the workspace ``mcp.json`` declares (declaring a
+      server IS the operator's grant, #220); reject anything else,
+      including any file mutation that names a path outside the tree.
+
+    ``denied_roots`` (#223) maps real paths this room ISOLATES to the
+    room's own checkout of the same repo — worktree rooms.  Any tool
+    call whose target resolves under a denied root is declined with a
+    reason that redirects to the room's checkout, reads included: the
+    shadowed tree holds another branch's content, so a read there is a
+    correctness hazard, not just a write hazard.  This is the host-native
+    equivalent of the container's worktree overlay mount, enforced at the
+    permission gate.  ``extra_roots`` are the worktree host paths — they
+    live outside cwd, so writes there must be explicitly allowed.
 
     MCP calls arrive as grok's builtin ``use_tool``
     (``rawInput.tool_name = "<server>__<tool>"``); tool discovery is
@@ -340,6 +369,18 @@ def decide_permission(
 
     if mode == APPROVAL_ALWAYS:
         return True, "always-approve mode"
+    # Isolation redirect BEFORE the read-only allow: a read of the
+    # shadowed tree returns another branch's content (#223).
+    if denied_roots:
+        for raw_path in _candidate_paths(tool_call):
+            resolved = _resolve_candidate(raw_path, cwd)
+            for real, redirect in denied_roots.items():
+                if _inside(resolved, real):
+                    return False, (
+                        f"{title}: {raw_path} is inside {real}, which this "
+                        f"room isolates — use the room's own checkout at "
+                        f"{redirect} instead"
+                    )
     if (
         read_only
         or kind in _SAFE_KINDS
@@ -367,7 +408,17 @@ def decide_permission(
     if kind in _FS_KINDS or acp_kind in _FS_KINDS or paths:
         if not paths:
             return False, f"{title}: no target path visible; declined"
-        outside = [p for p in paths if not _path_inside(p, cwd)]
+        outside = [
+            p
+            for p in paths
+            if not (
+                _inside(_resolve_candidate(p, cwd), cwd)
+                or any(
+                    _inside(_resolve_candidate(p, cwd), root)
+                    for root in extra_roots
+                )
+            )
+        ]
         if outside:
             return False, (
                 f"{title}: target outside the room workspace ({outside[0]})"
@@ -991,6 +1042,8 @@ class GrokBuildManager:
         timeout: float,
         on_activity: Optional[Callable[[str, Dict[str, Any]], None]] = None,
         cancel_event: Optional[asyncio.Event] = None,
+        extra_roots: Tuple[str, ...] = (),
+        denied_roots: Optional[Dict[str, str]] = None,
     ) -> TurnResult:
         """One member turn, executed entirely inside Grok Build's loop.
 
@@ -1046,6 +1099,8 @@ class GrokBuildManager:
                     mode=approval,
                     cwd=cwd,
                     mcp_server_names=sess.mcp_names,
+                    extra_roots=extra_roots,
+                    denied_roots=denied_roots,
                 )
                 if not allow and on_activity is not None:
                     on_activity(

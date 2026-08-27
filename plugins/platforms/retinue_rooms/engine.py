@@ -1095,6 +1095,7 @@ def room_briefing(
     jobs: Optional[Dict[str, str]] = None,
     host_workspace: Optional[str] = None,
     host_uploads: Optional[str] = None,
+    host_worktrees: Optional[List[Dict[str, str]]] = None,
 ) -> str:
     """Per-turn channel prompt: who you are, who is here, how to behave.
 
@@ -1108,6 +1109,13 @@ def room_briefing(
     member knows what a teammate is *for*, not just their handle (#203).
     The when/how of delegation stays in each hire's SOUL; this is only the
     directory line.
+
+    ``host_worktrees`` (#223) lists the room's isolated repos for a
+    host-native member as ``{"rel", "real", "path", "branch"}`` dicts:
+    the member's own checkout of ``rel`` is at ``path`` on ``branch``;
+    the tree at ``real`` is shadowed and must not be touched (the
+    permission gate also enforces this — the briefing is so the member
+    works in the right place instead of bouncing off rejections).
 
     ``host_workspace`` marks a host-native runtime (Grok Build, #218):
     the member's tools run directly on the host in that directory, not in
@@ -1224,6 +1232,18 @@ def room_briefing(
                 f"relative to that tree. Treat every edit as an edit to the "
                 f"real project."
             )
+            for wt in host_worktrees or []:
+                parts.append(
+                    f"EXCEPTION — {wt['rel']} is isolated for this room. "
+                    f"Do NOT read or write {wt['real']}: that checkout "
+                    f"belongs to the host and other rooms, and tool calls "
+                    f"touching it will be declined. Your OWN checkout of "
+                    f"{wt['rel']} is {wt['path']}, already on branch "
+                    f"{wt['branch']} — do all {wt['rel']} work there "
+                    f"(git works normally in it; commit to that branch, "
+                    f"never switch it). The human merges the branch on the "
+                    f"host when the work is verified."
+                )
         else:
             parts.append(
                 f"This room is sandboxed. Your working directory is "

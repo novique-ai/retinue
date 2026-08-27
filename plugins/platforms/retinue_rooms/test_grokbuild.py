@@ -798,3 +798,83 @@ class TestMcpPermissions:
         )
         assert not ok
         assert "not declared" in why
+
+
+class TestWorktreeIsolationRoots:
+    """#223: denied roots redirect; extra roots extend the writable set."""
+
+    def _wt(self, tmp_path):
+        real = tmp_path / "ws" / "infra"
+        real.mkdir(parents=True)
+        wt = tmp_path / "worktrees" / "room" / "infra"
+        wt.mkdir(parents=True)
+        return str(tmp_path / "ws"), str(real), str(wt)
+
+    def test_write_into_shadowed_tree_redirects(self, tmp_path):
+        cwd, real, wt = self._wt(tmp_path)
+        ok, why = decide_permission(
+            _tool(path=os.path.join(real, "x.py")),
+            mode=APPROVAL_WORKSPACE, cwd=cwd,
+            extra_roots=(wt,), denied_roots={real: wt},
+        )
+        assert not ok
+        assert "isolates" in why and wt in why
+
+    def test_read_of_shadowed_tree_also_redirects(self, tmp_path):
+        cwd, real, wt = self._wt(tmp_path)
+        ok, why = decide_permission(
+            _tool(kind="read", path=os.path.join(real, "x.py"), read_only=True),
+            mode=APPROVAL_WORKSPACE, cwd=cwd,
+            denied_roots={real: wt},
+        )
+        assert not ok
+        assert wt in why
+
+    def test_relative_path_into_shadowed_tree_redirects(self, tmp_path):
+        cwd, real, wt = self._wt(tmp_path)
+        ok, why = decide_permission(
+            _tool(path="infra/x.py"),
+            mode=APPROVAL_WORKSPACE, cwd=cwd,
+            denied_roots={real: wt},
+        )
+        assert not ok
+        assert wt in why
+
+    def test_write_into_worktree_checkout_allowed(self, tmp_path):
+        cwd, real, wt = self._wt(tmp_path)
+        ok, why = decide_permission(
+            _tool(path=os.path.join(wt, "x.py")),
+            mode=APPROVAL_WORKSPACE, cwd=cwd,
+            extra_roots=(wt,), denied_roots={real: wt},
+        )
+        assert ok, why
+
+    def test_worktree_root_not_writable_without_extra_roots(self, tmp_path):
+        # The worktree lives OUTSIDE cwd — without the explicit grant it
+        # stays out of bounds, so the grant is doing real work.
+        cwd, real, wt = self._wt(tmp_path)
+        ok, _ = decide_permission(
+            _tool(path=os.path.join(wt, "x.py")),
+            mode=APPROVAL_WORKSPACE, cwd=cwd,
+        )
+        assert not ok
+
+    def test_rest_of_tree_still_writable(self, tmp_path):
+        cwd, real, wt = self._wt(tmp_path)
+        ok, why = decide_permission(
+            _tool(path=os.path.join(cwd, "other", "y.py")),
+            mode=APPROVAL_WORKSPACE, cwd=cwd,
+            extra_roots=(wt,), denied_roots={real: wt},
+        )
+        assert ok, why
+
+    def test_always_mode_bypasses_isolation(self, tmp_path):
+        # "always" is the explicit full-trust dial; it overrides the
+        # redirect exactly like every other guard. Documented.
+        cwd, real, wt = self._wt(tmp_path)
+        ok, _ = decide_permission(
+            _tool(path=os.path.join(real, "x.py")),
+            mode=APPROVAL_ALWAYS, cwd=cwd,
+            denied_roots={real: wt},
+        )
+        assert ok

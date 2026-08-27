@@ -227,7 +227,7 @@ class _FakeManager:
         self.calls: list[dict] = []
         self.cancelled: list[tuple[str, str]] = []
 
-    async def run_turn(self, room_id, member, cwd, *, build_prompt, approval, timeout, on_activity=None, cancel_event=None):
+    async def run_turn(self, room_id, member, cwd, *, build_prompt, approval, timeout, on_activity=None, cancel_event=None, extra_roots=(), denied_roots=None):
         self.calls.append(
             {
                 "room": room_id,
@@ -236,6 +236,8 @@ class _FakeManager:
                 "prompt": build_prompt(True),
                 "approval": approval,
                 "timeout": timeout,
+                "extra_roots": extra_roots,
+                "denied_roots": denied_roots,
             }
         )
         if isinstance(self.result, Exception):
@@ -323,15 +325,50 @@ def test_empty_reply_is_no_reply(tmp_path, monkeypatch):
     assert not ok and text == "agent returned no reply"
 
 
-def test_worktree_rooms_refuse_grok_members(tmp_path, monkeypatch):
+def test_worktree_rooms_map_isolation_for_grok_members(tmp_path, monkeypatch):
+    """#223: worktree rooms no longer refuse — the shadowed real tree
+    becomes a denied root with a redirect to the room's own checkout,
+    the checkout an allowed extra root, and the briefing explains it."""
+    from . import worktrees
+
+    project = tmp_path / "proj"
+    (project / "infra").mkdir(parents=True)
+    monkeypatch.setenv("RETINUE_IDE_ROOT", str(tmp_path))
     adapter, fake, room, slug = _wire(
         tmp_path, monkeypatch, TurnResult(stop_reason="end_turn", text="hi")
     )
-    room.worktree_repos = ["infra"]
+    adapter.store.mutate(
+        room.id,
+        lambda r: (
+            setattr(r, "workspace", "ide"),
+            setattr(r, "ide_path", str(project)),
+            setattr(r, "worktree_repos", ["infra"]),
+        ),
+    )
+    room = adapter.store.get(room.id)
     ok, text = _run(adapter._agent_turn(room, slug))
-    assert not ok
-    assert "worktree" in text
-    assert fake.calls == []  # never reached the runtime
+    assert ok, text
+    call = fake.calls[0]
+    wt = worktrees.worktree_path(
+        room.id, "infra", worktrees.resolve_worktree_root()
+    )
+    real = os.path.join(str(project), "infra")
+    assert call["extra_roots"] == (wt,)
+    assert call["denied_roots"] == {real: wt}
+    # Briefing names the isolation, the checkout, and the branch.
+    assert "EXCEPTION — infra is isolated" in call["prompt"]
+    assert wt in call["prompt"]
+    assert worktrees.branch_for(room.id) in call["prompt"]
+
+
+def test_rooms_without_worktrees_pass_no_roots(tmp_path, monkeypatch):
+    adapter, fake, room, slug = _wire(
+        tmp_path, monkeypatch, TurnResult(stop_reason="end_turn", text="hi")
+    )
+    ok, _ = _run(adapter._agent_turn(room, slug))
+    assert ok
+    assert fake.calls[0]["extra_roots"] == ()
+    assert fake.calls[0]["denied_roots"] is None
 
 
 def test_ide_room_uses_the_room_tree_as_cwd(tmp_path, monkeypatch):
