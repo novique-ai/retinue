@@ -387,6 +387,17 @@ host broker (infra) verifies the HMAC and maps slug → role; nothing a
 container can read suffices to forge one. Turns without a token simply
 cannot use the broker; the turn itself never fails on token problems.
 
+## Agent runtimes (per-hire runtime selection)
+
+A hire also chooses **which agent runtime executes the member's turns**:
+the built-in Hermes loop (default — everything below about presets,
+containers, and briefings applies), or the native **Grok Build** runtime,
+where xAI's own harness owns the whole tool loop over ACP and Retinue
+observes it (streams tool activity as `kind: "tool"` transcript lines,
+answers permission requests by policy, resumes sessions natively).
+Model presets do not apply to Grok Build members. Full doc:
+[`retinue/RUNTIMES.md`](RUNTIMES.md). Endpoint: `GET /runtimes`.
+
 ## Model presets (per-hire model selection)
 
 By default a hire copies the **root config's `model:` block** — every new agent uses the
