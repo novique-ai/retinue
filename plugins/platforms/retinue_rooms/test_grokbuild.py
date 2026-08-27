@@ -128,11 +128,14 @@ _FAKE_AGENT = textwrap.dedent(
                     "code": -32000, "message": "Authentication required"}})
                 return
             sid = str(uuid.uuid4())
-            log("new", session=sid, cwd=msg["params"].get("cwd"))
+            log("new", session=sid, cwd=msg["params"].get("cwd"),
+                mcp=msg["params"].get("mcpServers"),
+                broker_token=bool(os.environ.get("RETINUE_BROKER_TOKEN")))
             send({"jsonrpc": "2.0", "id": msg["id"], "result": {"sessionId": sid}})
         elif method == "session/load":
             sid = msg["params"]["sessionId"]
-            log("load", session=sid, cwd=msg["params"].get("cwd"))
+            log("load", session=sid, cwd=msg["params"].get("cwd"),
+                mcp=msg["params"].get("mcpServers"))
             if os.environ.get("FAKE_ACP_LOAD_FAIL"):
                 send({"jsonrpc": "2.0", "id": msg["id"], "error": {
                     "code": -32001, "message": "no such session"}})
@@ -622,3 +625,176 @@ class TestTurns:
         events = _events(fake_agent)
         assert len([e for e in events if e["kind"] == "new"]) == 2
         assert not [e for e in events if e["kind"] == "load"]
+
+
+# ── workspace MCP bridge (#220) ──────────────────────────────────────────
+
+
+def _write_mcp(home, servers):
+    path = grokbuild.mcp_config_path(str(home))
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({"servers": servers}, f)
+
+
+class TestMcpConfig:
+    def test_absent_file_means_no_servers(self, tmp_path):
+        assert grokbuild.mcp_servers(str(tmp_path)) == []
+
+    def test_stdio_entry_normalized_to_acp_shape(self, tmp_path):
+        _write_mcp(tmp_path, [
+            {"name": "broker", "command": "/bin/client", "args": ["--x", 1],
+             "env": {"K": "V"}},
+        ])
+        assert grokbuild.mcp_servers(str(tmp_path)) == [
+            {"name": "broker", "command": "/bin/client", "args": ["--x", "1"],
+             "env": [{"name": "K", "value": "V"}]},
+        ]
+
+    def test_http_entry_normalized(self, tmp_path):
+        _write_mcp(tmp_path, [
+            {"name": "docs", "type": "http", "url": "https://x/mcp",
+             "headers": {"Authorization": "Bearer t"}},
+        ])
+        assert grokbuild.mcp_servers(str(tmp_path)) == [
+            {"type": "http", "name": "docs", "url": "https://x/mcp",
+             "headers": [{"name": "Authorization", "value": "Bearer t"}]},
+        ]
+
+    def test_invalid_entries_skipped_not_fatal(self, tmp_path):
+        _write_mcp(tmp_path, [
+            {"name": "", "command": "/x"},          # no name
+            {"name": "a"},                           # stdio without command
+            {"name": "b", "type": "http"},           # http without url
+            {"name": "c", "type": "carrier-pigeon"},  # unknown type
+            "not-a-dict",
+            {"name": "ok", "command": "/bin/true"},
+        ])
+        assert [s["name"] for s in grokbuild.mcp_servers(str(tmp_path))] == ["ok"]
+
+    def test_malformed_file_means_no_servers(self, tmp_path):
+        path = grokbuild.mcp_config_path(str(tmp_path))
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("{broken")
+        assert grokbuild.mcp_servers(str(tmp_path)) == []
+
+
+class TestMcpWire:
+    def test_servers_passed_on_new_and_load_with_broker_token(
+        self, tmp_path, fake_agent, monkeypatch
+    ):
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        monkeypatch.setenv("FAKE_ACP_TOOL_PATH", str(ws / "f"))
+        _write_mcp(tmp_path, [{"name": "broker", "command": "/bin/true"}])
+
+        async def first():
+            manager = GrokBuildManager(str(tmp_path))
+            await manager.run_turn(
+                "r1", "scout", str(ws),
+                build_prompt=lambda fresh: "x",
+                approval=APPROVAL_WORKSPACE, timeout=30,
+            )
+            await manager.shutdown()
+
+        _run(first())
+
+        async def second():
+            manager = GrokBuildManager(str(tmp_path))  # restart -> session/load
+            await manager.run_turn(
+                "r1", "scout", str(ws),
+                build_prompt=lambda fresh: "x",
+                approval=APPROVAL_WORKSPACE, timeout=30,
+            )
+            await manager.shutdown()
+
+        _run(second())
+        events = _events(fake_agent)
+        new = next(e for e in events if e["kind"] == "new")
+        load = next(e for e in events if e["kind"] == "load")
+        expected = [{"name": "broker", "command": "/bin/true", "args": [], "env": []}]
+        assert new["mcp"] == expected
+        assert load["mcp"] == expected
+        # The member's broker identity rides the agent process env, so a
+        # broker-client MCP server (child of grok) inherits it.
+        assert new["broker_token"] is True
+
+
+class TestMcpPermissions:
+    def _use_tool(self, tool_name):
+        return {
+            "toolCallId": "x",
+            "title": tool_name,
+            "kind": "use_tool",
+            "rawInput": {"tool_name": tool_name, "tool_input": {}},
+            "_meta": {"x.ai/tool": {"kind": "use_tool", "read_only": False}},
+        }
+
+    def test_declared_server_allowed_in_workspace_mode(self):
+        ok, why = decide_permission(
+            self._use_tool("broker__list"), mode=APPROVAL_WORKSPACE, cwd="/p",
+            mcp_server_names=frozenset({"broker"}),
+        )
+        assert ok, why
+
+    def test_undeclared_server_rejected(self):
+        ok, why = decide_permission(
+            self._use_tool("rogue__rm"), mode=APPROVAL_WORKSPACE, cwd="/p",
+            mcp_server_names=frozenset({"broker"}),
+        )
+        assert not ok
+        assert "not declared" in why
+
+    def test_use_tool_rejected_in_read_only_mode(self):
+        ok, _ = decide_permission(
+            self._use_tool("broker__list"), mode=APPROVAL_READ_ONLY, cwd="/p",
+            mcp_server_names=frozenset({"broker"}),
+        )
+        assert not ok
+
+    def test_search_tool_discovery_always_allowed(self):
+        call = {
+            "toolCallId": "x", "title": "search_tool", "kind": "search_tool",
+            "_meta": {"x.ai/tool": {"kind": "search_tool", "read_only": False}},
+        }
+        for mode in (APPROVAL_WORKSPACE, APPROVAL_READ_ONLY):
+            ok, _ = decide_permission(call, mode=mode, cwd="/p")
+            assert ok, mode
+
+    def test_malformed_use_tool_name_rejected(self):
+        ok, _ = decide_permission(
+            self._use_tool("no-separator"), mode=APPROVAL_WORKSPACE, cwd="/p",
+            mcp_server_names=frozenset({"broker"}),
+        )
+        assert not ok
+
+    def test_live_request_shape_kind_other_meta_use_tool(self):
+        # EXACT payload observed from grok v0.2.93's session/request_permission
+        # for an MCP call: top-level kind degrades to "other"; the identity is
+        # in _meta["x.ai/tool"]. Pinned because the first policy cut keyed off
+        # the top-level kind and rejected every declared MCP tool live.
+        call = {
+            "toolCallId": "c-1",
+            "kind": "other",
+            "title": "retinue-test__retinue_ping",
+            "rawInput": {
+                "variant": "UseTool",
+                "tool_name": "retinue-test__retinue_ping",
+                "tool_input": {"value": "bridge-check"},
+            },
+            "_meta": {"x.ai/tool": {"version": 1, "name": "use_tool",
+                                     "kind": "use_tool", "namespace": "grok_build",
+                                     "label": "Use Tool", "read_only": False}},
+        }
+        ok, why = decide_permission(
+            call, mode=APPROVAL_WORKSPACE, cwd="/p",
+            mcp_server_names=frozenset({"retinue-test"}),
+        )
+        assert ok, why
+        ok, why = decide_permission(
+            call, mode=APPROVAL_WORKSPACE, cwd="/p",
+            mcp_server_names=frozenset(),
+        )
+        assert not ok
+        assert "not declared" in why

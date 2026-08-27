@@ -75,6 +75,33 @@ the model weights. The Hermes presets remain available and unchanged.
 
 Per-member override: `grok_approval` in the member's `retinue-agent.json`.
 
+### MCP servers (workspace-declared)
+
+Grok Build sessions never inherit the operator's personal `~/.grok` MCP
+config. To give room members MCP tools, declare servers in
+`$HERMES_HOME/grokbuild/mcp.json`:
+
+```json
+{"servers": [
+  {"name": "broker", "type": "stdio", "command": "/path/to/client",
+   "args": ["--socket", "/run/broker.sock"], "env": {"K": "V"}},
+  {"name": "docs", "type": "http", "url": "https://example/mcp",
+   "headers": {"Authorization": "Bearer …"}}
+]}
+```
+
+`type` is `stdio` (default), `http`, or `sse`. The list is passed on the
+ACP wire in both `session/new` and `session/load`; an invalid entry or a
+malformed file is skipped with a logged warning rather than taking the
+runtime down. Changes apply to the member's **next new/resumed process**
+(reset the session, or wait for the idle reap).
+
+Each agent process also carries the member's broker identity
+(`RETINUE_BROKER_TOKEN`, same HMAC scheme as container turns), which MCP
+server child processes inherit — so a host-broker client declared here
+can authenticate per member. Note the token is minted per *process*
+(TTL 6h), not per turn; idle reaping keeps processes short-lived.
+
 ## How a Grok Build turn works
 
 `plugins/platforms/retinue_rooms/grokbuild.py` manages one

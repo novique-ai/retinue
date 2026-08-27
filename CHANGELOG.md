@@ -31,6 +31,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   presets are unchanged and remain the "Grok as a model" path.
   Docs: `retinue/RUNTIMES.md`.
 
+- Grok Build MCP bridge (#220): `$HERMES_HOME/grokbuild/mcp.json`
+  declares stdio/http/sse MCP servers for Grok Build sessions, passed on
+  `session/new` and `session/load`; invalid entries are skipped with a
+  logged warning. The agent process env carries the member's
+  `RETINUE_BROKER_TOKEN` so a broker-client MCP server can authenticate
+  per member.
+
 - Projects in the left pane drag-reorder (⋮⋮ + up/down), same chrome as
   rooms. Order lives in ``retinue_projects.json`` ``order`` — not in
   ``/sidebar``. Unfiled stays last and is not a project.

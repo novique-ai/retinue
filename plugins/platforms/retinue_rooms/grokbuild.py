@@ -299,7 +299,11 @@ def _path_inside(path: str, root: str) -> bool:
 
 
 def decide_permission(
-    tool_call: Dict[str, Any], *, mode: str, cwd: str
+    tool_call: Dict[str, Any],
+    *,
+    mode: str,
+    cwd: str,
+    mcp_server_names: frozenset = frozenset(),
 ) -> Tuple[bool, str]:
     """Answer one ``session/request_permission`` without human input.
 
@@ -313,26 +317,54 @@ def decide_permission(
       target stays inside the session cwd; allow command execution (the
       command runs with the project as cwd — the same trust class as an
       ide room's shell, but on the HOST, which is why grok-build members
-      are documented as ide-trust); reject anything else, including any
-      file mutation that names a path outside the tree.
+      are documented as ide-trust); allow MCP calls to servers the
+      workspace ``mcp.json`` declares (declaring a server IS the
+      operator's grant, #220); reject anything else, including any file
+      mutation that names a path outside the tree.
+
+    MCP calls arrive as grok's builtin ``use_tool``
+    (``rawInput.tool_name = "<server>__<tool>"``); tool discovery is
+    ``search_tool``.  Verified against grok v0.2.93.
     """
     meta = _tool_meta(tool_call)
-    kind = str(tool_call.get("kind") or meta.get("kind") or "").lower()
+    # The precise tool identity lives in _meta["x.ai/tool"]; the top-level
+    # ACP kind is the coarse enum and DEGRADES to "other" on permission
+    # requests (an MCP use_tool request arrives as kind "other" while its
+    # meta kind/name still say use_tool — observed live on v0.2.93, and
+    # exactly the shape the regression test pins).
+    meta_kind = str(meta.get("kind") or "").lower()
+    acp_kind = str(tool_call.get("kind") or "").lower()
+    kind = meta_kind or acp_kind
     read_only = bool(meta.get("read_only"))
     title = str(tool_call.get("title") or meta.get("label") or kind or "tool")
 
     if mode == APPROVAL_ALWAYS:
         return True, "always-approve mode"
-    if read_only or kind in _SAFE_KINDS:
+    if (
+        read_only
+        or kind in _SAFE_KINDS
+        or acp_kind in _SAFE_KINDS
+        or kind == "search_tool"
+    ):
         return True, "read-only tool"
     if mode == APPROVAL_READ_ONLY:
         return False, f"{title}: blocked by read-only approval mode"
 
     # workspace mode
-    if kind == "execute":
+    if kind == "execute" or acp_kind == "execute":
         return True, "command execution allowed in workspace mode"
+    if kind == "use_tool" or str(meta.get("name") or "").lower() == "use_tool":
+        raw = tool_call.get("rawInput")
+        tool_name = str((raw or {}).get("tool_name") or "") if isinstance(raw, dict) else ""
+        server = tool_name.split("__", 1)[0] if "__" in tool_name else ""
+        if server and server in mcp_server_names:
+            return True, f"workspace-declared MCP server '{server}'"
+        return False, (
+            f"{title}: MCP server {server or '?'!r} is not declared in this "
+            f"workspace's grokbuild/mcp.json"
+        )
     paths = _candidate_paths(tool_call)
-    if kind in _FS_KINDS or paths:
+    if kind in _FS_KINDS or acp_kind in _FS_KINDS or paths:
         if not paths:
             return False, f"{title}: no target path visible; declined"
         outside = [p for p in paths if not _path_inside(p, cwd)]
@@ -662,6 +694,117 @@ def _rpc_error(err: Any) -> GrokBuildError:
     return GrokBuildError(str(err))
 
 
+# ── workspace MCP servers (#220) ─────────────────────────────────────────
+
+
+def mcp_config_path(home_dir: str) -> str:
+    return os.path.join(home_dir, "grokbuild", "mcp.json")
+
+
+def mcp_servers(home_dir: str) -> List[Dict[str, Any]]:
+    """Workspace-declared MCP servers for Grok Build sessions (#220).
+
+    ``$HERMES_HOME/grokbuild/mcp.json``::
+
+        {"servers": [
+          {"name": "broker", "type": "stdio", "command": "/path/client",
+           "args": ["--socket", "/run/broker.sock"], "env": {"K": "V"}},
+          {"name": "docs", "type": "http", "url": "https://…",
+           "headers": {"Authorization": "Bearer …"}}
+        ]}
+
+    Normalized to the ACP wire shape (stdio: ``{name, command, args,
+    env: [{name, value}]}``; http/sse: ``{type, name, url, headers:
+    [{name, value}]}`` — both verified against grok v0.2.93) and passed
+    on ``session/new`` AND ``session/load``.  This is deliberately NOT
+    the operator's personal ``~/.grok`` MCP config: room sessions only
+    get what the workspace file declares.  A malformed file or entry is
+    skipped with a warning — a typo must not take the runtime down, and
+    the log names what was dropped.  No file = no servers (today's
+    behavior).
+    """
+    path = mcp_config_path(home_dir)
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        return []
+    except (OSError, ValueError) as e:
+        logger.warning("grokbuild: unreadable mcp config %s (%s); no MCP servers", path, e)
+        return []
+    entries = data.get("servers") if isinstance(data, dict) else None
+    if not isinstance(entries, list):
+        logger.warning("grokbuild: %s has no 'servers' list; no MCP servers", path)
+        return []
+    out: List[Dict[str, Any]] = []
+    for i, entry in enumerate(entries):
+        normalized = _normalize_mcp_entry(entry)
+        if normalized is None:
+            logger.warning("grokbuild: skipping invalid MCP server entry %d in %s", i, path)
+        else:
+            out.append(normalized)
+    return out
+
+
+def _normalize_mcp_entry(entry: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(entry, dict):
+        return None
+    name = str(entry.get("name") or "").strip()
+    if not name:
+        return None
+    kind = str(entry.get("type") or "stdio").strip().lower()
+    if kind == "stdio":
+        command = str(entry.get("command") or "").strip()
+        if not command:
+            return None
+        args = entry.get("args") or []
+        if not isinstance(args, list):
+            return None
+        env = entry.get("env") or {}
+        if not isinstance(env, dict):
+            return None
+        return {
+            "name": name,
+            "command": command,
+            "args": [str(a) for a in args],
+            "env": [{"name": str(k), "value": str(v)} for k, v in env.items()],
+        }
+    if kind in ("http", "sse"):
+        url = str(entry.get("url") or "").strip()
+        if not url:
+            return None
+        headers = entry.get("headers") or {}
+        if not isinstance(headers, dict):
+            return None
+        return {
+            "type": kind,
+            "name": name,
+            "url": url,
+            "headers": [{"name": str(k), "value": str(v)} for k, v in headers.items()],
+        }
+    return None
+
+
+def _member_env_extra(home_dir: str, member: str) -> Dict[str, str]:
+    """Per-member env for the agent process (#220).
+
+    Carries the broker identity token, so a broker-client MCP server
+    declared in ``mcp.json`` (spawned by grok, inheriting its env) can
+    authenticate to the host capability broker as this member — the
+    host-native analog of the per-turn token container turns get.
+    Best-effort: a workspace with no broker key simply mints nothing.
+    Note the token TTL (6h) is per PROCESS here, not per turn; idle
+    reaping keeps processes far shorter-lived in practice.
+    """
+    try:
+        from . import brokertoken
+
+        return {brokertoken.TOKEN_ENV: brokertoken.mint(home_dir, member)}
+    except Exception:
+        logger.debug("grokbuild: broker token mint failed", exc_info=True)
+        return {}
+
+
 # ── managed member sessions ──────────────────────────────────────────────
 
 
@@ -673,6 +816,9 @@ class _MemberSession:
     cwd: str
     last_used: float = field(default_factory=time.time)
     turn_active: bool = False
+    # Names of the workspace MCP servers THIS session was started with —
+    # the allow-list decide_permission grants use_tool against (#220).
+    mcp_names: frozenset = frozenset()
 
 
 class GrokBuildManager:
@@ -751,8 +897,11 @@ class GrokBuildManager:
         if sess is not None:
             await self._drop(key)
 
-        process = AcpProcess(self._home_dir)
+        process = AcpProcess(
+            self._home_dir, env_extra=_member_env_extra(self._home_dir, member)
+        )
         await process.start()
+        mcp = mcp_servers(self._home_dir)
         remembered = self._recall(key)
         if remembered and remembered.get("session_id") and remembered.get("cwd") == cwd:
             sid = str(remembered["session_id"])
@@ -760,12 +909,16 @@ class GrokBuildManager:
                 await asyncio.wait_for(
                     process.request(
                         "session/load",
-                        {"sessionId": sid, "cwd": cwd, "mcpServers": []},
+                        {"sessionId": sid, "cwd": cwd, "mcpServers": mcp},
                     ),
                     _LOAD_TIMEOUT,
                 )
                 sess = _MemberSession(
-                    key="|".join(key), process=process, session_id=sid, cwd=cwd
+                    key="|".join(key),
+                    process=process,
+                    session_id=sid,
+                    cwd=cwd,
+                    mcp_names=frozenset(s["name"] for s in mcp),
                 )
                 self._sessions[key] = sess
                 logger.info(
@@ -782,7 +935,7 @@ class GrokBuildManager:
                 )
         try:
             result = await asyncio.wait_for(
-                process.request("session/new", {"cwd": cwd, "mcpServers": []}),
+                process.request("session/new", {"cwd": cwd, "mcpServers": mcp}),
                 _LOAD_TIMEOUT,
             )
         except (GrokBuildError, asyncio.TimeoutError):
@@ -792,7 +945,13 @@ class GrokBuildManager:
         if not sid:
             await process.close()
             raise GrokBuildError("session/new returned no sessionId")
-        sess = _MemberSession(key="|".join(key), process=process, session_id=sid, cwd=cwd)
+        sess = _MemberSession(
+            key="|".join(key),
+            process=process,
+            session_id=sid,
+            cwd=cwd,
+            mcp_names=frozenset(s["name"] for s in mcp),
+        )
         self._sessions[key] = sess
         self._remember(key, sid, cwd)
         logger.info("grokbuild: new session %s for %s/%s", sid, room_id, member)
@@ -882,7 +1041,12 @@ class GrokBuildManager:
                 # agent_thought_chunk: hidden reasoning — deliberately dropped.
 
             def on_permission(tool_call: Dict[str, Any]) -> Tuple[bool, str]:
-                allow, reason = decide_permission(tool_call, mode=approval, cwd=cwd)
+                allow, reason = decide_permission(
+                    tool_call,
+                    mode=approval,
+                    cwd=cwd,
+                    mcp_server_names=sess.mcp_names,
+                )
                 if not allow and on_activity is not None:
                     on_activity(
                         "rejected",
