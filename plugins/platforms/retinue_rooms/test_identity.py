@@ -30,9 +30,18 @@ _PALETTE = [
     "sky",
     "red",
 ]
-_VOICES = ("eve", "leo", "rex", "rigel", "ursa", "celeste", "lux", "iris")
+_VOICES = (
+    "eve", "leo", "rex", "rigel", "ursa", "celeste", "lux", "iris",
+    "carina", "zagan", "helix", "orion", "luna", "altair", "zenith",
+    "perseus", "helios", "kepler", "cosmo", "sirius", "lumen", "castor",
+    "naksh", "atlas", "aurora", "liora", "ara", "sal",
+)
 
 
+# herald is not in STAFF_VOICES, so its voice comes from stable_index over the
+# WHOLE tuple — the one value that legitimately moves when the roster grows
+# (it did, 8 -> 28 on 2026-08-26: rigel -> atlas). Derive it; hardcoding the
+# literal pins a tuple length, not the hash contract the tests care about.
 def _stable_index(slug: str, n: int) -> int:
     digest = hashlib.sha1(slug.encode("utf-8")).digest()
     return int.from_bytes(digest[:4], "big") % n
@@ -71,12 +80,17 @@ def _call(httpd, method, path, body=None):
 # ── derivation pins ──────────────────────────────────────────────────────
 
 
+_HERALD_VOICE = _VOICES[_stable_index("herald", len(_VOICES))]
+
+
 def test_known_slug_maps_to_known_color_and_voice():
     """Pin the hash so colour/voice cannot silently drift (CONTRACT)."""
     from . import identity
 
     assert _PALETTE[_stable_index("scout", len(_PALETTE))] == "emerald"
-    assert _VOICES[_stable_index("herald", len(_VOICES))] == "rigel"
+    # The guard _VOICES lacked until 2026-08-26: without it the mirror drifted
+    # from voice.AVAILABLE_VOICES and three tests asserted a stale literal.
+    assert voice.AVAILABLE_VOICES == _VOICES
     assert _stable_index("scout", 12) == 8
     # Python's salted hash() would not be stable across processes.
     assert hashlib.sha1(b"scout").digest()[:4].hex() == "6a87c094"
@@ -96,7 +110,7 @@ def test_list_agents_resolves_pinned_color_and_voice(tmp_path):
     assert by_slug["scout"]["identity"]["emoji"] is None
     # herald is not in STAFF_VOICES — this is the stable_index voice pin
     assert "voice_resolved" in by_slug["herald"]
-    assert by_slug["herald"]["voice_resolved"] == "rigel"
+    assert by_slug["herald"]["voice_resolved"] == _HERALD_VOICE
     assert by_slug["herald"]["identity"]["color"] == "rose"
 
 
@@ -316,7 +330,7 @@ def test_voice_precedence_order(tmp_path, monkeypatch):
     # 3. staff default still applies when nothing is stored
     assert voice.voice_for("admin", home_dir=home) == "eve"
     # 4. non-staff with nothing stored derives from the slug
-    assert voice.voice_for("herald", home_dir=home) == "rigel"
+    assert voice.voice_for("herald", home_dir=home) == _HERALD_VOICE
     # 2. stored override beats STAFF_VOICES
     assert voice.voice_for("scout", home_dir=home) == "helix"
     # 1. env map beats stored override
@@ -362,7 +376,7 @@ def test_patch_rejects_a_staff_slug_as_voice(tmp_path, monkeypatch):
         assert "editor" in err or "voice" in err
         listed = {a["slug"]: a for a in hire.list_agents(str(tmp_path))}
         assert listed["herald"]["voice"] is None
-        assert listed["herald"]["voice_resolved"] == "rigel"
+        assert listed["herald"]["voice_resolved"] == _HERALD_VOICE
     finally:
         httpd.shutdown()
         httpd.server_close()
