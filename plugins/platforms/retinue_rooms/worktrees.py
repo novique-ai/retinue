@@ -221,7 +221,7 @@ def worktree_volumes(
 
     Each worktree also needs the SOURCE repo's ``.git`` bound at its own host
     path (novique-ai/retinue#172). A linked worktree's ``.git`` is a file
-    holding an absolute pointer — ``gitdir: /home/clay/IDE/infra/.git/
+    holding an absolute pointer — ``gitdir: /home/user/IDE/myrepo/.git/
     worktrees/<name>`` — and ``commondir`` resolves relative to that. Inside
     the container that path does not exist: only the IDE tree is mounted, at
     ``/workspace``. Worse, the worktree bind sits ON TOP of

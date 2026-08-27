@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Track B test sidecar: OpenAI-compatible STT + TTS on claymore-1.
+"""Track B test sidecar: OpenAI-compatible STT + TTS on a LAN GPU host.
 
 Run NEXT TO Glimmer — do not touch llama-server :8080.
 
@@ -7,7 +7,7 @@ Run NEXT TO Glimmer — do not touch llama-server :8080.
     RETINUE_VOICE_WHISPER_MODEL=/path/to/ggml-large-v3-turbo.bin \\
     RETINUE_VOICE_PIPER=/path/to/piper \\
     RETINUE_VOICE_PIPER_MODEL=/path/to/en_US-lessac-medium.onnx \\
-    python3 voice_sidecar.py --host 10.44.0.13 --port 8104
+    python3 voice_sidecar.py --host 0.0.0.0 --port 8104
 
 STT:  POST /v1/audio/transcriptions  (multipart file=)
 TTS:  POST /v1/audio/speech          ({input, voice})

@@ -266,13 +266,13 @@ def test_mention_handle_falls_back_when_first_names_collide():
 
 
 def test_mention_regex_does_not_match_emails():
-    got = engine.parse_mentions("mail me at mark@how3ll.net", ["how3ll"])
-    # 'how3ll' appears after '@' in an email; accepting it would make every
+    got = engine.parse_mentions("mail me at sam@acme.test", ["acme"])
+    # 'acme' appears after '@' in an email; accepting it would make every
     # email address a turn trigger. Documented current behavior: it DOES
     # match the token — the engine relies on member names not colliding with
     # mail domains. If this becomes a problem, tighten the regex with a
     # lookbehind and update this test.
-    assert got == ["how3ll"]
+    assert got == ["acme"]
 
 
 # ── user-turn planning ───────────────────────────────────────────────────
