@@ -305,36 +305,50 @@ def transcribe(data: bytes, filename: str = "speech.wav") -> str:
             pass
 
 
-def spoken_text(text: str) -> str:
+def spoken_text(text: str, spoken_summary: str | None = None) -> str:
     """Return the speakable script for a room message.
 
-    A room turn is chat Markdown, not a script.  Speak Replies used to hand
+    Canonical ``text`` is never mutated — the UI, logs, and history keep it.
+    TTS gets a separate spoken form (deterministic humanization, optional
+    semantic rewrite, or a validated agent-supplied ``spoken_summary``).
+
+    A room turn is chat Markdown, not a script. Speak Replies used to hand
     the raw text to the provider, so it read the ``itinerary`` card aloud --
     title, where, and every [doing]/[todo]/[done] line -- on every single
-    turn.  That card is a running recap of the whole thread, so a normal
+    turn. That card is a running recap of the whole thread, so a normal
     cycle sounded like the room being read back from the beginning (#158).
 
-    Route through the same cleaner the CLI, voice-mode streaming, and
-    gateway auto-TTS already use, so there is one spoken-script definition
-    for every TTS path.  Returns "" when a turn is only a card and has
-    nothing to say aloud -- callers must treat that as silence, not failure.
+    Returns "" when a turn is only a card and has nothing to say aloud --
+    callers must treat that as silence, not failure.
     """
     raw = (text or "").strip()
     if not raw:
         return ""
     try:
-        from tools.tts_text_normalize import prepare_spoken_text
+        from .speech_humanize import SpeechContext, humanize_for_speech
 
-        return prepare_spoken_text(raw, max_chars=None).strip()
+        return humanize_for_speech(
+            raw, context=SpeechContext(spoken_summary=spoken_summary)
+        ).strip()
     except Exception:
-        # Never lose the reply to a cleaner import/regex fault: speaking raw
-        # Markdown is bad, silence is worse.
-        return raw
+        try:
+            from tools.tts_text_normalize import prepare_spoken_text
+
+            return prepare_spoken_text(raw, max_chars=None).strip()
+        except Exception:
+            # Never lose the reply to a cleaner import/regex fault: speaking raw
+            # Markdown is bad, silence is worse.
+            return raw
 
 
-def synthesize(text: str, speaker: str = "", home_dir: Optional[str] = None) -> bytes:
+def synthesize(
+    text: str,
+    speaker: str = "",
+    home_dir: Optional[str] = None,
+    spoken_summary: str | None = None,
+) -> bytes:
     """Return audio bytes (mp3 or wav). Raises VoiceError on failure."""
-    spoken = spoken_text(text)
+    spoken = spoken_text(text, spoken_summary=spoken_summary)
     if not spoken:
         raise VoiceError("empty text")
     voice = voice_for(speaker, home_dir=home_dir)
@@ -556,14 +570,19 @@ def transcribe_dispatch(data: bytes, filename: str = "speech.wav") -> str:
 
 
 def synthesize_dispatch(
-    text: str, speaker: str = "", home_dir: Optional[str] = None
+    text: str,
+    speaker: str = "",
+    home_dir: Optional[str] = None,
+    spoken_summary: str | None = None,
 ) -> bytes:
     fn = synthesize_fn
     if fn is not None:
         # An injected backend gets the spoken script too, so the cleaner
         # cannot be bypassed by swapping the synthesiser (#158).
-        spoken = spoken_text(text)
+        spoken = spoken_text(text, spoken_summary=spoken_summary)
         if not spoken:
             raise VoiceError("empty text")
         return fn(spoken, speaker)
-    return synthesize(text, speaker, home_dir=home_dir)
+    return synthesize(
+        text, speaker, home_dir=home_dir, spoken_summary=spoken_summary
+    )

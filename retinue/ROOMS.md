@@ -305,7 +305,7 @@ convention: no `RETINUE_ROOMS_API_KEY` → localhost-only):
 | `GET /workspace` | workspace-computer status + attach command + shared-folder report (`shared_dir`, `shared_mount`, `shared_error`) |
 | `GET /voice` | STT/TTS backend status (`xai` or OpenAI-compat sidecar). `voices` is the roster (`slug →` resolved narrator); `available` is the narrator ids a hire/edit picker may store. |
 | `POST /rooms/{id}/audio` | hold-to-talk: raw audio → STT → same cycle as `/messages` |
-| `POST /tts` | `{text, speaker?}` → audio/mpeg (or wav); per-slug voice map. The text is normalised to a spoken script first (no itinerary card, no Markdown scaffolding); a turn with nothing speakable returns `204`. |
+| `POST /tts` | `{text, speaker?, spoken_summary?}` → audio/mpeg (or wav); per-slug voice map. Canonical `text` is never mutated. TTS consumes a humanized spoken script (see `retinue/VOICE.md`); a turn with nothing speakable returns `204`. |
 
 `python -m plugins.platforms.retinue_rooms.cli` is the reference client (create / list /
 send / watch / chat). The web UI consumes the SSE stream; the CLI keeps long-poll.
