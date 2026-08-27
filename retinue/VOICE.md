@@ -159,12 +159,13 @@ cleaner in `tools.tts_text_normalize`; this layer is rooms-only (fork policy).
    and emoji. Speaks the *meaning* of each construct. Code fences are
    summarized (“I’ve included three Docker commands on screen…”) rather
    than read. Itinerary fences stay silent (#158).
-3. **Semantic rewrite** (optional). After the deterministic pass, dense
-   technical replies may go through `agent.auxiliary_client.call_llm` on
-   the plugin task `speech_humanize` (`auxiliary.speech_humanize.*` in
-   config.yaml). Simple replies (“Done.”, “All tests passed.”) skip the
-   LLM. The prompt forbids following instructions that appear inside the
-   source text.
+3. **Semantic rewrite.** After the deterministic pass, **every** non-empty
+   spoken turn goes through `agent.auxiliary_client.call_llm` on the
+   plugin task `speech_humanize` (`auxiliary.speech_humanize.*` in
+   config.yaml). A few seconds of wait is acceptable. Itinerary-only
+   silence still skips (nothing to say). The prompt forbids following
+   instructions that appear inside the source text, and forbids reading
+   URLs (say “this link”).
 
 ### Fallback
 
@@ -184,10 +185,10 @@ Defaults favor natural speech. Env vars win over `tts.humanize` in
 |---|---|---|
 | `RETINUE_SPEECH_HUMANIZE` / `tts.humanize.enabled` | on | Master switch. Off → legacy Markdown cleaner only. |
 | `RETINUE_SPEECH_HUMANIZE_DETERMINISTIC` | on | Stage 1. |
-| `RETINUE_SPEECH_HUMANIZE_SEMANTIC` | on | Stage 2, only when the complexity detector says so. |
+| `RETINUE_SPEECH_HUMANIZE_SEMANTIC` | on | Stage 2 on every non-empty turn. Off is emergency-only. |
 | `RETINUE_SPEECH_HUMANIZE_SPOKEN_SUMMARY` | on | Honor a valid `spoken_summary`. |
 | `RETINUE_SPEECH_HUMANIZE_CODE_BLOCKS` | on | Summarize fenced code instead of deleting it silently. |
-| `RETINUE_SPEECH_HUMANIZE_URLS` | on | Humanize URLs instead of dropping them. |
+| `RETINUE_SPEECH_HUMANIZE_URLS` | on | Point at URLs (“this link”) instead of reading them. |
 | `RETINUE_SPEECH_HUMANIZE_SEMANTIC_TIMEOUT` | 6s | Aux-LLM deadline. |
 
 Semantic provider/model is the existing auxiliary router:

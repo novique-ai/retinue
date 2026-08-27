@@ -12,18 +12,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Changed
+
+- Speak Replies always runs the semantic rewrite on a non-empty turn
+  (no complexity skip). URLs are pointed at as “this link”, not read as
+  domains or GitHub issue numbers. Code fences stay summarized. Unique
+  retainer voices are unchanged. Closes #227.
+
 ### Added
 
 - **Speech humanization for Speak Replies.** Rooms TTS no longer reads
   developer Markdown as a screen reader would. Canonical agent text stays
   on screen; `POST /tts` consumes a spoken script produced by
   `plugins/platforms/retinue_rooms/speech_humanize` (deterministic
-  normalization, optional semantic rewrite via the auxiliary router,
-  optional untrusted `spoken_summary`). Code fences are summarized, URLs
-  and GitHub links are named, env vars and paths are spoken as words,
-  itinerary cards stay silent. Semantic rewrite failures fall back to the
-  deterministic script; the humanizer cannot fail the TTS path. Docs:
-  `retinue/VOICE.md`.
+  normalization, semantic rewrite via the auxiliary router, optional
+  untrusted `spoken_summary`). Code fences are summarized, URLs are
+  pointed at, env vars and paths are spoken as words, itinerary cards
+  stay silent. Semantic rewrite failures fall back to the deterministic
+  script; the humanizer cannot fail the TTS path. Docs: `retinue/VOICE.md`.
 
 - **Agent runtimes** (#218): a member is now hired onto a runtime, not just
   a model. **Hermes** (default, unchanged) or **Grok Build** — xAI's native

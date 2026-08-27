@@ -10,7 +10,6 @@ from __future__ import annotations
 import html
 import re
 from typing import Callable, List, Tuple
-from urllib.parse import urlparse, unquote
 
 from .config import HumanizeConfig
 
@@ -280,91 +279,12 @@ def humanize_path(path: str) -> str:
 # URLs
 # ---------------------------------------------------------------------------
 
-_KNOWN_API_PATHS = (
-    (re.compile(r"api\.openai\.com$", re.I), re.compile(r"/v1/responses"), "the OpenAI Responses API"),
-    (re.compile(r"api\.openai\.com$", re.I), re.compile(r"/v1/chat/completions"), "the OpenAI Chat Completions API"),
-    (re.compile(r"api\.openai\.com$", re.I), re.compile(r"/v1/audio/"), "the OpenAI audio API"),
-    (re.compile(r"api\.anthropic\.com$", re.I), None, "the Anthropic API"),
-    (re.compile(r"api\.x\.ai$", re.I), None, "the xAI API"),
-    (re.compile(r"api\.github\.com$", re.I), None, "the GitHub API"),
-)
-
-_GITHUB_REPO_RE = re.compile(
-    r"^/([^/]+)/([^/]+)(?:/(issues|pull|discussions)/(\d+)|/(blob|tree|commit)/[^?]*)?",
-    re.I,
-)
-
-
-def _speak_host(host: str) -> str:
-    host = (host or "").lower()
-    if host in {"127.0.0.1", "0.0.0.0", "localhost"}:
-        return "localhost"
-    if host.startswith("www."):
-        host = host[4:]
-    return host
-
-
-def _port_phrase(port: int | None, scheme: str) -> str:
-    if port is None:
-        return ""
-    if (scheme == "https" and port == 443) or (scheme == "http" and port == 80):
-        return ""
-    return f" on port {speak_int(port)}"
-
-
 def humanize_url(url: str) -> str:
-    raw = url.strip().rstrip(").,;]")
-    try:
-        parsed = urlparse(raw)
-    except Exception:
-        return "the linked URL"
-    host = (parsed.hostname or "").lower()
-    path = unquote(parsed.path or "")
-    query = parsed.query or ""
-    port = parsed.port
-    scheme = (parsed.scheme or "https").lower()
+    """Point at a URL; never read host, path, query, or GitHub numbers.
 
-    if host in {"127.0.0.1", "0.0.0.0", "localhost"}:
-        spoken = "localhost" + _port_phrase(port, scheme)
-        if path and path not in {"/", ""}:
-            # /api/health → the local health endpoint, mentioned separately
-            # Keep host+port; caller often has surrounding words.
-            return spoken
-        return spoken
-
-    if host in {"github.com", "www.github.com"}:
-        m = _GITHUB_REPO_RE.match(path)
-        if m:
-            _owner, repo, kind, number, _blob = m.group(1), m.group(2), m.group(3), m.group(4), m.group(5)
-            repo_spoken = split_ident(repo.replace(".git", ""))
-            if kind == "issues" and number:
-                return f"{repo_spoken} issue {speak_issue_number(int(number))}"
-            if kind == "pull" and number:
-                return f"{repo_spoken} pull request {speak_issue_number(int(number))}"
-            if kind == "discussions" and number:
-                return f"{repo_spoken} discussion {speak_issue_number(int(number))}"
-            return f"the {repo_spoken} GitHub repository"
-        return "GitHub"
-
-    for host_re, path_re, label in _KNOWN_API_PATHS:
-        if host_re.search(host) and (path_re is None or path_re.search(path)):
-            return label
-    for host_re, path_re, label in _KNOWN_API_PATHS:
-        if host_re.search(host) and path_re is not None:
-            # Host matched a known API but not the specific path — still name the host.
-            return _speak_host(host).replace(".", " dot ")
-
-    spoken_host = _speak_host(host)
-    # Long / query-heavy URLs collapse to the domain.
-    if query or len(path) > 24:
-        if spoken_host.count(".") >= 1 and not path.startswith("/v"):
-            return spoken_host
-        return spoken_host.replace(".", " dot ") if spoken_host.startswith("api.") else spoken_host
-    if path in {"", "/"}:
-        return spoken_host
-    if spoken_host.startswith("api."):
-        return spoken_host.replace(".", " dot ")
-    return spoken_host
+    The canonical reply still shows the link. TTS says "this link".
+    """
+    return "this link"
 
 
 # ---------------------------------------------------------------------------
@@ -630,7 +550,8 @@ def _normalize_deterministic(text: str, cfg: HumanizeConfig) -> str:
     if cfg.urls:
         text = _stash_span(
             bank, text, _MD_LINK_RE,
-            lambda m: m.group(1) if m.group(1) and "http" not in m.group(1).lower()
+            lambda m: m.group(1).strip()
+            if m.group(1).strip() and "http" not in m.group(1).lower()
             else humanize_url(m.group(2)),
         )
         def _url_keep_punct(m: re.Match[str]) -> str:
@@ -740,9 +661,8 @@ def _normalize_deterministic(text: str, cfg: HumanizeConfig) -> str:
         text,
     )
     text = normalize_symbols_for_tts(text)
-    # Smooth/flatten before restoring stashed spoken spans: those spans
-    # contain domains like chatgpt.com, and the smoother inserts a space
-    # after every period that precedes a letter.
+    # Smooth/flatten before restoring stashed spoken spans. The smoother
+    # inserts a space after every period that precedes a letter.
     text = smooth_whitespace_for_tts(text)
     text = flatten_newlines_for_payload(text)
     text = bank.restore(text)

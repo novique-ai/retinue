@@ -86,64 +86,81 @@ def test_plain_conversation_is_left_alone():
     assert speak("Build failed with two errors.") == "Build failed with two errors."
 
 
-def test_simple_turn_does_not_need_semantic():
-    assert not needs_semantic("Done.")
-    assert not needs_semantic("All tests passed.")
-    assert complexity_score("Done.") == 0
+def test_semantic_runs_on_simple_replies():
+    called = {}
+
+    def rw(orig, det):
+        called["yes"] = orig
+        return "Done."
+
+    spoken = speak("Done.", rewriter=rw, semantic=True)
+    assert called.get("yes") == "Done."
+    assert spoken == "Done."
 
 
 # --- 2–7. URLs --------------------------------------------------------------
 
 
-def test_homepage_url_becomes_domain():
+def test_homepage_url_is_pointed_at():
     spoken = speak("See https://chatgpt.com for the docs.")
-    assert "chatgpt.com" in spoken
+    assert "this link" in spoken.lower()
+    assert "chatgpt.com" not in spoken.lower()
     assert "https" not in spoken.lower()
     assert "forward slash" not in spoken.lower()
 
 
-def test_long_query_url_collapses_to_domain():
+def test_long_query_url_is_pointed_at():
     spoken = speak(
         "Open https://example.com/very/long/path/search?q=foo&ref=bar&utm=x#frag"
     )
-    assert "example.com" in spoken
+    assert "this link" in spoken.lower()
+    assert "example.com" not in spoken.lower()
     assert "utm" not in spoken
     assert "?" not in spoken
     _assert_not_screen_reader(spoken)
 
 
-def test_github_repo_url():
+def test_github_repo_url_is_pointed_at():
     spoken = speak("Clone https://github.com/novique-ai/retinue")
-    assert "Retinue" in spoken or "retinue" in spoken.lower()
-    assert "GitHub repository" in spoken
+    assert "this link" in spoken.lower()
+    assert "github.com" not in spoken.lower()
     assert "novique-ai" not in spoken
 
 
-def test_github_issue_url():
+def test_github_issue_url_is_pointed_at():
     spoken = speak("Fixed https://github.com/novique-ai/retinue/issues/123")
-    assert "issue" in spoken.lower()
-    assert "one twenty-three" in spoken
+    assert "this link" in spoken.lower()
+    assert "one twenty-three" not in spoken
     assert "/issues/" not in spoken
+    assert "github.com" not in spoken.lower()
 
 
-def test_github_pull_request_url():
+def test_github_pull_request_url_is_pointed_at():
     spoken = speak("See https://github.com/novique-ai/retinue/pull/191")
-    assert "pull request" in spoken.lower()
-    assert "one ninety-one" in spoken
+    assert "this link" in spoken.lower()
+    assert "one ninety-one" not in spoken
+    assert "pull request" not in spoken.lower()
 
 
-def test_localhost_url_with_port():
+def test_localhost_url_is_pointed_at():
     spoken = speak("Hit http://localhost:3000/health")
-    assert "localhost" in spoken
-    assert "three thousand" in spoken
+    assert "this link" in spoken.lower()
     assert ":3000" not in spoken
+    assert "three thousand" not in spoken
 
 
-def test_openai_responses_api_url():
+def test_openai_api_url_is_pointed_at():
     spoken = speak('Updated fetch("https://api.openai.com/v1/responses")')
-    assert "OpenAI" in spoken
-    assert "Responses" in spoken
-    assert "api.openai.com" not in spoken.lower() or "dot" in spoken.lower()
+    assert "this link" in spoken.lower()
+    assert "api.openai.com" not in spoken.lower()
+    assert "https" not in spoken.lower()
+
+
+def test_markdown_link_keeps_human_label():
+    spoken = speak("See [the docs](https://chatgpt.com/docs) for setup.")
+    assert "the docs" in spoken.lower()
+    assert "chatgpt.com" not in spoken.lower()
+    assert "https" not in spoken.lower()
 
 
 # --- 8. HTTP status ---------------------------------------------------------
@@ -330,7 +347,8 @@ def test_torture_invariants():
     assert "no errors" in spoken
     assert "two warnings" in spoken
     assert "successful" in spoken.lower()
-    assert "localhost" in spoken
+    assert "this link" in spoken.lower()
+    assert "github.com" not in spoken.lower()
     assert "rebuild" in spoken.lower()
     assert "verify check" not in spoken.lower()
     assert "eight thousand" in spoken or "8643" not in spoken
@@ -411,9 +429,16 @@ def test_empty_semantic_output_falls_back():
 # --- 25. no rewriting needed ------------------------------------------------
 
 
-def test_complexity_skips_llm_for_simple_replies():
+def test_complexity_score_still_classifies_but_does_not_gate():
     assert complexity_score("Build failed with two errors.") < 3
-    assert not needs_semantic("Build failed with two errors.")
+    called = {}
+
+    def rw(orig, _det):
+        called["yes"] = True
+        return "Build failed with two errors."
+
+    speak("Build failed with two errors.", rewriter=rw, semantic=True)
+    assert called.get("yes") is True
 
 
 # --- spoken_summary ---------------------------------------------------------
@@ -427,6 +452,23 @@ def test_valid_spoken_summary_is_preferred():
     assert spoken.startswith("I fixed the login bug")
     assert "session.ts" not in spoken
     assert "401" not in spoken
+
+
+def test_spoken_summary_still_runs_semantic():
+    called = {}
+
+    def rw(orig, hint):
+        called["hint"] = hint
+        return "I fixed the login bug. Details are on screen."
+
+    spoken = speak(
+        "Edited src/api/auth/session.ts and hit HTTP 401.",
+        summary="I fixed the login bug. Details are on screen.",
+        rewriter=rw,
+        semantic=True,
+    )
+    assert "hint" in called
+    assert "login bug" in spoken.lower()
 
 
 def test_spoken_summary_with_url_is_rejected():
@@ -539,7 +581,9 @@ def test_humanize_disabled_uses_legacy_cleaner():
 
 def test_urls_can_be_disabled():
     spoken = speak("See https://chatgpt.com", urls=False)
-    assert "chatgpt.com" not in spoken or "https" not in spoken.lower()
+    assert "this link" not in spoken.lower()
+    assert "https" not in spoken.lower()
+    assert "chatgpt.com" not in spoken.lower()
 
 
 def test_code_blocks_can_be_disabled():
@@ -604,9 +648,9 @@ def test_canonical_string_is_not_mutated():
 
 
 def test_humanize_url_helpers():
-    assert "chatgpt.com" in humanize_url("https://chatgpt.com")
-    assert "issue" in humanize_url("https://github.com/novique-ai/retinue/issues/123")
-    assert "localhost" in humanize_url("http://127.0.0.1:8643/api/health")
+    assert humanize_url("https://chatgpt.com") == "this link"
+    assert humanize_url("https://github.com/novique-ai/retinue/issues/123") == "this link"
+    assert humanize_url("http://127.0.0.1:8643/api/health") == "this link"
 
 
 def test_humanize_path_auth_session():
@@ -633,6 +677,62 @@ def test_http_code_pronunciation():
 def test_deterministic_entry_never_raises():
     assert normalize_deterministic("") == ""
     assert isinstance(normalize_deterministic("??? ###"), str)
+
+
+def test_semantic_rewrite_ccTLD_is_rejected():
+    def reads_uk(_orig, _det):
+        return "See example.co.uk for details."
+
+    spoken = speak(
+        "See https://example.co.uk/x for details.",
+        rewriter=reads_uk,
+        semantic=True,
+    )
+    assert "example.co.uk" not in spoken.lower()
+    assert "this link" in spoken.lower()
+
+
+def test_semantic_cannot_recite_fenced_commands():
+    raw = (
+        "Run:\n\n"
+        "```\n"
+        "docker compose down\n"
+        "docker compose up -d --build\n"
+        "```\n"
+    )
+
+    def recites(_orig, _det):
+        return (
+            "Run docker compose down, then docker compose up with build."
+        )
+
+    spoken = speak(raw, rewriter=recites, semantic=True)
+    assert "docker compose down" not in spoken.lower()
+    assert "on screen" in spoken.lower() or "command" in spoken.lower()
+
+
+def test_do_not_verb_cannot_be_split_from_the_verb():
+    spoken = speak(
+        "WARNING: Do not delete production data.",
+        rewriter=lambda *_: "Warning: delete production data now. Do not worry about it.",
+        semantic=True,
+    )
+    lower = spoken.lower()
+    assert "do not delete" in lower or "don't delete" in lower or "never delete" in lower
+    assert "delete production data now" not in lower
+
+
+def test_semantic_rewrite_that_reads_a_url_is_rejected():
+    def reads_url(_orig, _det):
+        return "See chatgpt.com for the docs."
+
+    spoken = speak(
+        "See https://chatgpt.com for the docs.",
+        rewriter=reads_url,
+        semantic=True,
+    )
+    assert "chatgpt.com" not in spoken.lower()
+    assert "this link" in spoken.lower()
 
 
 def test_semantic_rewrite_accepted_when_valid():
