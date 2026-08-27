@@ -130,6 +130,7 @@ If you want the upstream Hermes product itself, use [NousResearch/hermes-agent](
 | [docs/community.md](docs/community.md) | Discussions vs Issues, labels |
 | [retinue/FORK-POLICY.md](retinue/FORK-POLICY.md) | How this fork tracks upstream |
 | [retinue/ROOMS.md](retinue/ROOMS.md) | Rooms design (API, turn-taking, workspace) |
+| [retinue/RUNTIMES.md](retinue/RUNTIMES.md) | Agent runtimes — Hermes loop vs the native Grok Build (ACP) runtime |
 | [CHANGELOG.md](CHANGELOG.md) | Notable Retinue-delta changes |
 | [SECURITY.md](.github/SECURITY.md) | How to report vulnerabilities |
 | [Upstream Hermes docs](https://hermes-agent.nousresearch.com/docs/) | Everything not in the table above |

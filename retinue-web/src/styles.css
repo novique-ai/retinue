@@ -356,6 +356,15 @@ body {
   max-width: 100%;
 }
 
+/* Static runtime tag where hermes agents show the model <select> — a
+   Grok Build member's model belongs to its runtime, not to a preset. */
+span.agent-runtime {
+  display: inline-block;
+  width: auto;
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+}
+
 .agent-model:disabled {
   opacity: 0.45;
   cursor: not-allowed;
@@ -866,6 +875,23 @@ body {
   display: block;
   margin-top: 2px;
   font-style: normal;
+}
+
+/* Runtime tool-activity lines (Grok Build, #218): the member doing, not
+   saying. Left-aligned with the agent column, dimmer than a system line. */
+.msg-tool {
+  color: var(--text-dim);
+  font-size: 12px;
+  padding-left: 44px; /* clear of the 32px avatar column */
+  opacity: 0.85;
+}
+
+.msg-tool .msg-tool-speaker {
+  font-weight: 600;
+}
+
+.msg-tool .msg-time {
+  margin-left: 6px;
 }
 
 /* ── composer ────────────────────────────────────────────── */

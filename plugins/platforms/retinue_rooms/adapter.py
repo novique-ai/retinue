@@ -41,8 +41,8 @@ from gateway.platforms.base import (
     SendResult,
 )
 
-from . import attachments, auth, brokertoken, clarify as room_clarify, cron_workspace, cronjobs, crossroom, engine, governed, hidden_sessions, hire, ide, identity, itinerary, keepalive, principal, projects, routines, sidebar, skilldraft, uimeta, voice, workspace
-from .engine import KIND_AGENT, KIND_SYSTEM, KIND_USER, Room, RoomMessage
+from . import attachments, auth, brokertoken, clarify as room_clarify, cron_workspace, cronjobs, crossroom, engine, governed, grokbuild, hidden_sessions, hire, ide, identity, itinerary, keepalive, principal, projects, routines, runtimes, sidebar, skilldraft, uimeta, voice, workspace
+from .engine import KIND_AGENT, KIND_SYSTEM, KIND_TOOL, KIND_USER, Room, RoomMessage
 from .store import RoomStore
 
 logger = logging.getLogger(__name__)
@@ -129,6 +129,9 @@ class _PendingTurn:
     future: Future  # resolves to (ok: bool, text: str)
     session_key: str = ""
     source: Any = None
+    # Grok Build turns (#218): Stop calls this instead of the Hermes
+    # gateway interrupt — it sends session/cancel to the member's agent.
+    grok_cancel: Any = None  # Optional[Callable[[], Awaitable[None]]]
 
 
 class RetinueRoomsAdapter(BasePlatformAdapter):
@@ -315,6 +318,12 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         cron_workspace.uninstall()
         self._stop_xai_keepalive()
+        mgr = getattr(self, "_grok_mgr", None)
+        if mgr is not None:
+            try:
+                await mgr.shutdown()
+            except Exception:
+                logger.debug("Retinue rooms: grok manager shutdown failed", exc_info=True)
         if self._httpd is not None:
             try:
                 self._httpd.shutdown()
@@ -978,11 +987,20 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         avatar_color: Any = None,
         voice: Any = None,
         persona: Any = None,
+        runtime: Any = None,
     ) -> Dict[str, Any]:
         try:
             hire.ensure_bundled_cloud_presets(self._home_dir())
         except Exception:
             logger.debug("Retinue rooms: preset seed on hire failed", exc_info=True)
+        runtime_id = runtimes.validate_runtime(runtime)
+        if runtime_id == runtimes.RUNTIME_GROK_BUILD:
+            state = grokbuild.health(self._home_dir())
+            if state.get("status") != "available":
+                raise ValueError(
+                    f"Grok Build runtime is not usable here — "
+                    f"{state.get('status')}: {state.get('detail') or ''}".strip()
+                )
         meta = hire.scaffold_profile(
             self._home_dir(),
             name,
@@ -993,6 +1011,7 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             avatar_color=avatar_color,
             voice=voice,
             persona=persona,
+            runtime=runtime_id,
         )
         activation = self._activate_slug(meta["slug"])
         meta["online"] = bool(activation.get("online"))
@@ -1248,6 +1267,11 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
 
     async def _interrupt_turn(self, pending: _PendingTurn) -> None:
         """Cancel the in-flight model call for one pending room turn."""
+        if pending.grok_cancel is not None:
+            # Grok Build turn: cancellation is the runtime's own
+            # session/cancel; there is no Hermes session to interrupt.
+            await pending.grok_cancel()
+            return
         key = pending.session_key
         runner = self._live_runner()
         interrupt_fn = getattr(runner, "_interrupt_and_clear_session", None) if runner else None
@@ -1364,6 +1388,14 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             thread_id=member,
         )
         source.profile = None if member == "default" else member
+        if (
+            runtimes.runtime_for_member(self._home_dir(), member)
+            == runtimes.RUNTIME_GROK_BUILD
+        ):
+            # Native runtime: drop the grok session + its persisted id;
+            # the next turn re-briefs a genuinely new conversation.
+            await self._grok_manager().reset(room_id, member)
+            return {"reset": True, "member": member, "room": room_id}
         key = self._session_key_for(source)
         ok = await self._rotate_member_session(key)
         return {"reset": bool(ok), "member": member, "room": room_id}
@@ -1869,6 +1901,10 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             m
             for m in self.store.read_since(room.id, room.last_seen.get(member, 0))
             if not (m.kind == KIND_AGENT and m.speaker == member)
+            # Tool-activity lines are presentation-only observability
+            # (#218): members never respond to them, so they are neither
+            # readable context nor a reason to take a turn.
+            and m.kind != KIND_TOOL
         ]
         if not readable:
             return readable, readable
@@ -1995,6 +2031,36 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         trigger = capped[-1]
         context_block = engine.format_delta_context(capped[:-1], omitted)
 
+        # Which runtime executes this member's turn (#218). Grok Build
+        # members run host-native, so their briefing must name host paths
+        # and their working directory is validated before anything else.
+        member_runtime = runtimes.runtime_for_member(self._home_dir(), member)
+        grok_cwd: Optional[str] = None
+        host_uploads: Optional[str] = None
+        if member_runtime == runtimes.RUNTIME_GROK_BUILD:
+            if getattr(room, "worktree_repos", None):
+                return False, (
+                    "Grok Build members are not yet supported in rooms with "
+                    "isolated worktrees — the host-native runtime would see "
+                    "the real checkout, not the room's worktree (#218)"
+                )
+            if (room.workspace or "sandbox") == "ide":
+                try:
+                    if ide.mounts_ide_root(room):
+                        grok_cwd = ide.configured_ide_root()
+                    else:
+                        grok_cwd = ide.resolve_ide_path(room.ide_path)
+                except ValueError as e:
+                    return False, f"cannot resolve the room workspace: {e}"
+                if not grok_cwd or not os.path.isdir(grok_cwd):
+                    return False, (
+                        f"room workspace path does not exist on this host: "
+                        f"{grok_cwd or room.ide_path!r}"
+                    )
+            else:
+                grok_cwd = grokbuild.sandbox_workspace_dir(self._home_dir(), room.id)
+            host_uploads = attachments.host_dir(self._home_dir(), room.id)
+
         me = principal.load(self._home_dir())
         speakers = {
             m.speaker for m in self.store.read_since(room.id, 0) if m.kind == KIND_USER
@@ -2021,7 +2087,22 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             ),
             governed_contract=governed_contract,
             jobs=self._member_jobs(room),
+            host_workspace=grok_cwd,
+            host_uploads=host_uploads,
         )
+
+        if member_runtime == runtimes.RUNTIME_GROK_BUILD:
+            return await self._grok_turn(
+                room,
+                member,
+                cwd=grok_cwd or "",
+                briefing=briefing,
+                context_block=context_block,
+                trigger=trigger,
+                governed_contract=governed_contract,
+                previous=previous,
+                delivered_through=delivered_through,
+            )
 
         speaker_display = (
             f"{trigger.speaker} (agent)" if trigger.kind == KIND_AGENT else trigger.speaker
@@ -2215,6 +2296,180 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
                     pass
             if not completed:
                 self._restore_watermark(room, member, previous, delivered_through)
+
+    def _grok_manager(self) -> "grokbuild.GrokBuildManager":
+        mgr = getattr(self, "_grok_mgr", None)
+        if mgr is None:
+            mgr = grokbuild.GrokBuildManager(self._home_dir())
+            self._grok_mgr = mgr
+        return mgr
+
+    async def _grok_turn(
+        self,
+        room: Room,
+        member: str,
+        *,
+        cwd: str,
+        briefing: str,
+        context_block: Optional[str],
+        trigger: RoomMessage,
+        governed_contract: Optional[str],
+        previous: int,
+        delivered_through: int,
+    ) -> tuple[bool, str]:
+        """One member turn executed by the Grok Build runtime (#218).
+
+        The whole tool loop runs inside ``grok agent stdio``; this method
+        supplies the prompt, streams tool activity onto the transcript,
+        answers nothing itself (permission requests are decided by
+        ``grokbuild.decide_permission``), and maps the stop reason back to
+        the ``(ok, text)`` contract every caller of ``_agent_turn`` expects.
+        Watermark semantics mirror the Hermes path exactly: the delta is
+        tentatively marked delivered, and restored unless the turn
+        completes.
+        """
+        manager = self._grok_manager()
+        member_meta = self._member_meta(member)
+        approval = grokbuild.approval_mode(member_meta)
+        budget = hire.turn_timeout_for(
+            self._home_dir(), member, room.workspace or "sandbox"
+        )
+
+        trigger_line = engine.format_lines([trigger])
+        delta_text = (
+            f"{context_block}\n{trigger_line}" if context_block else trigger_line
+        )
+
+        def build_prompt(fresh: bool) -> str:
+            parts: List[str] = []
+            if fresh:
+                parts.append(briefing)
+                parts.append("New activity in the room:")
+            else:
+                parts.append(
+                    "New activity in the room since your last turn "
+                    "(same rules as before — reply as yourself; pass with "
+                    f"{engine.pass_payload_text()} if this adds nothing):"
+                )
+                # The briefing rides only the first prompt of a session, but
+                # a governed retainer's contract must bind every turn.
+                if governed_contract:
+                    parts.append(
+                        "## OPERATING CONTRACT (binding)\n"
+                        + governed_contract.strip()
+                    )
+            parts.append(delta_text)
+            return "\n\n".join(p for p in parts if p)
+
+        cancel_ev = asyncio.Event()
+
+        async def grok_cancel() -> None:
+            cancel_ev.set()
+            await manager.cancel(room.id, member)
+
+        task_id = f"room-{room.id}-{member}-{int(time.time() * 1000)}"
+        fut: Future = Future()
+        key = (room.id, member)
+        with self._pending_lock:
+            stale = self._pending.pop(key, None)
+            if stale is not None and not stale.future.done():
+                stale.future.set_result((False, "superseded by a newer turn"))
+            self._pending[key] = _PendingTurn(
+                task_id=task_id,
+                room_id=room.id,
+                member=member,
+                future=fut,
+                grok_cancel=grok_cancel,
+            )
+
+        def on_activity(event: str, payload: Dict[str, Any]) -> None:
+            # Called on the event loop (ACP reader task). store.append is
+            # thread-safe and wakes the SSE/long-poll watchers itself.
+            # needs_user bookkeeping is skipped on purpose: a tool line
+            # cannot @ the principal.
+            title = str(payload.get("title") or "tool")
+            if event == "tool_start":
+                text = title
+            elif event == "tool_failed":
+                text = f"{title} — failed"
+            elif event == "rejected":
+                text = f"declined: {payload.get('reason') or title}"
+            else:
+                return  # tool_done duplicates tool_start's line for the UI
+            try:
+                self.store.append(
+                    room.id,
+                    RoomMessage(seq=0, ts=0.0, kind=KIND_TOOL, speaker=member, text=text),
+                )
+            except Exception:
+                logger.debug("grok tool activity post failed", exc_info=True)
+
+        self.store.touch_last_seen(room.id, member, delivered_through)
+        room.last_seen[member] = max(room.last_seen.get(member, 0), delivered_through)
+
+        completed = False
+        try:
+            try:
+                result = await manager.run_turn(
+                    room.id,
+                    member,
+                    cwd,
+                    build_prompt=build_prompt,
+                    approval=approval,
+                    timeout=budget,
+                    on_activity=on_activity,
+                    cancel_event=cancel_ev,
+                )
+            except grokbuild.GrokBuildAuthRequired as e:
+                ok, text = False, (
+                    f"Grok Build needs a login on this machine — run "
+                    f"`grok login` as the gateway user ({e})"
+                )
+            except grokbuild.GrokBuildUnavailable as e:
+                ok, text = False, f"Grok Build runtime unavailable: {e}"
+            except grokbuild.GrokBuildError as e:
+                ok, text = False, f"Grok Build turn failed: {e}"
+            else:
+                stop = result.stop_reason
+                reply = result.text.strip()
+                if stop == "end_turn":
+                    ok, text = (True, reply) if reply else (
+                        False,
+                        "agent returned no reply",
+                    )
+                elif stop == "cancelled":
+                    ok, text = False, "turn cancelled"
+                elif stop in ("max_turn_requests", "max_tokens"):
+                    ok, text = (
+                        False,
+                        f"stopped early ({stop})"
+                        + (f": {reply[:400]}" if reply else ""),
+                    )
+                elif stop == "refusal":
+                    ok, text = False, "the model declined this request"
+                else:
+                    ok, text = False, f"unexpected stop reason {stop!r}"
+            self._resolve_pending(room.id, ok=ok, text=text, member=member)
+            # Stop may have resolved the pending entry first; its verdict
+            # (False, "stopped") is the one the cycle must see.
+            if fut.done():
+                ok, text = fut.result()
+            completed = bool(ok)
+            return ok, text
+        finally:
+            if not completed:
+                self._restore_watermark(room, member, previous, delivered_through)
+
+    def _member_meta(self, member: str) -> Dict[str, Any]:
+        path = os.path.join(
+            self._home_dir(), "profiles", member, hire.AGENT_META_FILENAME
+        )
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
+        except (OSError, ValueError):
+            return {}
 
     def session_cwd_for(self, source) -> str:
         """Host-side working directory for this turn's prompt context.
@@ -2498,6 +2753,7 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
         "rooms",
         "agents",
         "models",
+        "runtimes",
         "health",
         "routines",
         "cron",
@@ -2521,6 +2777,13 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
                 len(adapter.store.list_rooms()),
             )
             payload["git_sha"] = retinue_git_sha()
+            try:
+                payload["runtimes"] = {
+                    entry["id"]: entry["health"]
+                    for entry in runtimes.list_runtimes(adapter._home_dir())
+                }
+            except Exception:
+                logger.debug("runtime health failed", exc_info=True)
             return self._json(200, payload)
         if not parts or parts[0] not in self._API_PREFIXES:
             if self._serve_static(parsed.path):
@@ -2546,6 +2809,10 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
             return self._json(404, {"error": "no such agent"})
         if parts == ["models"]:
             return self._json(200, {"models": adapter.list_model_presets()})
+        if parts == ["runtimes"]:
+            return self._json(
+                200, {"runtimes": runtimes.list_runtimes(adapter._home_dir())}
+            )
         if parts == ["routines"]:
             return self._json(200, {"routines": routines.list_routines(adapter._home_dir())})
         if parts == ["cron", "jobs"]:
@@ -2832,6 +3099,7 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
                     avatar_color=body.get("avatar_color") if "avatar_color" in body else None,
                     voice=body.get("voice") if "voice" in body else None,
                     persona=body.get("persona") if "persona" in body else None,
+                    runtime=str(body.get("runtime") or "") or None,
                 )
             except ValueError as e:
                 return self._json(400, {"error": str(e)})

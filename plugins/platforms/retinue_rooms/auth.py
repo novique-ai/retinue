@@ -174,8 +174,28 @@ def health_payload(home_dir: str, rooms: int) -> Dict[str, Any]:
 
 def annotate_agents(home_dir: str, agents: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     workspace = {p["id"]: p for p in workspace_provider_status(home_dir)}
+    grok_health: Optional[Dict[str, Any]] = None
     for agent in agents:
         slug = str(agent.get("slug") or "")
+        if str(agent.get("runtime") or "") == "grok-build":
+            # Grok Build members authenticate through the grok CLI's own
+            # token store, not a Hermes provider block.
+            if grok_health is None:
+                from . import grokbuild
+
+                grok_health = grokbuild.health(home_dir)
+            status = grok_health.get("status")
+            agent["auth_provider"] = "grok-build"
+            if status == "available":
+                agent["auth_status"] = STATUS_OK
+                agent["auth_error"] = None
+            elif status == "auth_required":
+                agent["auth_status"] = STATUS_RELOGIN
+                agent["auth_error"] = grok_health.get("detail")
+            else:
+                agent["auth_status"] = STATUS_MISSING
+                agent["auth_error"] = grok_health.get("detail")
+            continue
         if agent.get("local_llm"):
             agent["auth_status"] = STATUS_NOT_REQUIRED
             agent["auth_provider"] = None

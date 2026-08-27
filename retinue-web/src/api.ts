@@ -25,7 +25,9 @@ export interface ProjectMeta {
 export interface RoomMsg {
   seq: number;
   ts: number;
-  kind: "user" | "agent" | "system";
+  /** "tool" = a runtime's tool-activity line (Grok Build, #218) — rendered
+   * as a muted activity row, never spoken, never part of member context. */
+  kind: "user" | "agent" | "system" | "tool";
   speaker: string;
   text: string;
 }
@@ -38,12 +40,34 @@ export interface ProviderAuth {
   error?: string | null;
 }
 
+export type RuntimeHealthStatus =
+  | "available"
+  | "not_installed"
+  | "auth_required"
+  | "error";
+
+export interface RuntimeHealth {
+  status: RuntimeHealthStatus;
+  version?: string;
+  detail?: string;
+}
+
+/** One agent runtime (Hermes loop, Grok Build, …) from `GET /runtimes`. */
+export interface RuntimeInfo {
+  id: string;
+  label: string;
+  description: string;
+  capabilities: Record<string, boolean>;
+  health: RuntimeHealth;
+}
+
 export interface HealthInfo {
   ok: boolean;
   rooms: number;
   /** Short Retinue commit SHA from the gateway, or `"unknown"`. */
   git_sha?: string;
   auth?: { providers: ProviderAuth[] };
+  runtimes?: Record<string, RuntimeHealth>;
 }
 
 export interface ReauthSession {
@@ -110,6 +134,9 @@ export interface AgentMeta {
   auth_status?: AuthStatus;
   auth_provider?: string | null;
   auth_error?: string | null;
+  /** Which agent runtime executes this member's turns. Absent/"hermes" =
+   * the Hermes loop; "grok-build" = xAI's native Grok Build harness. */
+  runtime?: string;
   identity: AgentIdentity;
   /** The override voice id, or the one derived from the slug. */
   voice_resolved: string;
@@ -449,6 +476,7 @@ export const api = {
     ),
   listAgents: () => req<{ agents: AgentMeta[] }>("GET", "/agents"),
   listModels: () => req<{ models: ModelPreset[] }>("GET", "/models"),
+  listRuntimes: () => req<{ runtimes: RuntimeInfo[] }>("GET", "/runtimes"),
   /**
    * The twelve palette keys, in the backend's stable order (do not
    * hardcode a second copy — see CONTRACT-identity.md).
@@ -465,12 +493,14 @@ export const api = {
       voice?: string;
       persona?: Persona;
     },
+    runtime?: string,
   ) =>
     req<AgentMeta>("POST", "/agents", {
       name,
       job,
       how,
       model: model || undefined,
+      runtime: runtime || undefined,
       ...identity,
     }),
   switchModel: (slug: string, model: string) =>

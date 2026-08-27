@@ -263,7 +263,20 @@ def ide_turn_timeout() -> float:
     return max(_IDE_TURN_DEFAULT, cloud_turn_timeout())
 
 
+def grok_turn_timeout() -> float:
+    """Grok Build turns are agentic (read/edit/test loops), not one model
+    call — they get the ide-class budget even in sandbox rooms."""
+    raw = (os.getenv("RETINUE_ROOMS_GROK_TURN_TIMEOUT") or "").strip()
+    if raw:
+        return _env_timeout("RETINUE_ROOMS_GROK_TURN_TIMEOUT", _IDE_TURN_DEFAULT)
+    return max(_IDE_TURN_DEFAULT, cloud_turn_timeout())
+
+
 def turn_timeout_for(home_dir: str, slug: str, workspace: str = "") -> float:
+    from .runtimes import RUNTIME_GROK_BUILD, runtime_for_member
+
+    if runtime_for_member(home_dir, slug) == RUNTIME_GROK_BUILD:
+        return grok_turn_timeout()
     if profile_uses_local_llm(home_dir, slug):
         return local_turn_timeout()
     if (workspace or "") == "ide":
@@ -450,6 +463,13 @@ def apply_model_preset(home_dir: str, slug: str, preset: str) -> Dict[str, Any]:
     profile_dir = os.path.join(home_dir, "profiles", slug)
     if not os.path.isdir(profile_dir):
         raise KeyError(slug)
+    from .runtimes import RUNTIME_GROK_BUILD, runtime_for_member
+
+    if runtime_for_member(home_dir, slug) == RUNTIME_GROK_BUILD:
+        raise ValueError(
+            "model presets do not apply to the Grok Build runtime — it "
+            "serves its own model catalog"
+        )
     block = _preset_model_block(home_dir, preset)
     cfg_path = os.path.join(profile_dir, "config.yaml")
     try:
@@ -615,10 +635,11 @@ def scaffold_profile(
     avatar_color: Any = None,
     voice: Any = None,
     persona: Any = None,
+    runtime: Any = None,
 ) -> Dict[str, Any]:
     """Create ``profiles/<slug>/`` under *home_dir*. Raises ValueError on bad
-    input (including an unknown *model_preset*), FileExistsError if the
-    profile already exists."""
+    input (including an unknown *model_preset* or *runtime*), FileExistsError
+    if the profile already exists."""
     from .identity import (
         normalize_avatar_color,
         normalize_avatar_emoji,
@@ -626,6 +647,7 @@ def scaffold_profile(
         normalize_voice,
         persona_is_balanced,
     )
+    from .runtimes import RUNTIME_GROK_BUILD, RUNTIME_HERMES, validate_runtime
 
     display_name = (display_name or "").strip()
     job = (job or "").strip()
@@ -634,6 +656,12 @@ def scaffold_profile(
         raise ValueError("agent name is required")
     if not job:
         raise ValueError("primary job is required")
+    runtime_id = validate_runtime(runtime)
+    if runtime_id == RUNTIME_GROK_BUILD and model_preset:
+        raise ValueError(
+            "model presets do not apply to the Grok Build runtime — it "
+            "serves its own model catalog"
+        )
     slug = slugify_name(display_name)
     if not slug or slug in _RESERVED:
         raise ValueError(f"cannot derive a usable profile name from {display_name!r}")
@@ -676,6 +704,8 @@ def scaffold_profile(
         "archived": False,
         "created_at": time.time(),
     }
+    if runtime_id != RUNTIME_HERMES:
+        meta["runtime"] = runtime_id
     if emoji is not None:
         meta["avatar_emoji"] = emoji
     if color is not None:
@@ -777,6 +807,18 @@ def list_agents(home_dir: str) -> List[Dict[str, Any]]:
         meta["archived"] = bool(meta.get("archived"))
         meta["governed"] = bool(meta.get("governed"))
         meta["has_soul"] = os.path.isfile(os.path.join(pdir, "SOUL.md"))
+        from .runtimes import RUNTIME_GROK_BUILD, normalize_runtime
+
+        meta["runtime"] = normalize_runtime(meta.get("runtime"))
+        if meta["runtime"] == RUNTIME_GROK_BUILD:
+            # Model choice belongs to Grok Build, not the workspace presets.
+            meta["local_llm"] = False
+            meta["turn_timeout"] = int(grok_turn_timeout())
+            model = (os.getenv("RETINUE_GROKBUILD_MODEL") or "").strip() or "grok-4.6"
+            meta["model_summary"] = f"Grok Build · {model}"
+            meta["model_preset"] = None
+            agents.append(enrich_agent(meta))
+            continue
         meta["local_llm"] = profile_uses_local_llm(home_dir, name)
         meta["turn_timeout"] = int(turn_timeout_for(home_dir, name))
         block = _read_model_block(os.path.join(pdir, "config.yaml"))

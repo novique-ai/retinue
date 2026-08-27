@@ -34,6 +34,11 @@ def _dir(home_dir: str, room_id: str) -> str:
     return os.path.join(home_dir, "retinue_rooms", "attachments", room_id)
 
 
+def host_dir(home_dir: str, room_id: str) -> str:
+    """Host folder of this room's uploads — for host-native runtimes (#218)."""
+    return _dir(home_dir, room_id)
+
+
 def host_path(home_dir: str, room_id: str, name: str) -> str:
     return os.path.join(_dir(home_dir, room_id), safe_name(name))
 

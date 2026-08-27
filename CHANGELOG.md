@@ -14,6 +14,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Agent runtimes** (#218): a member is now hired onto a runtime, not just
+  a model. **Hermes** (default, unchanged) or **Grok Build** — xAI's native
+  agent harness around Grok 4.6, driven over ACP (`grok agent stdio`).
+  Grok Build owns its whole tool loop; Retinue manages the session
+  (native `session/load` resume across gateway restarts), streams tool
+  activity onto the transcript as muted `kind: "tool"` lines, answers
+  permission requests via a workspace-scoped policy
+  (`workspace`/`read-only`/`always`, per-member overridable), maps
+  Stop to `session/cancel`, and reports availability per runtime
+  (`GET /runtimes`, `/health.runtimes`: available / not installed /
+  login required / error). Reuses the operator's existing `grok login`
+  (SuperGrok/xAI OAuth) token store; agent processes run under an
+  isolated `GROK_HOME` so rooms never inherit personal MCP servers,
+  skills, or an always-approve default. The Hermes `xai-oauth` model
+  presets are unchanged and remain the "Grok as a model" path.
+  Docs: `retinue/RUNTIMES.md`.
+
 - Projects in the left pane drag-reorder (⋮⋮ + up/down), same chrome as
   rooms. Order lives in ``retinue_projects.json`` ``order`` — not in
   ``/sidebar``. Unfiled stays last and is not a project.

@@ -20,6 +20,11 @@ from . import worktrees
 KIND_USER = "user"
 KIND_AGENT = "agent"
 KIND_SYSTEM = "system"
+# Tool-activity lines from a runtime that streams its tool lifecycle
+# (Grok Build, #218). Presentation-only observability: excluded from
+# member deltas, TTS, and turn accounting; the web UI renders them as
+# muted activity rows.
+KIND_TOOL = "tool"
 
 # System-notice prefixes the web UI uses to drop a thinking bubble.
 # Keep in lockstep with retinue-web/src/thinking.ts.
@@ -1088,6 +1093,8 @@ def room_briefing(
     other_rooms: Optional[List["Room"]] = None,
     governed_contract: Optional[str] = None,
     jobs: Optional[Dict[str, str]] = None,
+    host_workspace: Optional[str] = None,
+    host_uploads: Optional[str] = None,
 ) -> str:
     """Per-turn channel prompt: who you are, who is here, how to behave.
 
@@ -1101,6 +1108,13 @@ def room_briefing(
     member knows what a teammate is *for*, not just their handle (#203).
     The when/how of delegation stays in each hire's SOUL; this is only the
     directory line.
+
+    ``host_workspace`` marks a host-native runtime (Grok Build, #218):
+    the member's tools run directly on the host in that directory, not in
+    the room container, so every /workspace-shaped instruction would name
+    a path that does not exist for it. The workspace, skills, and shared
+    sections switch to host paths; ``host_uploads`` is the host directory
+    of the room's attachments.
     """
     names = display_names or {}
     member_jobs = jobs or {}
@@ -1155,12 +1169,22 @@ def room_briefing(
             "a message for you. A sentence that merely says you pass is a "
             "spoken reply, not a pass."
         ),
-        "Work you make belongs in this room. Write files under /workspace "
-        "and include the /workspace/... path in your reply so it appears "
-        "on the transcript. Files the human attached with + live at "
-        "/workspace/uploads/ — you can open them. If you cannot find a "
-        "piece the user asks for, say so in one sentence — never stay "
-        "silent and never crash out.",
+        (
+            f"Work you make belongs in this room. Your tools run directly in "
+            f"{host_workspace} — write files there and include the full path "
+            f"in your reply so it appears on the transcript. Files the human "
+            f"attached with + live at {host_uploads or '(no uploads yet)'} — "
+            f"you can open them. If you cannot find a piece the user asks "
+            f"for, say so in one sentence — never stay silent and never "
+            f"crash out."
+            if host_workspace
+            else "Work you make belongs in this room. Write files under /workspace "
+            "and include the /workspace/... path in your reply so it appears "
+            "on the transcript. Files the human attached with + live at "
+            "/workspace/uploads/ — you can open them. If you cannot find a "
+            "piece the user asks for, say so in one sentence — never stay "
+            "silent and never crash out."
+        ),
         "If you cannot finish the work — missing permission, a file or "
         "path you cannot find, a command that failed — say so in this "
         "room and stop. Never keep calling tools until the turn times "
@@ -1188,7 +1212,25 @@ def room_briefing(
     if artifacts:
         parts.append("Work already in this room: " + ", ".join(artifacts) + ".")
         parts.append("Reuse those paths when the user asks to see them again.")
-    if (room.workspace or "sandbox") == "ide":
+    if host_workspace:
+        # Host-native runtime: the container narrative below would name
+        # mounts this member does not have. One section says what its
+        # world actually is.
+        if (room.workspace or "sandbox") == "ide":
+            parts.append(
+                f"Your working directory is {host_workspace} — the real "
+                f"project tree on this machine, not a sandbox or a mount. "
+                f"Documented paths in AGENTS.md / runbooks are written "
+                f"relative to that tree. Treat every edit as an edit to the "
+                f"real project."
+            )
+        else:
+            parts.append(
+                f"This room is sandboxed. Your working directory is "
+                f"{host_workspace}, a scratch area reserved for this room. "
+                f"Keep your work inside it."
+            )
+    elif (room.workspace or "sandbox") == "ide":
         parts.append(
             "This room is attached to this machine's IDE. Your terminal "
             "/workspace is a bind-mount of that host tree — treat it as the "
@@ -1255,25 +1297,49 @@ def room_briefing(
     # profile's tree, readable by every member. Only said when THIS
     # member's mount actually exists: naming a path the container does
     # not have is worse than saying nothing.
-    from .ide import MEMBER_SKILLS_ENV, member_skills_mount_for
+    from .ide import MEMBER_SKILLS_ENV, member_skills_host_dir, member_skills_mount_for
 
-    my_skills = member_skills_mount_for(member)
-    if my_skills:
-        parts.append(
-            f"Your own skills are mounted read-only in your terminal at "
-            f"{my_skills} (also ${MEMBER_SKILLS_ENV}). Run your skill scripts "
-            f"and read their skill-local .env from there, e.g. "
-            f"`python3 {my_skills}/<skill>/scripts/<script>.py`. "
-            f"/root/.hermes/skills is not mounted in this room — if a "
-            f"SKILL.md names that path, use yours above instead."
-        )
+    if host_workspace:
+        my_skills_host = member_skills_host_dir(member)
+        if my_skills_host:
+            parts.append(
+                f"Your own skills live at {my_skills_host} on this machine "
+                f"(read them; edit only your workspace). Run skill scripts "
+                f"from there, e.g. "
+                f"`python3 {my_skills_host}/<skill>/scripts/<script>.py`."
+            )
+    else:
+        my_skills = member_skills_mount_for(member)
+        if my_skills:
+            parts.append(
+                f"Your own skills are mounted read-only in your terminal at "
+                f"{my_skills} (also ${MEMBER_SKILLS_ENV}). Run your skill scripts "
+                f"and read their skill-local .env from there, e.g. "
+                f"`python3 {my_skills}/<skill>/scripts/<script>.py`. "
+                f"/root/.hermes/skills is not mounted in this room — if a "
+                f"SKILL.md names that path, use yours above instead."
+            )
     # A mount nobody is told about is a mount nobody uses. Only mentioned
     # when it is actually configured, and the read-only case says so — an
     # agent that tries to write to a ro mount fails in the terminal instead
     # of in the reply.
     from .ide import SHARED_MOUNT, SHARED_MODE_RW, configured_shared_dir, shared_mode_for
 
-    if configured_shared_dir():
+    if configured_shared_dir() and host_workspace:
+        shared_host = configured_shared_dir()
+        if shared_mode_for(room) == SHARED_MODE_RW:
+            parts.append(
+                f"{shared_host} is a folder shared with every room and with "
+                f"the human. You can read and write it; this room's files go "
+                f"under {shared_host}/rooms/{room.id}/. Read "
+                f"{shared_host}/README.md before writing."
+            )
+        else:
+            parts.append(
+                f"{shared_host} is a read-only folder shared with every "
+                f"room. Read from it; you cannot write there."
+            )
+    elif configured_shared_dir():
         if shared_mode_for(room) == SHARED_MODE_RW:
             parts.append(
                 f"{SHARED_MOUNT} is a folder shared with every room and with "
