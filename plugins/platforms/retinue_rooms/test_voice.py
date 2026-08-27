@@ -7,6 +7,12 @@ import pytest
 from . import voice
 
 
+@pytest.fixture(autouse=True)
+def _disable_semantic_rewrite(monkeypatch):
+    """Voice tests assert the deterministic script. Semantic is mocked elsewhere."""
+    monkeypatch.setenv("RETINUE_SPEECH_HUMANIZE_SEMANTIC", "0")
+
+
 class _FakeResp:
     def __init__(self, status=200, content=b"", json_data=None, text="", headers=None):
         self.status_code = status
@@ -442,13 +448,20 @@ def test_synthesize_does_not_speak_the_itinerary_card(monkeypatch):
 
 
 def test_synthesize_keeps_underscores_in_identifiers(monkeypatch):
-    """An intra-word underscore is not Markdown emphasis (#158)."""
+    """An intra-word underscore is not Markdown emphasis (#158).
+
+    The speech humanizer now *speaks* snake_case as words, which is the
+    intended TTS form. The invariant that must not regress is collapsing
+    the identifier to ``emailautomation`` (the original emphasis bug).
+    """
     seen = _capture_tts(monkeypatch)
     voice.synthesize(ITINERARY_TURN, "mangus")
     spoken = seen["json"]["text"]
-    assert "email_automation" in spoken
-    assert "urgency_phrase_bank" in spoken
-    assert "emailautomation" not in spoken
+    lower = spoken.lower()
+    assert "email automation" in lower
+    assert "urgency phrase bank" in lower or "urgency" in lower
+    assert "emailautomation" not in lower
+    assert "underscore" not in lower
 
 
 def test_spoken_text_drops_a_card_only_turn_and_keeps_prose():

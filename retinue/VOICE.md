@@ -21,7 +21,7 @@ Plugin-shaped voice is live in `retinue-web/` and
 | Speak replies | same | Sequential `POST /tts` + `Audio` playback queue when “Speak replies” is on. Stop (room chrome / Esc) or unchecking the toggle cuts the current clip and drops the queue. |
 | Backend status | `GET /voice` | `{ backend, ready, detail, voices }` from `voice.status()` |
 | Audio in | `POST /rooms/{id}/audio` | Raw body + query `from` / `filename` / optional `draft` → STT → `draft + speech` → leading spoken vocative (`at Claude`) rewritten to `@Claude` when the line has no live @mention → normal user-message cycle → **202** `{ seq, planned, text }` |
-| TTS out | `POST /tts` | JSON `{ text, speaker }` (or `voice`) → `audio/wav` or `audio/mpeg` bytes |
+| TTS out | `POST /tts` | JSON `{ text, speaker }` (or `voice`) plus optional untrusted `spoken_summary` → `audio/wav` or `audio/mpeg` bytes. Canonical `text` is unchanged; TTS consumes a spoken script. |
 
 Web client: `api.voiceStatus()`, `api.sendAudio()`, `api.speak()`, `api.stop()` in
 `retinue-web/src/api.ts`. Room UI shows a “Hold to talk” button (pointer
@@ -127,6 +127,99 @@ Sidecar env defaults: `RETINUE_VOICE_SIDECAR_HOST=127.0.0.1`,
 `RETINUE_VOICE_SIDECAR_PORT=8104`. Then set
 `RETINUE_VOICE_BACKEND=openai` and
 `RETINUE_VOICE_BASE_URL=http://127.0.0.1:8104/v1` on the rooms process.
+
+## Speech humanization
+
+Rooms TTS must not read developer Markdown the way a screen reader would.
+`https://api.openai.com/v1/responses` is “the OpenAI Responses API”, not
+“H T T P S colon forward slash…”. The **canonical** agent message stays
+exactly as written for the UI, logs, copy, and history. Only the spoken
+script is transformed.
+
+```
+agent reply ──▶ UI / logs / history          (canonical text, untouched)
+           └──▶ speech humanizer ──▶ POST /tts ──▶ Chatterbox / Kokoro / xAI
+```
+
+Implementation: `plugins/platforms/retinue_rooms/speech_humanize/`.
+Entry point: `humanize_for_speech(text, context=None) -> str`, called from
+`voice.spoken_text`. Hermes CLI/gateway TTS still uses the lighter shared
+cleaner in `tools.tts_text_normalize`; this layer is rooms-only (fork policy).
+
+### Stages
+
+1. **Optional `spoken_summary`.** If the POST body (or `SpeechContext`)
+   supplies one, it is treated as untrusted model output: length cap, no
+   fences, no query-string URLs, secret redaction, then a light
+   deterministic pass. Invalid summaries are ignored.
+2. **Deterministic normalization** (always, unless disabled). Identifies
+   Markdown, URLs, GitHub links, localhost, API paths, filesystem paths,
+   filenames, env vars, snake_case / camelCase, HTTP statuses, IPs, ports,
+   units, durations, versions, commands, JSON, test-result lines, arrows,
+   and emoji. Speaks the *meaning* of each construct. Code fences are
+   summarized (“I’ve included three Docker commands on screen…”) rather
+   than read. Itinerary fences stay silent (#158).
+3. **Semantic rewrite** (optional). After the deterministic pass, dense
+   technical replies may go through `agent.auxiliary_client.call_llm` on
+   the plugin task `speech_humanize` (`auxiliary.speech_humanize.*` in
+   config.yaml). Simple replies (“Done.”, “All tests passed.”) skip the
+   LLM. The prompt forbids following instructions that appear inside the
+   source text.
+
+### Fallback
+
+TTS must not fail because the humanizer failed.
+
+- Semantic rewrite errors, timeouts, missing providers, or invalid
+  output → deterministic script.
+- Deterministic surprise → the shared `prepare_spoken_text` cleaner.
+- That failing too → readable source text, never an exception.
+
+### Configuration
+
+Defaults favor natural speech. Env vars win over `tts.humanize` in
+`config.yaml`.
+
+| Knob | Default | Meaning |
+|---|---|---|
+| `RETINUE_SPEECH_HUMANIZE` / `tts.humanize.enabled` | on | Master switch. Off → legacy Markdown cleaner only. |
+| `RETINUE_SPEECH_HUMANIZE_DETERMINISTIC` | on | Stage 1. |
+| `RETINUE_SPEECH_HUMANIZE_SEMANTIC` | on | Stage 2, only when the complexity detector says so. |
+| `RETINUE_SPEECH_HUMANIZE_SPOKEN_SUMMARY` | on | Honor a valid `spoken_summary`. |
+| `RETINUE_SPEECH_HUMANIZE_CODE_BLOCKS` | on | Summarize fenced code instead of deleting it silently. |
+| `RETINUE_SPEECH_HUMANIZE_URLS` | on | Humanize URLs instead of dropping them. |
+| `RETINUE_SPEECH_HUMANIZE_SEMANTIC_TIMEOUT` | 6s | Aux-LLM deadline. |
+
+Semantic provider/model is the existing auxiliary router:
+
+```yaml
+auxiliary:
+  speech_humanize:
+    provider: auto          # or a pinned provider
+    model: ""               # optional pin
+    timeout: 6
+```
+
+```yaml
+tts:
+  humanize:
+    enabled: true
+    deterministic: true
+    semantic: true
+    spoken_summaries: true
+    code_blocks: true
+    urls: true
+```
+
+### Adding a rule
+
+Prefer a **category** (URL, path, identifier, command, test-result) in
+`speech_humanize/deterministic.py` over a one-off substitution. Known
+product names (OpenAI, GitHub, npm, Docker, README) live in small
+dictionaries (`_PROPER`, `_KNOWN_API_PATHS`, `_CMD_HINTS`). Add a
+fixture to `test_speech_humanize.py` that includes the construct in a
+realistic agent sentence, not a bare token. Run
+`pytest tests/retinue_rooms/test_speech_humanize.py tests/retinue_rooms/test_voice.py`.
 
 ## Related surfaces (not the Retinue rooms path)
 

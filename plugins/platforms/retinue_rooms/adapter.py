@@ -3063,16 +3063,22 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
             return self._json(400, {"error": "invalid or oversized JSON body"})
         text = str(body.get("text") or "")
         speaker = str(body.get("speaker") or body.get("voice") or "")
+        summary_raw = body.get("spoken_summary")
+        spoken_summary = str(summary_raw) if summary_raw not in (None, "") else None
         # A turn that is only an itinerary card has no spoken script (#158).
         # That is silence, not a TTS failure -- 204 keeps Speak Replies quiet
         # instead of surfacing a provider error under the message.
-        if not voice.spoken_text(text):
-            return self._no_content()
         try:
             audio = voice.synthesize_dispatch(
-                text, speaker, home_dir=self.server.adapter._home_dir()
+                text,
+                speaker,
+                home_dir=self.server.adapter._home_dir(),
+                spoken_summary=spoken_summary,
             )
         except voice.VoiceError as e:
+            # Silence (itinerary-only) is 204, not a TTS failure (#158).
+            if str(e) == "empty text":
+                return self._no_content()
             return self._json(502, {"error": str(e)})
         ctype = "audio/wav" if audio[:4] == b"RIFF" else "audio/mpeg"
         return self._bytes(200, audio, ctype)

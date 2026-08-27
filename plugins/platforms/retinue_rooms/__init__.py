@@ -75,6 +75,18 @@ def register(ctx) -> None:
         register_jmap_tools(ctx)
     except Exception:
         logger.warning("Retinue rooms: failed to register mail tools", exc_info=True)
+    try:
+        ctx.register_auxiliary_task(
+            key="speech_humanize",
+            display_name="Speech humanize",
+            description="Rewrite a room reply for spoken TTS delivery.",
+            defaults={"provider": "auto", "timeout": 6},
+        )
+    except Exception:
+        logger.debug(
+            "Retinue rooms: speech_humanize auxiliary task not registered",
+            exc_info=True,
+        )
     # Hide room-owned working sessions from the shared session lists.
     # Registered even in secondary profile scope: member turns run there,
     # and on_session_start is the creation-path hide (row exists, right DB).
