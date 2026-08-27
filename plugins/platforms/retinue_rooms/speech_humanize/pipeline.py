@@ -6,7 +6,8 @@ spoken script for Chatterbox / Kokoro / xAI / sidecar TTS.
 Priority:
   1. A valid agent-supplied spoken_summary, if enabled.
   2. Deterministic normalization.
-  3. Optional semantic rewrite when the turn is technically dense.
+  3. Semantic rewrite on every non-empty spoken turn. A few seconds of
+     wait is acceptable. If the rewrite fails, fall back to deterministic.
   4. On any failure, the previous successful stage (or a last-resort
      readable fallback) is spoken. TTS must not fail because the
      humanizer failed.
@@ -143,13 +144,13 @@ def humanize_for_speech(
     if not cfg.enabled:
         return _legacy_clean(raw)
 
+    summary = None
     try:
         if cfg.spoken_summaries and ctx.spoken_summary:
-            accepted = _validate_spoken_summary(ctx.spoken_summary, raw, cfg)
-            if accepted:
-                return accepted
+            summary = _validate_spoken_summary(ctx.spoken_summary, raw, cfg)
     except Exception:
         logger.debug("speech humanize: spoken_summary rejected", exc_info=True)
+        summary = None
 
     if not cfg.deterministic:
         spoken = _legacy_clean(raw)
@@ -165,16 +166,16 @@ def humanize_for_speech(
     if spoken is None:
         spoken = _legacy_clean(raw)
 
-    if (
-        cfg.semantic
-        and spoken
-        and needs_semantic(raw, spoken)
-    ):
+    hint = summary or spoken
+
+    # Every turn with something to say is rewritten, including a validated
+    # spoken_summary (hint, not a skip). Complexity is not a gate.
+    if cfg.semantic and hint:
         try:
-            rewritten = rewrite_for_speech(raw, spoken, cfg, ctx)
+            rewritten = rewrite_for_speech(raw, hint, cfg, ctx)
             if rewritten:
-                spoken = rewritten
+                return rewritten.strip()
         except Exception:
             logger.debug("speech humanize: semantic failed", exc_info=True)
 
-    return (spoken or "").strip()
+    return (hint or "").strip()

@@ -1,4 +1,4 @@
-"""Stage 2 — optional semantic speech rewrite.
+"""Stage 2 — semantic speech rewrite (every non-empty spoken turn).
 
 Uses the existing auxiliary LLM router so the rewrite is not wired to a
 single provider. Failure, timeout, missing credentials, or invalid
@@ -26,9 +26,10 @@ _SYSTEM = (
     "meaning.\n\n"
     "Do not read literally: Markdown syntax, code punctuation, long file "
     "paths, complete URLs, command flags, JSON syntax, or programming "
-    "punctuation. Describe code, commands, paths, URLs, and syntax by "
-    "purpose unless their literal content is necessary to understand the "
-    "answer.\n\n"
+    "punctuation. Describe code, commands, and paths by purpose. For a "
+    "URL, say \"this link\" or \"the link on screen\" — never read the "
+    "host, path, query string, or issue/PR number. The listener can see "
+    "the link.\n\n"
     "Use natural conversational English. Do not add information. Do not "
     "remove important warnings. Do not change technical meaning. Do not "
     "claim an operation succeeded unless the source says it succeeded.\n\n"
@@ -45,9 +46,12 @@ _WARNING_MARKERS = re.compile(
 )
 _SUCCESS_MARKERS = re.compile(r"\b(success(?:ful)?|succeeded|passed|ok|done)\b", re.I)
 _BAD_TTS = re.compile(
-    r"```|https?://|forward slash|underscore|backtick",
+    r"```|https?://|forward slash|underscore|backtick|"
+    r"\b(?:www\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:com|org|net|io|dev|ai|app|"
+    r"uk|au|de|info|edu)\b",
     re.I,
 )
+_FENCE_RE = re.compile(r"```[^\n]*\n([\s\S]*?)```")
 
 
 def rewrite_for_speech(
@@ -131,6 +135,19 @@ def _redact(text: str) -> str:
         return text
 
 
+def _fence_lines_leaked(original: str, rewrite: str) -> bool:
+    """True when a rewrite recites fenced command/code lines instead of pointing."""
+    hay = rewrite.lower()
+    for block in _FENCE_RE.findall(original):
+        for line in block.splitlines():
+            line = line.strip()
+            if len(line) < 12:
+                continue
+            if line.lower() in hay:
+                return True
+    return False
+
+
 def validate_rewrite(
     original: str,
     deterministic: str,
@@ -167,6 +184,14 @@ def validate_rewrite(
     if re.search(r"\b(do not|don't|never)\b", original, re.I) and not re.search(
         r"\b(do not|don't|never)\b", text, re.I
     ):
+        return None
+    for m in re.finditer(r"\bdo not\s+(\w+)", original, re.I):
+        verb = m.group(1)
+        if not re.search(
+            rf"\b(?:do not|don't|never)\s+{re.escape(verb)}\b", text, re.I
+        ):
+            return None
+    if _fence_lines_leaked(original, text):
         return None
     src_failed = re.search(r"\b(fail(?:ed|ure)?|error|denied|blocked)\b", original, re.I)
     if src_failed and _SUCCESS_MARKERS.search(text) and not re.search(
