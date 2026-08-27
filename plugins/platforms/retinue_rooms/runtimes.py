@@ -88,7 +88,7 @@ _REGISTRY: Dict[str, RuntimeInfo] = {
             "tool_activity": True,
             "filesystem": True,
             "shell": True,
-            "mcp": False,  # room MCP/broker tools are container-side; not wired in v1
+            "mcp": True,  # workspace-declared servers via grokbuild/mcp.json (#220)
             "model_choice": False,  # Grok Build serves its own model catalog
             "session_resume": True,
             "approvals": True,  # session/request_permission answered by policy
