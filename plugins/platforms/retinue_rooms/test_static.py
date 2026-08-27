@@ -207,7 +207,7 @@ def test_json_404_preserved_for_missing_asset_within_existing_dist(tmp_path, htt
 
 def test_source_tree_ships_apple_touch_icon():
     """iOS home-screen bookmarks ignore the small favicon PNG. The SPA must
-    ship a 180x180 apple-touch-icon and declare it in index.html so Vite
+    ship a 256x256 apple-touch-icon and declare it in index.html so Vite
     copies it into dist/ (the adapter serves dist/ from disk)."""
     here = os.path.abspath(adapter_module.__file__)
     repo_root = os.path.dirname(
@@ -225,4 +225,4 @@ def test_source_tree_ships_apple_touch_icon():
     assert header[:8] == b"\x89PNG\r\n\x1a\n"
     width = int.from_bytes(header[16:20], "big")
     height = int.from_bytes(header[20:24], "big")
-    assert (width, height) == (180, 180)
+    assert (width, height) == (256, 256)

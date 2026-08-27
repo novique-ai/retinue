@@ -195,7 +195,7 @@ def _url_is_private(url: str) -> bool:
 def model_block_is_local(block: str) -> bool:
     """True when this model: block is a self-hosted / local-LLM endpoint.
 
-    Local generations on claymore-1 routinely take minutes (and longer when
+    Local generations on a self-hosted GPU box routinely take minutes (and longer when
     two room members share one llama-server), so they must not share the
     cloud turn budget.
     """
