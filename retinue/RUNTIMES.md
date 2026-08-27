@@ -118,9 +118,20 @@ can authenticate per member. Note the token is minted per *process*
   restuffed into a fresh process. "New session" in the room UI resets it.
 - **Working directory** — ide rooms: the room's host tree (`ide_path`).
   Sandbox rooms: a dedicated per-room host folder
-  (`retinue_rooms/grok_workspaces/<room>/`). Rooms with isolated
-  worktrees refuse Grok Build members for now (the host process would see
-  the real checkout, not the room's worktree).
+  (`retinue_rooms/grok_workspaces/<room>/`).
+- **Isolated worktrees** (#223) — in a room with `worktree_repos`, the
+  container overlays each room worktree over its place in `/workspace`;
+  the host-native equivalent is enforced at the permission gate. The
+  member's briefing points at the room's own checkout
+  (`$HERMES_HOME/worktrees/<room>/<rel>`, branch `retinue/room/<room>`,
+  git fully working — the worktree's gitdir pointer is host-native), that
+  checkout is an explicitly allowed write root, and any tool call whose
+  target resolves under the shadowed real repo (`<ide_path>/<rel>`) is
+  declined with a redirect to the checkout — **reads included**, because
+  the shadowed tree holds another branch's content. Residual risk: shell
+  commands are opaque to the gate and could still name the real path; the
+  briefing instruction plus the file-tool gate covers the common paths,
+  and `always` mode bypasses the redirect like every other guard.
 - **Streaming** — `session/update` events map to the room: assistant text
   chunks become the reply; `tool_call` / failures / policy rejections
   appear as muted `kind: "tool"` activity lines on the transcript

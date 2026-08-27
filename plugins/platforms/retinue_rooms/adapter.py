@@ -41,7 +41,7 @@ from gateway.platforms.base import (
     SendResult,
 )
 
-from . import attachments, auth, brokertoken, clarify as room_clarify, cron_workspace, cronjobs, crossroom, engine, governed, grokbuild, hidden_sessions, hire, ide, identity, itinerary, keepalive, principal, projects, routines, runtimes, sidebar, skilldraft, uimeta, voice, workspace
+from . import attachments, auth, brokertoken, clarify as room_clarify, cron_workspace, cronjobs, crossroom, engine, governed, grokbuild, hidden_sessions, hire, ide, identity, itinerary, keepalive, principal, projects, routines, runtimes, sidebar, skilldraft, uimeta, voice, workspace, worktrees
 from .engine import KIND_AGENT, KIND_SYSTEM, KIND_TOOL, KIND_USER, Room, RoomMessage
 from .store import RoomStore
 
@@ -2037,13 +2037,8 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         member_runtime = runtimes.runtime_for_member(self._home_dir(), member)
         grok_cwd: Optional[str] = None
         host_uploads: Optional[str] = None
+        grok_worktrees: List[Dict[str, str]] = []
         if member_runtime == runtimes.RUNTIME_GROK_BUILD:
-            if getattr(room, "worktree_repos", None):
-                return False, (
-                    "Grok Build members are not yet supported in rooms with "
-                    "isolated worktrees — the host-native runtime would see "
-                    "the real checkout, not the room's worktree (#218)"
-                )
             if (room.workspace or "sandbox") == "ide":
                 try:
                     if ide.mounts_ide_root(room):
@@ -2056,6 +2051,24 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
                     return False, (
                         f"room workspace path does not exist on this host: "
                         f"{grok_cwd or room.ide_path!r}"
+                    )
+                # Isolated worktrees (#223): the container overlays each
+                # worktree over its place in /workspace; the host-native
+                # equivalent is a briefing that points at the worktree's
+                # real host path plus a permission gate that declines the
+                # shadowed tree. The worktree dirs themselves are ensured
+                # by apply_room_workspace at the top of every cycle.
+                wt_root = worktrees.resolve_worktree_root()
+                branch = worktrees.branch_for(room.id)
+                for rel in getattr(room, "worktree_repos", None) or []:
+                    rel = str(rel)
+                    grok_worktrees.append(
+                        {
+                            "rel": rel,
+                            "real": os.path.join(grok_cwd, rel),
+                            "path": worktrees.worktree_path(room.id, rel, wt_root),
+                            "branch": branch,
+                        }
                     )
             else:
                 grok_cwd = grokbuild.sandbox_workspace_dir(self._home_dir(), room.id)
@@ -2089,6 +2102,7 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             jobs=self._member_jobs(room),
             host_workspace=grok_cwd,
             host_uploads=host_uploads,
+            host_worktrees=grok_worktrees or None,
         )
 
         if member_runtime == runtimes.RUNTIME_GROK_BUILD:
@@ -2102,6 +2116,7 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
                 governed_contract=governed_contract,
                 previous=previous,
                 delivered_through=delivered_through,
+                worktree_map=grok_worktrees,
             )
 
         speaker_display = (
@@ -2316,6 +2331,7 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         governed_contract: Optional[str],
         previous: int,
         delivered_through: int,
+        worktree_map: Optional[List[Dict[str, str]]] = None,
     ) -> tuple[bool, str]:
         """One member turn executed by the Grok Build runtime (#218).
 
@@ -2419,6 +2435,14 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
                     timeout=budget,
                     on_activity=on_activity,
                     cancel_event=cancel_ev,
+                    # Isolated worktrees (#223): the room's checkouts are
+                    # writable roots; the shadowed real trees are declined
+                    # with a redirect.
+                    extra_roots=tuple(w["path"] for w in worktree_map or ()),
+                    denied_roots={
+                        w["real"]: w["path"] for w in worktree_map or ()
+                    }
+                    or None,
                 )
             except grokbuild.GrokBuildAuthRequired as e:
                 ok, text = False, (

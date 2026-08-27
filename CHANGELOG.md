@@ -31,6 +31,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   presets are unchanged and remain the "Grok as a model" path.
   Docs: `retinue/RUNTIMES.md`.
 
+- Grok Build members work in rooms with isolated worktrees (#223): the
+  briefing points at the room's own checkout
+  (`$HERMES_HOME/worktrees/<room>/<rel>`, branch `retinue/room/<room>`),
+  the checkout is an allowed write root, and tool calls targeting the
+  shadowed real repo are declined with a redirect (reads included — the
+  shadowed tree is another branch). Replaces the #218 refusal.
+
 - Grok Build MCP bridge (#220): `$HERMES_HOME/grokbuild/mcp.json`
   declares stdio/http/sse MCP servers for Grok Build sessions, passed on
   `session/new` and `session/load`; invalid entries are skipped with a
