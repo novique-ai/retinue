@@ -31,7 +31,7 @@ origin, no CORS), with:
 ## Voice (v1 testable 2026-08-13)
 
 Transcript-preserving hold-to-talk in the room UI. Live default is Track A
-(xAI STT/TTS). Track B is a claymore-1 sidecar (whisper.cpp + piper). Detail
+(xAI STT/TTS). Track B is a self-hosted LAN sidecar (whisper.cpp + piper). Detail
 and flip instructions: [VOICE.md](VOICE.md). Bead `infra-ivl9.2` CLOSED.
 
 ## Sidebar (`infra-ivl9.3`)

@@ -161,7 +161,7 @@ def test_non_repo_is_refused_with_an_actionable_message(ide_root):
 
 
 def test_the_ide_root_itself_is_refused(ide_root):
-    # The real trap: /home/clay/IDE holds ~25 repos and is not one itself.
+    # The real trap: the IDE root holds many repos and is not one itself.
     root = worktrees.resolve_worktree_root()
     with pytest.raises(ValueError):
         worktrees.parse_worktree_repos(["."])

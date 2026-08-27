@@ -10,7 +10,7 @@ Backends (``RETINUE_VOICE_BACKEND``):
   (``tools.xai_http.resolve_xai_http_credentials``).
 - ``openai`` (Track B) — OpenAI-compatible
   ``/audio/transcriptions`` + ``/audio/speech`` at
-  ``RETINUE_VOICE_BASE_URL`` (e.g. claymore-1 sidecar ``http://10.44.0.13:8104/v1``).
+  ``RETINUE_VOICE_BASE_URL`` (e.g. a LAN sidecar ``http://192.0.2.10:8104/v1``).
 
 No upstream-core edits. The rooms adapter is the only caller.
 """

@@ -171,7 +171,7 @@ def test_scaffold_unknown_preset_creates_nothing(tmp_path):
 def test_model_block_is_local_detects_custom_lan_and_local_alias():
     local = (
         "model:\n  provider: custom\n  model: local/auto\n"
-        "  base_url: http://10.44.0.13:8091/v1\n"
+        "  base_url: http://192.0.2.10:8091/v1\n"
     )
     grok = "model:\n  default: grok-4.5\n  provider: xai-oauth\n  base_url: https://api.x.ai/v1\n"
     ollama = "model:\n  provider: ollama\n  model: llama3\n"
@@ -533,7 +533,7 @@ def test_workspace_default_inheritance_keeps_the_whole_model_block(tmp_path):
         "model:\n"
         "  provider: custom\n"
         "  model: local/auto\n"
-        "  base_url: http://10.44.0.13:8091/v1\n"
+        "  base_url: http://192.0.2.10:8091/v1\n"
         "  api_key: \"none\"  # llama-server takes anything\n"
         "agent:\n  tool_choice: auto\n",
         encoding="utf-8",
@@ -542,7 +542,7 @@ def test_workspace_default_inheritance_keeps_the_whole_model_block(tmp_path):
     config = (tmp_path / "profiles" / "local-hand" / "config.yaml").read_text(encoding="utf-8")
     assert "provider: custom" in config
     assert "model: local/auto" in config
-    assert "base_url: http://10.44.0.13:8091/v1" in config
+    assert "base_url: http://192.0.2.10:8091/v1" in config
     assert "llama-server takes anything" in config
 
 

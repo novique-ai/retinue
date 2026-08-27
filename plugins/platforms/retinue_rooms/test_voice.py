@@ -71,7 +71,7 @@ def test_status_openai_requires_base_url(monkeypatch):
     st = voice.status()
     assert st["backend"] == "openai"
     assert st["ready"] is False
-    monkeypatch.setenv("RETINUE_VOICE_BASE_URL", "http://10.44.0.13:8104/v1")
+    monkeypatch.setenv("RETINUE_VOICE_BASE_URL", "http://192.0.2.10:8104/v1")
     st = voice.status()
     assert st["ready"] is True
     assert "8104" in st["detail"]
@@ -146,7 +146,7 @@ def test_synthesize_does_not_forward_a_stored_slug(monkeypatch, tmp_path):
 
 def test_openai_backend_uses_sidecar_urls(monkeypatch):
     monkeypatch.setenv("RETINUE_VOICE_BACKEND", "openai")
-    monkeypatch.setenv("RETINUE_VOICE_BASE_URL", "http://10.44.0.13:8104/v1")
+    monkeypatch.setenv("RETINUE_VOICE_BASE_URL", "http://192.0.2.10:8104/v1")
     seen = []
 
     def fake_post(url, **kwargs):
