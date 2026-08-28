@@ -80,8 +80,8 @@ def test_startup_backfills_and_prunes(tmp_path):
     seeded.create(_room())
     templates = tmp_path / "templates"
     templates.mkdir()
-    (templates / "ghost.json").write_text(json.dumps({"id": "ghost"}))
-    (templates / "not-ours.json").write_text(json.dumps({"kind": "unrelated"}))
+    (templates / "ghost.json").write_text(json.dumps({"id": "ghost"}), encoding="utf-8")
+    (templates / "not-ours.json").write_text(json.dumps({"kind": "unrelated"}), encoding="utf-8")
 
     _store(tmp_path)  # same base_dir, templates now configured
 
