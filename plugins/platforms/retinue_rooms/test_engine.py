@@ -973,6 +973,14 @@ def test_failed_turn_reply_is_spoken_and_not_the_empty_answer():
     assert "ask me to continue" not in timeout.lower()
 
 
+def test_failed_turn_reply_names_a_reject_cancelled_turn():
+    """A runtime reject-cancel (#231) must not read as a dispatch failure."""
+    spoken = engine.failed_turn_reply(
+        "turn ended after a declined action (Write /x: outside the room workspace)"
+    )
+    assert spoken == engine.REJECTED_REPLY
+
+
 def test_failed_turn_reply_names_clarify_permission_and_missing_path():
     class _Entry:
         question = "Is this really infrastructure-5ta4.6?"

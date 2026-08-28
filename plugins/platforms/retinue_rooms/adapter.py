@@ -2410,6 +2410,10 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
                 text = f"{title} — failed"
             elif event == "rejected":
                 text = f"declined: {payload.get('reason') or title}"
+            elif event == "resumed":
+                # The runtime cancelled the prompt over a policy rejection
+                # and the manager re-prompted the same session (#231).
+                text = f"resumed after declined: {title}"
             else:
                 return  # tool_done duplicates tool_start's line for the UI
             try:
@@ -2462,7 +2466,13 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
                         "agent returned no reply",
                     )
                 elif stop == "cancelled":
-                    ok, text = False, "turn cancelled"
+                    # Runtime reject-cancel that resuming could not recover
+                    # (#231) names its blocker; a genuine cancel stays terse.
+                    ok, text = False, (
+                        f"turn ended after a declined action ({result.last_reject})"
+                        if result.last_reject
+                        else "turn cancelled"
+                    )
                 elif stop in ("max_turn_requests", "max_tokens"):
                     ok, text = (
                         False,
