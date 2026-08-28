@@ -435,6 +435,25 @@ class TurnResult:
     stop_reason: str
     text: str
     usage: Dict[str, Any] = field(default_factory=dict)
+    # "title: reason" of the policy rejection that preceded a runtime
+    # cancel that resuming could not recover (#231); None otherwise.
+    last_reject: Optional[str] = None
+
+
+# The real `grok agent` treats a rejected permission as prompt cancellation:
+# one policy "no" ends the whole turn with stopReason "cancelled" (#231).
+# Rejections are normal steering in workspace mode, so an uninvited cancel
+# that follows one gets the session re-prompted to continue without the
+# denied action — at most this many times per turn.
+_REJECT_RESUME_LIMIT = 2
+
+_REJECT_RESUME_PROMPT = (
+    "Your request — {title} — was DECLINED by policy: {reason}. "
+    "Your runtime cancelled the previous turn because of that rejection; "
+    "the work you completed before it is intact. Do NOT retry or rephrase "
+    "the declined action. Continue the task without it and post your reply "
+    "to the room."
+)
 
 
 class AcpProcess:
@@ -1102,28 +1121,23 @@ class GrokBuildManager:
                     extra_roots=extra_roots,
                     denied_roots=denied_roots,
                 )
-                if not allow and on_activity is not None:
-                    on_activity(
-                        "rejected",
-                        {
-                            "title": str(tool_call.get("title") or "tool"),
-                            "reason": reason,
-                        },
-                    )
+                if not allow:
+                    last_reject[0] = (str(tool_call.get("title") or "tool"), reason)
+                    if on_activity is not None:
+                        on_activity(
+                            "rejected",
+                            {
+                                "title": str(tool_call.get("title") or "tool"),
+                                "reason": reason,
+                            },
+                        )
                 return allow, reason
 
+            last_reject: List[Optional[Tuple[str, str]]] = [None]
             sess.process.bind_turn(on_update, on_permission)
             prompt_text = build_prompt(fresh)
             started = time.time()
-            request = asyncio.ensure_future(
-                sess.process.request(
-                    "session/prompt",
-                    {
-                        "sessionId": sess.session_id,
-                        "prompt": [{"type": "text", "text": prompt_text}],
-                    },
-                )
-            )
+            request: Optional[asyncio.Task] = None
             watcher: Optional[asyncio.Task] = None
             if cancel_event is not None:
 
@@ -1133,20 +1147,63 @@ class GrokBuildManager:
 
                 watcher = asyncio.ensure_future(watch_cancel())
             try:
-                try:
-                    result = await asyncio.wait_for(request, timeout)
-                except asyncio.TimeoutError:
-                    # Ask the agent to stop, then give it a short grace to
-                    # return `cancelled` before the process is dropped.
-                    self._request_cancel(sess)
+                resumes = 0
+                while True:
+                    request = asyncio.ensure_future(
+                        sess.process.request(
+                            "session/prompt",
+                            {
+                                "sessionId": sess.session_id,
+                                "prompt": [{"type": "text", "text": prompt_text}],
+                            },
+                        )
+                    )
+                    remaining = max(timeout - (time.time() - started), 1.0)
                     try:
-                        result = await asyncio.wait_for(request, _CANCEL_GRACE)
-                    except (asyncio.TimeoutError, GrokBuildError):
-                        await self._drop(key)
-                        raise GrokBuildError(
-                            f"turn exceeded {int(timeout)}s and did not cancel"
-                        ) from None
-                stop = str(result.get("stopReason") or "unknown")
+                        result = await asyncio.wait_for(request, remaining)
+                    except asyncio.TimeoutError:
+                        # Ask the agent to stop, then give it a short grace to
+                        # return `cancelled` before the process is dropped.
+                        self._request_cancel(sess)
+                        try:
+                            result = await asyncio.wait_for(request, _CANCEL_GRACE)
+                        except (asyncio.TimeoutError, GrokBuildError):
+                            await self._drop(key)
+                            raise GrokBuildError(
+                                f"turn exceeded {int(timeout)}s and did not cancel"
+                            ) from None
+                    stop = str(result.get("stopReason") or "unknown")
+                    # An uninvited cancel right after a policy rejection is the
+                    # runtime aborting the prompt over one denied tool (#231).
+                    # Resume the session and tell it to continue without it.
+                    if (
+                        stop == "cancelled"
+                        and (cancel_event is None or not cancel_event.is_set())
+                        and last_reject[0] is not None
+                        and resumes < _REJECT_RESUME_LIMIT
+                        and time.time() - started < timeout - 10.0
+                    ):
+                        title, reason = last_reject[0]
+                        last_reject[0] = None
+                        resumes += 1
+                        if on_activity is not None:
+                            on_activity(
+                                "resumed", {"title": title, "reason": reason}
+                            )
+                        logger.info(
+                            "grokbuild: resuming %s/%s after reject-cancel "
+                            "(%s) attempt %d/%d",
+                            room_id,
+                            member,
+                            title,
+                            resumes,
+                            _REJECT_RESUME_LIMIT,
+                        )
+                        prompt_text = _REJECT_RESUME_PROMPT.format(
+                            title=title, reason=reason
+                        )
+                        continue
+                    break
                 meta = result.get("_meta") or {}
                 usage = {
                     k: meta.get(k)
@@ -1161,11 +1218,22 @@ class GrokBuildManager:
                     time.time() - started,
                     sess.session_id,
                 )
-                return TurnResult(stop_reason=stop, text="".join(chunks), usage=usage)
+                reject_note = (
+                    f"{last_reject[0][0]}: {last_reject[0][1]}"
+                    if stop == "cancelled" and last_reject[0] is not None
+                    else None
+                )
+                return TurnResult(
+                    stop_reason=stop,
+                    text="".join(chunks),
+                    usage=usage,
+                    last_reject=reject_note,
+                )
             finally:
                 if watcher is not None:
                     watcher.cancel()
-                request.cancel()
+                if request is not None:
+                    request.cancel()
                 sess.turn_active = False
                 sess.last_used = time.time()
                 if sess.process.alive:

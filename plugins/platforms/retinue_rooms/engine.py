@@ -1017,6 +1017,15 @@ TIMEOUT_REPLY = (
 )
 DISPATCH_REPLY = "I couldn't start that turn. I lacked a way to begin it."
 
+# Spoken when the runtime ended the turn over a declined action (#231) and
+# the automatic resume could not recover it. Distinct from DISPATCH_REPLY:
+# this turn RAN — its work is intact — and the human should hear the real
+# blocker instead of "couldn't start".
+REJECTED_REPLY = (
+    "One of my actions was declined and my runtime ended the turn early. "
+    "My progress so far is saved — ask me to continue."
+)
+
 
 _MAKE_WORDS = ("make", "create", "draw", "generate", "paint", "render", "design")
 _FIND_WORDS = ("show", "again", "find", "previous", "last", "where is")
@@ -1061,6 +1070,8 @@ def failed_turn_reply(
     blob = (reason or "").strip().lower()
     if "no reply within" in blob or "timed out" in blob:
         return TIMEOUT_REPLY
+    if "declined action" in blob:
+        return REJECTED_REPLY
     return DISPATCH_REPLY
 
 

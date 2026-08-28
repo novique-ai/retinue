@@ -85,6 +85,19 @@ _FAKE_AGENT = textwrap.dedent(
         if os.environ.get("FAKE_ACP_GARBAGE"):
             sys.stdout.write("this is not json\\n{broken\\n")
             sys.stdout.flush()
+        # Real `grok agent` behavior: a rejected permission cancels the whole
+        # prompt (stopReason "cancelled") instead of continuing politely.
+        # "once": a resume prompt (carries "DECLINED") succeeds without the
+        # tool; "always": every prompt retries the denied tool and cancels.
+        reject_cancel = os.environ.get("FAKE_ACP_CANCEL_ON_REJECT") or ""
+        if reject_cancel == "once" and "DECLINED" in prompt_text:
+            for word in "continuing without it".split(" "):
+                update(sid, {"sessionUpdate": "agent_message_chunk",
+                             "content": {"type": "text", "text": word + " "}})
+            send({"jsonrpc": "2.0", "id": msg["id"],
+                  "result": {"stopReason": "end_turn",
+                              "_meta": {"modelId": "fake-grok"}}})
+            return
         update(sid, {"sessionUpdate": "agent_thought_chunk",
                      "content": {"type": "text", "text": "secret reasoning"}})
         cwd = os.environ.get("FAKE_ACP_TOOL_PATH") or os.getcwd()
@@ -100,6 +113,11 @@ _FAKE_AGENT = textwrap.dedent(
             sys.exit(3)
         allowed = ask_permission(sid, tool_call)
         if sid in cancelled:
+            send({"jsonrpc": "2.0", "id": msg["id"],
+                  "result": {"stopReason": "cancelled"}})
+            return
+        if not allowed and os.environ.get("FAKE_ACP_CANCEL_ON_REJECT"):
+            log("reject_cancel", session=sid)
             send({"jsonrpc": "2.0", "id": msg["id"],
                   "result": {"stopReason": "cancelled"}})
             return
@@ -400,6 +418,66 @@ class TestTurns:
         assert "rejected" in activity
         perms = [e for e in _events(fake_agent) if e["kind"] == "permission"]
         assert perms and perms[0]["allowed"] is False
+
+    def test_reject_cancel_resumes_the_session_once(self, tmp_path, fake_agent, monkeypatch):
+        """A runtime that cancels the prompt on a rejected permission (#231)
+        gets ONE resume telling it to continue without the denied action."""
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        monkeypatch.setenv("FAKE_ACP_TOOL_PATH", "/etc/passwd")
+        monkeypatch.setenv("FAKE_ACP_CANCEL_ON_REJECT", "once")
+        manager = GrokBuildManager(str(tmp_path))
+        activity = []
+
+        async def go():
+            result = await manager.run_turn(
+                "r1",
+                "scout",
+                str(ws),
+                build_prompt=lambda fresh: "hello",
+                approval=APPROVAL_WORKSPACE,
+                timeout=30,
+                on_activity=lambda ev, p: activity.append(ev),
+            )
+            await manager.shutdown()
+            return result
+
+        result = _run(go())
+        assert result.stop_reason == "end_turn"
+        assert result.text.strip() == "continuing without it"
+        assert "rejected" in activity
+        assert "resumed" in activity
+        prompts = [e for e in _events(fake_agent) if e["kind"] == "prompt"]
+        assert len(prompts) == 2
+        assert "DECLINED" in prompts[1]["text"]
+        assert "Do NOT retry" in prompts[1]["text"]
+
+    def test_reject_cancel_resume_is_bounded(self, tmp_path, fake_agent, monkeypatch):
+        """A runtime that cancels on every prompt stops after the resume cap
+        and reports the rejection context instead of looping forever."""
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        monkeypatch.setenv("FAKE_ACP_TOOL_PATH", "/etc/passwd")
+        monkeypatch.setenv("FAKE_ACP_CANCEL_ON_REJECT", "always")
+        manager = GrokBuildManager(str(tmp_path))
+
+        async def go():
+            result = await manager.run_turn(
+                "r1",
+                "scout",
+                str(ws),
+                build_prompt=lambda fresh: "hello",
+                approval=APPROVAL_WORKSPACE,
+                timeout=30,
+            )
+            await manager.shutdown()
+            return result
+
+        result = _run(go())
+        assert result.stop_reason == "cancelled"
+        assert result.last_reject and "write hello.txt" in result.last_reject
+        prompts = [e for e in _events(fake_agent) if e["kind"] == "prompt"]
+        assert len(prompts) == 1 + grokbuild._REJECT_RESUME_LIMIT
 
     def test_malformed_frames_do_not_kill_the_turn(self, tmp_path, fake_agent, monkeypatch):
         ws = tmp_path / "ws"
