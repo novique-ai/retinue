@@ -28,13 +28,63 @@ def default_base_dir() -> str:
     return os.path.join(home, "retinue_rooms")
 
 
+# The operator-meaningful half of a room, in stable order. Everything else in
+# the meta file is live state the engine rewrites constantly (created_at,
+# last_seen, needs_user) and must never reach an exported projection — a
+# projection that churned on every transcript message would teach anyone
+# tracking the directory to ignore its diffs.
+COMPOSITION_FIELDS = (
+    "id",
+    "name",
+    "members",
+    "lead",
+    "max_agent_turns",
+    "max_followup_rounds",
+    "archived",
+    "workspace",
+    "ide_path",
+    "worktree_repos",
+    "shared_mode",
+    "project_id",
+)
+
+_HOME_TOKEN = "$HOME"
+
+
+def default_templates_dir() -> Optional[str]:
+    """Optional directory that mirrors each room's composition (issue #229).
+
+    Unset → the feature is off and the store writes nothing new anywhere.
+    """
+    return os.getenv("RETINUE_ROOM_TEMPLATES_DIR") or None
+
+
+def _portable_path(value: Optional[str]) -> Optional[str]:
+    """Store host paths relative to $HOME so a projection is host-portable."""
+    if not value:
+        return value
+    home = os.path.expanduser("~")
+    return _HOME_TOKEN + value[len(home):] if value.startswith(home) else value
+
+
+def composition_projection(room_dict: Dict[str, object]) -> Dict[str, object]:
+    out = {k: room_dict.get(k) for k in COMPOSITION_FIELDS if k in room_dict}
+    if "ide_path" in out:
+        out["ide_path"] = _portable_path(out.get("ide_path"))  # type: ignore[arg-type]
+    return out
+
+
 class RoomStore:
-    def __init__(self, base_dir: Optional[str] = None):
+    def __init__(
+        self, base_dir: Optional[str] = None, templates_dir: Optional[str] = None
+    ):
         self.base_dir = base_dir or default_base_dir()
         os.makedirs(self.base_dir, exist_ok=True)
+        self.templates_dir = templates_dir or default_templates_dir()
         self._lock = threading.Lock()
         self._cv = threading.Condition(self._lock)
         self._next_seq: Dict[str, int] = {}
+        self._backfill_templates()
 
     # ── paths ────────────────────────────────────────────────────────────
 
@@ -83,6 +133,7 @@ class RoomStore:
                 except FileNotFoundError:
                     pass
             self._next_seq.pop(room_id, None)
+            self._remove_template(room_id)
             return found
 
     def update(self, room: Room) -> None:
@@ -149,6 +200,73 @@ class RoomStore:
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(room.to_dict(), f, indent=2)
         os.replace(tmp, path)
+        self._export_template(room.to_dict())
+
+    # ── composition templates (issue #229) ───────────────────────────────
+
+    def _template_path(self, room_id: str) -> str:
+        assert self.templates_dir is not None
+        return os.path.join(self.templates_dir, f"{room_id}.json")
+
+    def _export_template(self, room_dict: Dict) -> None:
+        """Mirror the composition projection; never let it break room writes."""
+        if not self.templates_dir:
+            return
+        try:
+            payload = json.dumps(composition_projection(room_dict), indent=2) + "\n"
+            path = self._template_path(str(room_dict["id"]))
+            try:
+                with open(path, encoding="utf-8") as f:
+                    if f.read() == payload:
+                        return  # volatile-state write; composition unchanged
+            except OSError:
+                pass
+            os.makedirs(self.templates_dir, exist_ok=True)
+            tmp = f"{path}.tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                f.write(payload)
+            os.replace(tmp, path)
+        except OSError:
+            pass
+
+    def _remove_template(self, room_id: str) -> None:
+        if not self.templates_dir:
+            return
+        try:
+            os.remove(self._template_path(room_id))
+        except OSError:
+            pass
+
+    def _backfill_templates(self) -> None:
+        """Converge the templates dir with the live rooms at startup.
+
+        Enabling the feature on an existing install must not require any
+        manual capture: export every room, prune projection-shaped files
+        whose room is gone. Only files whose JSON carries an ``id`` matching
+        their basename are pruned — anything else in the directory is not
+        ours to delete.
+        """
+        if not self.templates_dir:
+            return
+        try:
+            live = {room.id: room for room in self.list_rooms()}
+            for room in live.values():
+                self._export_template(room.to_dict())
+            for name in os.listdir(self.templates_dir):
+                if not name.endswith(".json"):
+                    continue
+                room_id = name[: -len(".json")]
+                if room_id in live:
+                    continue
+                path = os.path.join(self.templates_dir, name)
+                try:
+                    with open(path, encoding="utf-8") as f:
+                        if json.load(f).get("id") == room_id:
+                            os.remove(path)
+                except (OSError, ValueError):
+                    continue
+        except OSError:
+            pass
 
     # ── transcript ───────────────────────────────────────────────────────
 
