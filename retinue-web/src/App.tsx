@@ -1045,6 +1045,7 @@ function RoomView({
   const spokenRef = useRef<Set<number>>(new Set());
   const skipThroughRef = useRef<number | null>(null);
   const speakOnRef = useRef(speakReplies);
+  const speakNoteRef = useRef("");
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const speakGenRef = useRef(0);
 
@@ -1185,14 +1186,22 @@ function RoomView({
               };
               void audio.play().catch(reject);
             });
-            if (gen === speakGenRef.current) setVoiceNote("");
+            if (gen === speakGenRef.current) {
+              setVoiceNote((note) =>
+                note === speakNoteRef.current ? "" : note,
+              );
+            }
           } finally {
             URL.revokeObjectURL(url);
           }
         })
         .catch((e) => {
           // Isolate a failed line; keep the toggle on and play later replies.
-          if (gen === speakGenRef.current) setVoiceNote(formatSpeakError(e));
+          if (gen === speakGenRef.current) {
+            const note = formatSpeakError(e);
+            speakNoteRef.current = note;
+            setVoiceNote(note);
+          }
         });
     }
   }, [messages, speakReplies, cutSpeak]);

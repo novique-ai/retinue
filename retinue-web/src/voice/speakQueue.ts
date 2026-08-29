@@ -24,16 +24,6 @@ export function primeSpeakGate(
   return { skipThrough: maxSeq(messages) };
 }
 
-export function backlogAgentSeqs(
-  messages: ReadonlyArray<SpeakLine>,
-): number[] {
-  const seqs: number[] = [];
-  for (const msg of messages) {
-    if (msg.kind === "agent") seqs.push(msg.seq);
-  }
-  return seqs;
-}
-
 export function selectSpeakSeqs(
   messages: ReadonlyArray<SpeakLine>,
   spoken: ReadonlySet<number>,
@@ -54,8 +44,8 @@ export function selectSpeakSeqs(
  * One step of the Speak Replies gate.
  *
  * - Toggle off: drop the watermark so the next enable re-primes.
- * - Rising edge (checkbox on): current transcript is backlog, even if
- *   some lines have no `ts` or are newer than room-open time.
+ * - Rising edge (checkbox on): current non-empty transcript is backlog.
+ *   An empty snapshot does not prime (SSE catch-up may still be in flight).
  * - Speak already on, gate unprimed: first non-empty snapshot is catch-up
  *   (opening a room with the toggle already on). An empty snapshot waits
  *   so a later history batch is not treated as live.
@@ -71,35 +61,35 @@ export function nextSpeakSeqs(opts: {
   if (!opts.enabled) {
     return { gate: { skipThrough: null }, seqs: [], markSpoken: [] };
   }
+  // Empty transcript is ambiguous: empty room, or SSE catch-up not yet
+  // landed. Do not prime skipThrough=0 — that would speak the whole
+  // history when the first snapshot arrives.
   if (opts.risingEdge) {
-    const gate = primeSpeakGate(opts.messages);
-    return { gate, seqs: [], markSpoken: backlogAgentSeqs(opts.messages) };
+    if (opts.messages.length === 0) {
+      return { gate: { skipThrough: null }, seqs: [], markSpoken: [] };
+    }
+    return { gate: primeSpeakGate(opts.messages), seqs: [], markSpoken: [] };
   }
   if (opts.gate.skipThrough === null) {
     if (opts.messages.length === 0) {
       return { gate: opts.gate, seqs: [], markSpoken: [] };
     }
-    const gate = primeSpeakGate(opts.messages);
-    return { gate, seqs: [], markSpoken: backlogAgentSeqs(opts.messages) };
+    return { gate: primeSpeakGate(opts.messages), seqs: [], markSpoken: [] };
   }
   const seqs = selectSpeakSeqs(opts.messages, opts.spoken, opts.gate);
   return { gate: opts.gate, seqs, markSpoken: seqs };
 }
 
-/** Voice-bar copy: never dump HTTP JSON or provider bodies. */
+/** Voice-bar copy: never dump HTTP JSON. Short provider prose can stay. */
 export function formatSpeakError(err: unknown): string {
   const raw = err instanceof Error ? err.message : String(err ?? "");
+  const cleaned = raw.replace(/\s+/g, " ").trim();
   if (
     /\{[\s\S]*\}/.test(raw) ||
     /\bHTTP\s+\d{3}\b/i.test(raw) ||
-    /\bTTS\b/i.test(raw) ||
-    /\bSTT\b/i.test(raw) ||
-    /playback failed/i.test(raw)
+    /playback failed/i.test(raw) ||
+    !cleaned
   ) {
-    return "Couldn't speak this reply. Later replies will still play.";
-  }
-  const cleaned = raw.replace(/\s+/g, " ").trim();
-  if (!cleaned) {
     return "Couldn't speak this reply. Later replies will still play.";
   }
   return cleaned.length > 80 ? `${cleaned.slice(0, 77)}…` : cleaned;

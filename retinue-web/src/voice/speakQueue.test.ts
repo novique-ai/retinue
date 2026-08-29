@@ -33,7 +33,7 @@ describe("nextSpeakSeqs — enable mid-transcript (#234)", () => {
     });
     assert.equal(step.gate.skipThrough, 5);
     assert.deepEqual(step.seqs, []);
-    assert.deepEqual(step.markSpoken, [2, 3, 4, 5]);
+    assert.deepEqual(step.markSpoken, []);
   });
 
   it("queues only agent lines after the watermark", () => {
@@ -62,7 +62,7 @@ describe("nextSpeakSeqs — enable mid-transcript (#234)", () => {
     assert.equal(step.gate.skipThrough, 3);
   });
 
-  it("speaks the next reply after enabling in an empty room", () => {
+  it("does not prime skipThrough=0 on an empty rising edge (catch-up may still be in flight)", () => {
     const primed = nextSpeakSeqs({
       enabled: true,
       risingEdge: true,
@@ -70,13 +70,48 @@ describe("nextSpeakSeqs — enable mid-transcript (#234)", () => {
       spoken: new Set(),
       gate: { skipThrough: null },
     });
-    assert.equal(primed.gate.skipThrough, 0);
+    assert.equal(primed.gate.skipThrough, null);
+    const catchup = nextSpeakSeqs({
+      enabled: true,
+      risingEdge: false,
+      messages: HISTORY,
+      spoken: new Set(),
+      gate: primed.gate,
+    });
+    assert.equal(catchup.gate.skipThrough, 5);
+    assert.deepEqual(catchup.seqs, []);
+    const live = nextSpeakSeqs({
+      enabled: true,
+      risingEdge: false,
+      messages: [...HISTORY, msg(6)],
+      spoken: new Set(),
+      gate: catchup.gate,
+    });
+    assert.deepEqual(live.seqs, [6]);
+  });
+
+  it("speaks the next reply after enabling in an empty room once a user line lands", () => {
+    const waiting = nextSpeakSeqs({
+      enabled: true,
+      risingEdge: true,
+      messages: [],
+      spoken: new Set(),
+      gate: { skipThrough: null },
+    });
+    const catchup = nextSpeakSeqs({
+      enabled: true,
+      risingEdge: false,
+      messages: [msg(1, "user")],
+      spoken: new Set(),
+      gate: waiting.gate,
+    });
+    assert.equal(catchup.gate.skipThrough, 1);
     const live = nextSpeakSeqs({
       enabled: true,
       risingEdge: false,
       messages: [msg(1, "user"), msg(2)],
       spoken: new Set(),
-      gate: primed.gate,
+      gate: catchup.gate,
     });
     assert.deepEqual(live.seqs, [2]);
   });
@@ -176,6 +211,13 @@ describe("formatSpeakError", () => {
 
   it("keeps a short non-provider message", () => {
     assert.equal(formatSpeakError(new Error("mic permission denied")), "mic permission denied");
+  });
+
+  it("keeps a short TTS config error", () => {
+    assert.equal(
+      formatSpeakError(new Error("no xAI credentials for TTS")),
+      "no xAI credentials for TTS",
+    );
   });
 
   it("maps playback failure to the same isolated note", () => {
