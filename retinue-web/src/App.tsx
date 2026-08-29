@@ -478,9 +478,11 @@ function RowMenu({
   );
 }
 
+const ROOM_NEEDS_ONE_MEMBER = "A room needs at least one member.";
+
 /**
  * Chip-level "…" menu for a room member. A naked × on a 24px avatar is too
- * easy to miss-hit, so removal is two clicks: open the menu, then confirm.
+ * easy to miss-hit, so excuse is two clicks: open the menu, then confirm.
  */
 function MemberMenu({
   onRemove,
@@ -504,7 +506,7 @@ function MemberMenu({
       <button
         type="button"
         className="mini"
-        title="Member options"
+        title={disabledReason ?? "Excuse this retainer from the room"}
         onClick={(e) => {
           e.stopPropagation();
           setOpen((v) => !v);
@@ -526,8 +528,93 @@ function MemberMenu({
                 onRemove();
               }}
             >
-              Remove from room
+              Excuse from room
             </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Room-header excuse control — the inverse of InviteMenu. Work in this
+ * room is done; the retainer stays hired and a later invite resumes
+ * their last_seen cursor. Two clicks, same as the chip ⋯ menu.
+ */
+function ExcuseMenu({
+  members,
+  lead,
+  agentsBySlug,
+  handleOf,
+  onExcuse,
+}: {
+  members: string[];
+  lead: string | null;
+  agentsBySlug: Record<string, AgentMeta>;
+  handleOf: (slug: string) => string;
+  onExcuse: (slug: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const close = (e: MouseEvent) => {
+      if (!ref.current?.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
+  }, [open]);
+  const lastRemaining = members.length <= 1;
+  return (
+    <div className="invite-wrap" ref={ref}>
+      <button
+        type="button"
+        className="mini wide"
+        title="Excuse a retainer from this room"
+        onClick={(e) => {
+          e.stopPropagation();
+          setOpen((v) => !v);
+        }}
+      >
+        − excuse
+      </button>
+      {open && (
+        <div className="invite-menu">
+          <p className="invite-note">
+            They leave this room and stay hired. A later invite resumes
+            where they left off. If you excuse the lead, the first remaining
+            member takes the star.
+          </p>
+          {lastRemaining ? (
+            <p className="invite-empty">{ROOM_NEEDS_ONE_MEMBER}</p>
+          ) : (
+            members.map((slug) => {
+              const agent = agentsBySlug[slug];
+              const label = agent ? agentLabel(agent) : handleOf(slug);
+              return (
+                <button
+                  key={slug}
+                  type="button"
+                  className="invite-opt danger"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setOpen(false);
+                    onExcuse(slug);
+                  }}
+                >
+                  <AgentAvatar
+                    identity={agent?.identity}
+                    slug={slug}
+                    fallback={slug}
+                    label={label}
+                    size={20}
+                  />
+                  {label}
+                  {lead === slug ? " ★" : ""}
+                </button>
+              );
+            })
           )}
         </div>
       )}
@@ -1253,14 +1340,19 @@ function RoomView({
                   {room.lead === m ? " ★" : ""}
                 </span>
                 <MemberMenu
-                  disabledReason={
-                    room.members.length <= 1 ? "A room needs at least one member" : null
-                  }
+                  disabledReason={room.members.length <= 1 ? ROOM_NEEDS_ONE_MEMBER : null}
                   onRemove={() => void removeMember(m)}
                 />
               </span>
             ))}
             <InviteMenu candidates={inviteCandidates} onInvite={(slug) => void inviteMember(slug)} />
+            <ExcuseMenu
+              members={room.members}
+              lead={room.lead}
+              agentsBySlug={agentsBySlug}
+              handleOf={handleOf}
+              onExcuse={(slug) => void removeMember(slug)}
+            />
           </div>
         </div>
         <div className="room-header-actions desktop-room-actions">

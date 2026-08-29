@@ -647,7 +647,7 @@ def test_briefing_teaches_the_structured_pass():
 
 def test_invite_notices_match_existing_system_voice():
     assert engine.member_joined_notice("critic") == "critic joined the room"
-    assert engine.member_left_notice("critic") == "critic left the room"
+    assert engine.member_excused_notice("critic") == "critic was excused from the room"
     assert engine.turn_started_notice("Lucy") == "Lucy is on it."
     assert engine.INVITE_TRANSCRIPT_WINDOW == 20
 

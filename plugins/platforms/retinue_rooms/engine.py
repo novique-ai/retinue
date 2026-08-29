@@ -835,9 +835,9 @@ def member_joined_notice(member: str) -> str:
     return f"{member} joined the room"
 
 
-def member_left_notice(member: str) -> str:
-    """System line posted when someone is removed from a live room."""
-    return f"{member} left the room"
+def member_excused_notice(member: str) -> str:
+    """System line posted when someone is excused from a live room."""
+    return f"{member} was excused from the room"
 
 
 def seed_invite_last_seen(room: Room, member: str, head_seq: int) -> None:

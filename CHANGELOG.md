@@ -21,6 +21,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Excuse a retainer from a room.** The room header has an **excuse**
+  control next to **+ invite**. Choosing a member removes them from this
+  room only — they stay hired, `last_seen` survives, and the transcript
+  posts `{slug} was excused from the room`. The chip ⋯ menu says
+  **Excuse from room**. Closes #235.
+
 - **Speech humanization for Speak Replies.** Rooms TTS no longer reads
   developer Markdown as a screen reader would. Canonical agent text stays
   on screen; `POST /tts` consumes a spoken script produced by

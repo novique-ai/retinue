@@ -726,6 +726,10 @@ span.agent-runtime {
   background: var(--bg-input);
 }
 
+.invite-opt.danger {
+  color: #f7768e;
+}
+
 .messages {
   flex: 1;
   overflow-y: auto;

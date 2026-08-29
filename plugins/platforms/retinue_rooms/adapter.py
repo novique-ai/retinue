@@ -657,7 +657,7 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         if overlay_key_before and overlay_key_after and overlay_key_before != overlay_key_after:
             _evict_room_environment(overlay_key_before)
         for member in departed:
-            self._post_system(room_id, engine.member_left_notice(member))
+            self._post_system(room_id, engine.member_excused_notice(member))
         for member in joined:
             posted = self._post_system(room_id, engine.member_joined_notice(member))
             head = posted.seq if posted is not None else 0
@@ -698,7 +698,7 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         return self._room_payload(room)
 
     def remove_room_member(self, room_id: str, member: str) -> Dict[str, Any]:
-        """Remove one agent from a live room. last_seen survives."""
+        """Excuse one agent from a live room. last_seen survives."""
         member = (member or "").strip()
         if not member:
             raise ValueError("member is required")
@@ -719,7 +719,7 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         # A departing member's skills stop being mounted for the same reason
         # a joining member's start (#188).
         self._evict_on_rekey(room_id, key_before)
-        self._post_system(room_id, engine.member_left_notice(member))
+        self._post_system(room_id, engine.member_excused_notice(member))
         return self._room_payload(room)
 
     def _evict_on_rekey(self, room_id: str, key_before: Optional[str]) -> None:
