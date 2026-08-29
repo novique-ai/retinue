@@ -64,6 +64,7 @@ import {
 import { LOGO_SRC, YOU_SRC, agentIcon } from "./icons";
 import { includeBusyThinkers, isWorkingIn, remainingThinkers, remainingThinkersAfter } from "./thinking";
 import { PushToTalkButton } from "./voice/PushToTalkButton";
+import { formatSpeakError, nextSpeakSeqs } from "./voice/speakQueue";
 import { usePushToTalk } from "./voice/usePushToTalk";
 import { shellClassName, useKeyboardInset, useNarrowViewport } from "./viewport";
 
@@ -1042,7 +1043,8 @@ function RoomView({
   }, [mentionChoices.length, mentionPick]);
   const playQ = useRef(Promise.resolve());
   const spokenRef = useRef<Set<number>>(new Set());
-  const openedAtRef = useRef(Date.now() / 1000);
+  const skipThroughRef = useRef<number | null>(null);
+  const speakOnRef = useRef(speakReplies);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const speakGenRef = useRef(0);
 
@@ -1094,7 +1096,7 @@ function RoomView({
     setThinking([]);
     setSending(false);
     spokenRef.current = new Set();
-    openedAtRef.current = Date.now() / 1000;
+    skipThroughRef.current = null;
     cutSpeak();
     const ctl = new AbortController();
     api.watchTranscript(
@@ -1138,14 +1140,25 @@ function RoomView({
   }, [messages]);
 
   useEffect(() => {
+    const rising = !speakOnRef.current && speakReplies;
+    speakOnRef.current = speakReplies;
+    const step = nextSpeakSeqs({
+      enabled: speakReplies,
+      risingEdge: rising,
+      messages,
+      spoken: spokenRef.current,
+      gate: { skipThrough: skipThroughRef.current },
+    });
+    skipThroughRef.current = step.gate.skipThrough;
+    for (const seq of step.markSpoken) spokenRef.current.add(seq);
     if (!speakReplies) {
       cutSpeak();
       return;
     }
-    for (const msg of messages) {
-      if (msg.kind !== "agent" || spokenRef.current.has(msg.seq)) continue;
-      if (msg.ts && msg.ts < openedAtRef.current - 1) continue;
-      spokenRef.current.add(msg.seq);
+    for (const seq of step.seqs) {
+      const msg = messages.find((m) => m.seq === seq);
+      if (!msg) continue;
+      spokenRef.current.add(seq);
       const gen = speakGenRef.current;
       playQ.current = playQ.current
         .then(async () => {
@@ -1172,12 +1185,14 @@ function RoomView({
               };
               void audio.play().catch(reject);
             });
+            if (gen === speakGenRef.current) setVoiceNote("");
           } finally {
             URL.revokeObjectURL(url);
           }
         })
         .catch((e) => {
-          if (gen === speakGenRef.current) setVoiceNote(String(e));
+          // Isolate a failed line; keep the toggle on and play later replies.
+          if (gen === speakGenRef.current) setVoiceNote(formatSpeakError(e));
         });
     }
   }, [messages, speakReplies, cutSpeak]);

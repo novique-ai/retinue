@@ -371,6 +371,48 @@ def test_provider_error_is_voice_error(monkeypatch):
         voice.transcribe(b"data", "x.wav")
 
 
+def test_provider_error_does_not_include_response_body(monkeypatch):
+    """Speak Replies must not dump engine JSON in the voice bar (#234)."""
+    monkeypatch.setenv("RETINUE_VOICE_BACKEND", "openai")
+    monkeypatch.setenv("RETINUE_VOICE_BASE_URL", "http://192.0.2.10:8104/v1")
+    body = '{"detail":"500: TTS engine failed to synthesize audio for chunk 5."}'
+    monkeypatch.setattr(
+        voice,
+        "_http_post",
+        lambda *a, **k: _FakeResp(status=500, text=body, json_data={"detail": body}),
+    )
+    with pytest.raises(voice.VoiceError, match=r"local TTS failed \(500\)") as caught:
+        voice.synthesize("A long enough reply to speak.", "mangus")
+    assert "chunk 5" not in str(caught.value)
+    assert "{" not in str(caught.value)
+
+
+def test_post_tts_does_not_dump_engine_json(tmp_path, monkeypatch):
+    monkeypatch.setenv("RETINUE_VOICE_BACKEND", "openai")
+    monkeypatch.setenv("RETINUE_VOICE_BASE_URL", "http://192.0.2.10:8104/v1")
+    monkeypatch.setenv("RETINUE_SPEECH_HUMANIZE_SEMANTIC", "0")
+    body = '{"detail":"500: TTS engine failed to synthesize audio for chunk 5."}'
+    monkeypatch.setattr(
+        voice,
+        "_http_post",
+        lambda *a, **k: _FakeResp(status=500, text=body, json_data={"detail": body}),
+    )
+    from .adapter import RetinueRoomsAdapter
+
+    adapter = RetinueRoomsAdapter.__new__(RetinueRoomsAdapter)
+    adapter._home_dir = lambda: str(tmp_path)
+    handler = _StubTTSHandler(
+        adapter, {"text": "Hello there, this is a spoken reply.", "speaker": "mangus"}
+    )
+    handler._post_tts()
+    status, payload = handler.sent
+    assert status == 502
+    err = payload["error"]
+    assert "chunk 5" not in err
+    assert "{" not in err
+    assert "local TTS failed (500)" in err
+
+
 # ── Speak Replies gets a spoken script, not raw chat Markdown (#158) ─────
 
 
