@@ -261,9 +261,9 @@ def test_converting_hermes_member_in_two_rooms_resets_both_grok_sessions(tmp_pat
     assert updated["runtime"] == RUNTIME_GROK_BUILD
     assert updated["runtime_model"] == "grok-4.5"
     assert updated["model_preset"] is None
-    stored = json.load(open(os.path.join(home, "profiles", slug, hire.AGENT_META_FILENAME)))
+    stored = json.load(open(os.path.join(home, "profiles", slug, hire.AGENT_META_FILENAME), encoding="utf-8"))
     assert stored["runtime"] == RUNTIME_GROK_BUILD
-    state = json.load(open(os.path.join(home, "retinue_rooms", "grok_sessions.json")))
+    state = json.load(open(os.path.join(home, "retinue_rooms", "grok_sessions.json"), encoding="utf-8"))
     assert f"room-a|{slug}" not in state
     assert f"room-b|{slug}" not in state
     # Rooms still list them — identity survives.
@@ -283,7 +283,7 @@ def test_converting_grok_member_back_to_hermes_applies_the_preset(tmp_path, monk
     updated = adapter.patch_agent(slug, {"model": "grok-4.5"})
     assert updated["runtime"] == RUNTIME_HERMES
     assert updated["model_preset"] == "grok-4.5"
-    stored = json.load(open(os.path.join(home, "profiles", slug, hire.AGENT_META_FILENAME)))
+    stored = json.load(open(os.path.join(home, "profiles", slug, hire.AGENT_META_FILENAME), encoding="utf-8"))
     assert "runtime" not in stored or stored.get("runtime") in (None, RUNTIME_HERMES)
     assert stored.get("runtime_model") in (None, "")
 
@@ -299,7 +299,7 @@ def test_same_runtime_grok_model_change_drops_persisted_session(tmp_path, monkey
     _persist_grok_session(home, "r-1", slug, model="grok-4.6")
     updated = adapter.patch_agent(slug, {"model": "grok-build:grok-4.5"})
     assert updated["runtime_model"] == "grok-4.5"
-    state = json.load(open(os.path.join(home, "retinue_rooms", "grok_sessions.json")))
+    state = json.load(open(os.path.join(home, "retinue_rooms", "grok_sessions.json"), encoding="utf-8"))
     assert f"r-1|{slug}" not in state
 
 
