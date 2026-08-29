@@ -101,9 +101,19 @@ def test_reinvite_resumes_old_last_seen_instead_of_reset(tmp_path, monkeypatch):
     texts = [m.text for m in unseen]
     assert again.last_seen["critic"] == 4
     assert unseen[0].seq == 5 and unseen[0].text == "line-5"
-    assert engine.member_left_notice("critic") in texts
+    assert engine.member_excused_notice("critic") in texts
     assert texts[-1] == engine.member_joined_notice("critic")
     assert all(m.seq > 4 for m in unseen)
+
+
+def test_excusing_the_lead_promotes_the_first_remaining_member(tmp_path, monkeypatch):
+    adapter = _adapter(tmp_path, monkeypatch)
+    adapter.store.create(_room(members=["scout", "editor", "critic"], lead="critic"))
+    adapter.remove_room_member("r-1", "critic")
+    loaded = adapter.store.get("r-1")
+    assert loaded.members == ["scout", "editor"]
+    assert loaded.lead == "scout"
+    assert _system_texts(adapter.store, "r-1") == [engine.member_excused_notice("critic")]
 
 
 def test_removal_preserves_last_seen(tmp_path, monkeypatch):
@@ -131,7 +141,7 @@ def test_removal_posts_exactly_one_system_message(tmp_path, monkeypatch):
     adapter.store.create(_room())
     adapter.remove_room_member("r-1", "editor")
     texts = _system_texts(adapter.store, "r-1")
-    assert texts == [engine.member_left_notice("editor")]
+    assert texts == [engine.member_excused_notice("editor")]
 
 
 def test_full_array_patch_seeds_and_announces_like_an_invite(tmp_path, monkeypatch):
@@ -150,7 +160,7 @@ def test_full_array_patch_seeds_and_announces_like_an_invite(tmp_path, monkeypat
 
     # editor left, critic joined — one notice each, and nothing else.
     assert _system_texts(adapter.store, "r-1") == [
-        engine.member_left_notice("editor"),
+        engine.member_excused_notice("editor"),
         engine.member_joined_notice("critic"),
     ]
     # The newcomer is windowed, not handed all 25.
@@ -232,7 +242,7 @@ def test_http_invite_and_remove_are_incremental(tmp_path, monkeypatch):
         assert adapter.store.get("r-1").last_seen["critic"] == room.last_seen["critic"]
         assert _system_texts(adapter.store, "r-1") == [
             engine.member_joined_notice("critic"),
-            engine.member_left_notice("critic"),
+            engine.member_excused_notice("critic"),
         ]
 
         status, payload = call("POST", "/rooms/r-1/members", {"member": "scout"})

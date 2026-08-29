@@ -128,7 +128,7 @@ Run the executed web behavior suite with:
 node retinue-web/test/run-ui-tests.mjs
 ```
 
-## Live membership (invite / remove)
+## Live membership (invite / excuse)
 
 A room's roster is not fixed at creation. The UI drives incremental
 `POST /rooms/{id}/members` and `DELETE /rooms/{id}/members/{slug}` so a
@@ -148,16 +148,16 @@ alive behind it.
   needs no summarisation call and no new prompt path. A short or empty
   room seeds `0` (never a negative cursor). Re-inviting someone who
   already has a `last_seen` entry leaves that cursor alone.
-- **Removal keeps `last_seen`.** A few bytes; a later re-invite resumes
+- **Excuse keeps `last_seen`.** A few bytes; a later re-invite resumes
   where they left rather than replaying the room.
 - **System notices.** One line on join (`{slug} joined the room`) and
-  one on removal (`{slug} left the room`), same voice as the other
-  `KIND_SYSTEM` notices.
+  one on excuse (`{slug} was excused from the room`). Excuse is passive
+  on purpose: the operator dismissed them; they did not leave.
 - **Next user message only.** Turn planning is snapshotted at the start
-  of each user-message cycle. An invite or removal is visible on the
+  of each user-message cycle. An invite or excuse is visible on the
   transcript immediately, but it does not rewrite a queue that is
   already running. Model-switch uses `AgentBusy` because it would evict
-  a running agent; membership does not, so invite/remove do not 409.
+  a running agent; membership does not, so invite/excuse do not 409.
 
 ## Cross-room post (`rooms_list` / `rooms_post`)
 
@@ -276,9 +276,9 @@ convention: no `RETINUE_ROOMS_API_KEY` → localhost-only):
 | `GET/PATCH /agents/{slug}` | inspect / edit (`{name?, job?, how?, model?, archived?}`) — SOUL rewrite in place; `model` still switches the preset. No restart. |
 | `DELETE /agents/{slug}` | remove `profiles/<slug>/` (never `default`); evicts the live registration |
 | `GET/POST /rooms` | list / create (`{name, members[], lead?, max_agent_turns?, max_followup_rounds?, workspace?, ide_path?, shared_mode?, worktree_repos?}`) — `workspace` is `sandbox` (default) or `ide`; `shared_mode` is `rw` (default) or `ro`. List is sidebar-ordered and includes `archived`. `max_followup_rounds` is the speak-or-pass settle cap (default `0` — off; set it to opt in, and it only applies to an undirected message). |
-| `GET/PATCH/DELETE /rooms/{id}` | inspect / edit (`{name?, members?, lead?, archived?, max_agent_turns?, max_followup_rounds?, workspace?, ide_path?, shared_mode?, worktree_repos?}`) / remove. Archive hides without wiping the transcript. Full-array `members` restaffs wholesale; members it adds or drops get the same join/leave notices and `last_seen` seeding as the incremental endpoints. |
+| `GET/PATCH/DELETE /rooms/{id}` | inspect / edit (`{name?, members?, lead?, archived?, max_agent_turns?, max_followup_rounds?, workspace?, ide_path?, shared_mode?, worktree_repos?}`) / remove. Archive hides without wiping the transcript. Full-array `members` restaffs wholesale; members it adds or drops get the same join/excuse notices and `last_seen` seeding as the incremental endpoints. |
 | `POST /rooms/{id}/members` | invite one agent (`{member}`) → 201. Seeds `last_seen` so a first-time invitee sees only the last 20 messages (and the join notice). A re-invite keeps their existing cursor. |
-| `DELETE /rooms/{id}/members/{slug}` | remove one agent → 200. `last_seen` is kept so a later re-invite resumes where they left off. Refuses the last remaining member. |
+| `DELETE /rooms/{id}/members/{slug}` | excuse one agent from the room → 200. `last_seen` is kept so a later re-invite resumes where they left off. Refuses the last remaining member. |
 | `GET /rooms/{id}/routines` | routines whose `source_room` is this room |
 | `GET /rooms/{id}/cron/jobs` | scheduled jobs targeting this room |
 | `GET/PUT /rooms/{id}/itinerary` | living outline. The **lead** authors it (fenced `itinerary` block in their reply). The user can view/edit the right pane. |

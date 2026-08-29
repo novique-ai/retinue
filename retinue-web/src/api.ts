@@ -444,7 +444,7 @@ export const api = {
    */
   inviteMember: (id: string, member: string) =>
     req<RoomMeta>("POST", `/rooms/${id}/members`, { member }),
-  /** `last_seen` survives removal, so re-inviting resumes where they left off. */
+  /** Excuse from the room. `last_seen` survives, so re-inviting resumes where they left off. */
   removeMember: (id: string, slug: string) =>
     req<RoomMeta>("DELETE", `/rooms/${id}/members/${encodeURIComponent(slug)}`),
   transcript: (id: string, since: number, wait: number, signal?: AbortSignal) =>
