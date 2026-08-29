@@ -52,6 +52,11 @@ export interface RuntimeHealth {
   detail?: string;
 }
 
+export interface RuntimeModel {
+  id: string;
+  default?: boolean;
+}
+
 /** One agent runtime (Hermes loop, Grok Build, …) from `GET /runtimes`. */
 export interface RuntimeInfo {
   id: string;
@@ -59,6 +64,10 @@ export interface RuntimeInfo {
   description: string;
   capabilities: Record<string, boolean>;
   health: RuntimeHealth;
+  /** Where the model list comes from: workspace presets, or the runtime catalog. */
+  model_source?: "presets" | "runtime" | string;
+  models?: RuntimeModel[];
+  default_model?: string;
 }
 
 export interface HealthInfo {
@@ -120,6 +129,8 @@ export interface AgentMeta {
   activation?: string;
   online?: boolean;
   model_preset?: string | null;
+  /** Grok Build catalog id when `runtime` is grok-build (#236). */
+  runtime_model?: string | null;
   model_summary?: string;
   local_llm?: boolean;
   turn_timeout?: number;

@@ -41,7 +41,12 @@ import {
 } from "./api";
 import { formatMessageTime, messageTimeMs } from "./time";
 import {
+  CROSS_RUNTIME_CONFIRM,
+  GROK_BUILD_RUNTIME,
   HERMES_RUNTIME,
+  agentPickerValue,
+  formatPickerValue,
+  isCrossRuntime,
   isGrokBuild,
   runtimeOptionLabel,
   runtimeOptionTitle,
@@ -2074,6 +2079,76 @@ function ModelPicker({ model, models, onChange }: { model: string; models: Model
   );
 }
 
+function grokCatalog(runtimes: RuntimeInfo[]) {
+  const grok = runtimes.find((r) => r.id === GROK_BUILD_RUNTIME);
+  return grok?.models ?? [];
+}
+
+function GroupedRuntimeModelSelect({
+  agent,
+  models,
+  runtimes,
+  value,
+  disabled,
+  title,
+  summaries,
+  onChange,
+}: {
+  agent: AgentMeta;
+  models: ModelPreset[];
+  runtimes: RuntimeInfo[];
+  value: string;
+  disabled?: boolean;
+  title?: string;
+  summaries?: boolean;
+  onChange: (next: string) => void;
+}) {
+  const grok = grokCatalog(runtimes);
+  const grokAvailable = runtimes.find((r) => r.id === GROK_BUILD_RUNTIME)?.health.status === "available";
+  return (
+    <select
+      className="agent-model"
+      value={value}
+      disabled={disabled}
+      title={title}
+      onChange={(e) => {
+        const next = e.target.value;
+        if (!next || next === value) return;
+        if (isCrossRuntime(agent.runtime, next) && !window.confirm(CROSS_RUNTIME_CONFIRM)) {
+          e.target.value = value;
+          return;
+        }
+        onChange(next);
+      }}
+    >
+      {!value && <option value="">current model</option>}
+      {grok.length > 0 && (
+        <optgroup label="Grok Build">
+          {grok.map((m) => (
+            <option
+              key={`grok-build:${m.id}`}
+              value={formatPickerValue(GROK_BUILD_RUNTIME, m.id)}
+              disabled={!grokAvailable && !isGrokBuild(agent.runtime)}
+            >
+              {m.id}
+              {m.default ? " (default)" : ""}
+            </option>
+          ))}
+        </optgroup>
+      )}
+      {models.length > 0 && (
+        <optgroup label="Hermes">
+          {models.map((m) => (
+            <option key={m.name} value={m.name}>
+              {summaries ? `${m.name} (${m.summary})` : m.name}
+            </option>
+          ))}
+        </optgroup>
+      )}
+    </select>
+  );
+}
+
 function HirePanel({ onDone }: { onDone: (created?: AgentMeta) => void }) {
   const [name, setName] = useState("");
   const [job, setJob] = useState("");
@@ -2142,14 +2217,34 @@ function HirePanel({ onDone }: { onDone: (created?: AgentMeta) => void }) {
           placeholder="Check sources before answering. Keep replies short. Hand writing questions to the editor."
         />
       </label>
-      <RuntimePicker value={runtime} runtimes={runtimes} onChange={setRuntime} />
+      <RuntimePicker value={runtime} runtimes={runtimes} onChange={(id) => {
+        setRuntime(id);
+        if (id === GROK_BUILD_RUNTIME) {
+          const def = runtimes.find((r) => r.id === id)?.default_model || grokCatalog(runtimes)[0]?.id || "";
+          setModel(def);
+        } else if (!models.some((m) => m.name === model)) {
+          setModel("");
+        }
+      }} />
       {runtime === HERMES_RUNTIME ? (
         <ModelPicker model={model} models={models} onChange={setModel} />
+      ) : grokCatalog(runtimes).length > 0 ? (
+        <label>
+          Model
+          <select value={model} onChange={(e) => setModel(e.target.value)}>
+            {grokCatalog(runtimes).map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.id}
+                {m.default ? " (default)" : ""}
+              </option>
+            ))}
+          </select>
+        </label>
       ) : (
         <p className="note">
-          Model and tools are managed by the {
-            runtimes.find((r) => r.id === runtime)?.label ?? runtime
-          } runtime itself.
+          Grok Build will use its default model ({
+            runtimes.find((r) => r.id === runtime)?.default_model || "grok-4.6"
+          }).
         </p>
       )}
       <div className="identity-pick">
@@ -2198,7 +2293,7 @@ function HirePanel({ onDone }: { onDone: (created?: AgentMeta) => void }) {
                 name,
                 job,
                 how,
-                runtime === HERMES_RUNTIME ? model : "",
+                model || undefined,
                 {
                   avatar_emoji: trimmedEmoji || undefined,
                   avatar_color: avatarColor || undefined,
@@ -2612,6 +2707,7 @@ function EditRoomPanel({
 function EditAgentPanel({
   agent,
   models,
+  runtimes,
   palette,
   voices,
   availableVoices,
@@ -2619,6 +2715,7 @@ function EditAgentPanel({
 }: {
   agent: AgentMeta;
   models: ModelPreset[];
+  runtimes: RuntimeInfo[];
   palette: string[];
   voices: Record<string, string>;
   availableVoices: string[];
@@ -2627,7 +2724,7 @@ function EditAgentPanel({
   const [name, setName] = useState(agent.display_name || agent.slug);
   const [job, setJob] = useState(agent.job || "");
   const [how, setHow] = useState(agent.how || "");
-  const [model, setModel] = useState(agent.model_preset || "");
+  const [model, setModel] = useState(agentPickerValue(agent));
   // Populate from the stored overrides directly (`avatar_emoji`,
   // `avatar_color`, `voice`) rather than inferring them from the resolved
   // values — the backend emits both, and the stored one is ground truth for
@@ -2657,30 +2754,20 @@ function EditAgentPanel({
         How it should work
         <textarea value={how} onChange={(e) => setHow(e.target.value)} rows={4} />
       </label>
-      {isGrokBuild(agent.runtime) ? (
-        <p className="note">
-          Runtime: Grok Build — xAI&apos;s native agent harness owns this
-          agent&apos;s model and tool loop ({agent.model_summary || "grok-4.6"}).
-        </p>
-      ) : (
-        models.length > 0 && (
-          <label>
-            Model
-            <select
-              value={model}
-              disabled={!!agent.busy}
-              title={agent.busy ? "working — switch after this turn" : undefined}
-              onChange={(e) => setModel(e.target.value)}
-            >
-              {!model && <option value="">current model</option>}
-              {models.map((m) => (
-                <option key={m.name} value={m.name}>
-                  {m.name} ({m.summary})
-                </option>
-              ))}
-            </select>
-          </label>
-        )
+      {(models.length > 0 || grokCatalog(runtimes).length > 0) && (
+        <label>
+          Model
+          <GroupedRuntimeModelSelect
+            agent={agent}
+            models={models}
+            runtimes={runtimes}
+            value={model}
+            disabled={!!agent.busy}
+            title={agent.busy ? "working — switch after this turn" : undefined}
+            summaries
+            onChange={setModel}
+          />
+        </label>
       )}
       <div className="identity-pick">
         <span className="field-label">Look</span>
@@ -2735,7 +2822,7 @@ function EditAgentPanel({
             setBusy(true);
             try {
               const body: AgentPatch = { name: name.trim(), job: job.trim(), how };
-              if (model && model !== agent.model_preset) body.model = model;
+              if (model && model !== agentPickerValue(agent)) body.model = model;
               const trimmedEmoji = avatarEmoji.trim();
               if (trimmedEmoji !== baseEmoji) body.avatar_emoji = trimmedEmoji || null;
               if (avatarColor !== baseColor) body.avatar_color = avatarColor || null;
@@ -3116,6 +3203,7 @@ export default function App() {
   );
   const [agents, setAgents] = useState<AgentMeta[]>([]);
   const [models, setModels] = useState<ModelPreset[]>([]);
+  const [runtimes, setRuntimes] = useState<RuntimeInfo[]>([]);
   const [palette, setPalette] = useState<string[]>([]);
   const [voices, setVoices] = useState<Record<string, string>>({});
   const [availableVoices, setAvailableVoices] = useState<string[]>(NARRATOR_VOICES);
@@ -3186,6 +3274,7 @@ export default function App() {
       // keeps the hire/edit panels' pickers off a running gateway rather
       // than a second hardcoded copy (CONTRACT-identity.md).
       api.getPalette().then((p) => setPalette(p.colors)).catch(() => {});
+      api.listRuntimes().then((x) => setRuntimes(x.runtimes)).catch(() => setRuntimes([]));
       api.voiceStatus().then((v) => {
         setVoices(v.voices);
         setAvailableVoices(narratorOptions(v.available));
@@ -4018,23 +4107,19 @@ export default function App() {
                             : ""}
                       {needsReauth(a.auth_status) ? " · reauth needed" : ""}
                     </span>
-                    {isGrokBuild(a.runtime) ? (
-                      <span className="agent-model agent-runtime" title="Grok Build runs its own agent loop and model">
-                        Grok Build
-                      </span>
-                    ) : models.length > 0 && (
-                      <select
-                        className="agent-model"
-                        value={a.model_preset || ""}
+                    {(models.length > 0 || grokCatalog(runtimes).length > 0) && (
+                      <GroupedRuntimeModelSelect
+                        agent={a}
+                        models={models}
+                        runtimes={runtimes}
+                        value={agentPickerValue(a)}
                         disabled={!!a.busy}
                         title={
                           a.busy
                             ? "working — switch after this turn"
                             : a.model_summary || "switch model"
                         }
-                        onChange={async (e) => {
-                          const next = e.target.value;
-                          if (!next || next === a.model_preset) return;
+                        onChange={async (next) => {
                           try {
                             await api.switchModel(a.slug, next);
                             await refresh();
@@ -4042,14 +4127,7 @@ export default function App() {
                             alert(String(err));
                           }
                         }}
-                      >
-                        {!a.model_preset && <option value="">current model</option>}
-                        {models.map((m) => (
-                          <option key={m.name} value={m.name}>
-                            {m.name}
-                          </option>
-                        ))}
-                      </select>
+                      />
                     )}
                   </div>
                 </div>
@@ -4351,6 +4429,7 @@ export default function App() {
               <EditAgentPanel
                 agent={editingAgent}
                 models={models}
+                runtimes={runtimes}
                 palette={palette}
                 voices={voices}
                 availableVoices={availableVoices}

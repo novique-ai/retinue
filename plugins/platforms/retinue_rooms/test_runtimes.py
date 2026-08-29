@@ -47,9 +47,11 @@ def test_registry_names_both_runtimes():
     info = runtimes.runtime_info(RUNTIME_GROK_BUILD)
     assert info is not None
     assert info.capabilities["tool_activity"] is True
-    assert info.capabilities["model_choice"] is False
+    assert info.capabilities["model_choice"] is True
+    assert info.model_source == "runtime"
     hermes = runtimes.runtime_info(RUNTIME_HERMES)
     assert hermes is not None and hermes.capabilities["model_choice"] is True
+    assert hermes.model_source == "presets"
 
 
 def test_normalize_and_validate():
@@ -120,6 +122,7 @@ def test_list_agents_annotates_grok_member(tmp_path):
     assert agent["runtime"] == RUNTIME_GROK_BUILD
     assert agent["model_summary"].startswith("Grok Build")
     assert agent["model_preset"] is None
+    assert agent["runtime_model"]
     assert agent["local_llm"] is False
 
 
@@ -161,6 +164,189 @@ def test_hire_agent_refuses_when_runtime_unavailable(tmp_path, monkeypatch):
     )
     with pytest.raises(ValueError, match="not usable"):
         adapter.hire_agent("Gizmo", "build", "well", runtime="grok-build")
+
+
+# ── runtime model picker (#236) ──────────────────────────────────────────
+
+
+def test_parse_picker_value_keeps_the_axes_separate():
+    assert runtimes.parse_picker_value("grok-build:grok-4.5") == (
+        RUNTIME_GROK_BUILD,
+        "grok-4.5",
+    )
+    assert runtimes.parse_picker_value("hermes:grok-4.5") == (RUNTIME_HERMES, "grok-4.5")
+    assert runtimes.parse_picker_value("grok-4.5") == (RUNTIME_HERMES, "grok-4.5")
+    assert runtimes.format_picker_value(RUNTIME_GROK_BUILD, "grok-4.6") == "grok-build:grok-4.6"
+    assert runtimes.format_picker_value(RUNTIME_HERMES, "grok-4.5") == "grok-4.5"
+
+
+def test_parse_models_output_reads_grok_cli_listing():
+    parsed = grokbuild.parse_models_output(
+        "You are logged in with grok.com.\n\n"
+        "Default model: grok-4.6\n\n"
+        "Available models:\n"
+        "  * grok-4.6 (default)\n"
+        "  - grok-4.5\n"
+    )
+    assert parsed["default"] == "grok-4.6"
+    assert [m["id"] for m in parsed["models"]] == ["grok-4.6", "grok-4.5"]
+    assert parsed["models"][0]["default"] is True
+    assert parsed["models"][1]["default"] is False
+
+
+def test_agent_argv_passes_dash_m_when_a_model_is_set():
+    assert grokbuild.agent_argv("/bin/grok", "grok-4.5") == [
+        "/bin/grok",
+        "agent",
+        "-m",
+        "grok-4.5",
+        "stdio",
+    ]
+    assert grokbuild.agent_argv("/bin/grok", "") == ["/bin/grok", "agent", "stdio"]
+
+
+def test_scaffold_accepts_runtime_model_not_a_preset(tmp_path):
+    home = str(tmp_path)
+    meta = hire.scaffold_profile(
+        home, "Gizmo", "build", "", runtime="grok-build", runtime_model="grok-4.5"
+    )
+    assert meta["runtime"] == RUNTIME_GROK_BUILD
+    stored = json.load(
+        open(os.path.join(home, "profiles", meta["slug"], hire.AGENT_META_FILENAME), encoding="utf-8")
+    )
+    assert stored["runtime_model"] == "grok-4.5"
+    assert stored.get("model_preset") is None
+
+
+def test_apply_runtime_choice_sets_grok_model_and_preset_path_still_refused(tmp_path):
+    home = str(tmp_path)
+    hire.ensure_bundled_cloud_presets(home)
+    slug = _grok_member(home)
+    updated = hire.apply_runtime_choice(home, slug, RUNTIME_GROK_BUILD, "grok-4.5")
+    assert updated["runtime"] == RUNTIME_GROK_BUILD
+    assert updated["runtime_model"] == "grok-4.5"
+    assert updated["model_preset"] is None
+    with pytest.raises(ValueError, match="model presets do not apply"):
+        hire.apply_model_preset(home, slug, "grok-4.6")
+
+
+def _persist_grok_session(home: str, room_id: str, member: str, model: str = "grok-4.6") -> None:
+    path = os.path.join(home, "retinue_rooms", "grok_sessions.json")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    state = {}
+    if os.path.isfile(path):
+        state = json.load(open(path, encoding="utf-8"))
+    state[f"{room_id}|{member}"] = {
+        "session_id": f"sess-{room_id}",
+        "cwd": "/tmp",
+        "model": model,
+    }
+    json.dump(state, open(path, "w", encoding="utf-8"), indent=2)
+
+
+def test_converting_hermes_member_in_two_rooms_resets_both_grok_sessions(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        grokbuild, "health", lambda home_dir, force=False: {"status": "available"}
+    )
+    adapter = _adapter(tmp_path, monkeypatch)
+    home = str(tmp_path)
+    hire.ensure_bundled_cloud_presets(home)
+    meta = hire.scaffold_profile(home, "Sally", "write", "", model_preset="grok-4.5")
+    slug = meta["slug"]
+    adapter.store.create(_room(id="room-a", name="A", members=[slug], lead=slug))
+    adapter.store.create(_room(id="room-b", name="B", members=[slug], lead=slug))
+    _persist_grok_session(home, "room-a", slug)
+    _persist_grok_session(home, "room-b", slug)
+    updated = adapter.patch_agent(slug, {"model": "grok-build:grok-4.5"})
+    assert updated["runtime"] == RUNTIME_GROK_BUILD
+    assert updated["runtime_model"] == "grok-4.5"
+    assert updated["model_preset"] is None
+    stored = json.load(open(os.path.join(home, "profiles", slug, hire.AGENT_META_FILENAME), encoding="utf-8"))
+    assert stored["runtime"] == RUNTIME_GROK_BUILD
+    state = json.load(open(os.path.join(home, "retinue_rooms", "grok_sessions.json"), encoding="utf-8"))
+    assert f"room-a|{slug}" not in state
+    assert f"room-b|{slug}" not in state
+    # Rooms still list them — identity survives.
+    assert adapter.store.get("room-a").members == [slug]
+    assert adapter.store.get("room-b").members == [slug]
+
+
+def test_converting_grok_member_back_to_hermes_applies_the_preset(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        grokbuild, "health", lambda home_dir, force=False: {"status": "available"}
+    )
+    adapter = _adapter(tmp_path, monkeypatch)
+    home = str(tmp_path)
+    hire.ensure_bundled_cloud_presets(home)
+    slug = _grok_member(home)
+    hire.apply_runtime_choice(home, slug, RUNTIME_GROK_BUILD, "grok-4.6")
+    updated = adapter.patch_agent(slug, {"model": "grok-4.5"})
+    assert updated["runtime"] == RUNTIME_HERMES
+    assert updated["model_preset"] == "grok-4.5"
+    stored = json.load(open(os.path.join(home, "profiles", slug, hire.AGENT_META_FILENAME), encoding="utf-8"))
+    assert "runtime" not in stored or stored.get("runtime") in (None, RUNTIME_HERMES)
+    assert stored.get("runtime_model") in (None, "")
+
+
+def test_same_runtime_grok_model_change_drops_persisted_session(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        grokbuild, "health", lambda home_dir, force=False: {"status": "available"}
+    )
+    adapter = _adapter(tmp_path, monkeypatch)
+    home = str(tmp_path)
+    slug = _grok_member(home)
+    adapter.store.create(_room(id="r-1", name="Test", members=[slug], lead=slug))
+    _persist_grok_session(home, "r-1", slug, model="grok-4.6")
+    updated = adapter.patch_agent(slug, {"model": "grok-build:grok-4.5"})
+    assert updated["runtime_model"] == "grok-4.5"
+    state = json.load(open(os.path.join(home, "retinue_rooms", "grok_sessions.json"), encoding="utf-8"))
+    assert f"r-1|{slug}" not in state
+
+
+def test_busy_member_cannot_switch_runtime(tmp_path, monkeypatch):
+    from concurrent.futures import Future
+
+    from .adapter import AgentBusy, _PendingTurn
+
+    monkeypatch.setattr(
+        grokbuild, "health", lambda home_dir, force=False: {"status": "available"}
+    )
+    adapter = _adapter(tmp_path, monkeypatch)
+    home = str(tmp_path)
+    hire.ensure_bundled_cloud_presets(home)
+    meta = hire.scaffold_profile(home, "Sally", "write", "", model_preset="grok-4.5")
+    slug = meta["slug"]
+    adapter._pending[("r-1", slug)] = _PendingTurn(
+        task_id="t", room_id="r-1", member=slug, future=Future()
+    )
+    with pytest.raises(AgentBusy, match="mid-turn"):
+        adapter.patch_agent(slug, {"model": "grok-build:grok-4.5"})
+
+
+def test_list_runtimes_includes_grok_catalog(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        grokbuild,
+        "health",
+        lambda home_dir, force=False: {"status": "available"},
+    )
+    monkeypatch.setattr(
+        grokbuild,
+        "catalog",
+        lambda home_dir, force=False: {
+            "default": "grok-4.6",
+            "models": [
+                {"id": "grok-4.6", "default": True},
+                {"id": "grok-4.5", "default": False},
+            ],
+        },
+    )
+    entries = {e["id"]: e for e in runtimes.list_runtimes(str(tmp_path))}
+    assert entries[RUNTIME_GROK_BUILD]["model_source"] == "runtime"
+    assert [m["id"] for m in entries[RUNTIME_GROK_BUILD]["models"]] == [
+        "grok-4.6",
+        "grok-4.5",
+    ]
+    assert entries[RUNTIME_GROK_BUILD]["default_model"] == "grok-4.6"
 
 
 # ── engine: briefing + transcript kinds ──────────────────────────────────
@@ -227,7 +413,7 @@ class _FakeManager:
         self.calls: list[dict] = []
         self.cancelled: list[tuple[str, str]] = []
 
-    async def run_turn(self, room_id, member, cwd, *, build_prompt, approval, timeout, on_activity=None, cancel_event=None, extra_roots=(), denied_roots=None):
+    async def run_turn(self, room_id, member, cwd, *, build_prompt, approval, timeout, on_activity=None, cancel_event=None, extra_roots=(), denied_roots=None, model=""):
         self.calls.append(
             {
                 "room": room_id,
