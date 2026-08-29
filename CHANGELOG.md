@@ -12,6 +12,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Added
+
+- **Per-member Grok Build model, and in-place runtime conversion.** The
+  roster and Edit dropdowns group Grok Build catalog ids (`grok-build:grok-4.5`)
+  above Hermes presets. Same-runtime picks switch the model; a
+  cross-runtime pick confirms, resets sessions in every room that
+  member is in, and keeps slug / rooms / voice / SOUL. Hire onto Grok
+  Build offers `grok models` instead of a dead note.
+  `RETINUE_GROKBUILD_MODEL` is the workspace default when a member has
+  no `runtime_model`. Closes #236.
+
 ### Changed
 
 - Speak Replies always runs the semantic rewrite on a non-empty turn

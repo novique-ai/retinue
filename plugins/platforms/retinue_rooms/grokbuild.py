@@ -76,6 +76,14 @@ _LOAD_TIMEOUT = 120.0
 _CANCEL_GRACE = 20.0
 _HEALTH_CACHE_SECS = 60.0
 
+# Pinned fallback when `grok models` cannot run (tests, missing binary).
+# Live catalog() replaces this whenever the CLI answers.
+_FALLBACK_MODELS = (
+    {"id": "grok-4.6", "default": True},
+    {"id": "grok-4.5", "default": False},
+)
+_FALLBACK_DEFAULT = "grok-4.6"
+
 # ACP tool-call kinds that never mutate anything.
 _SAFE_KINDS = {"read", "search", "fetch", "think", "plan"}
 # Kinds whose targets are files; approval is scoped to the session cwd.
@@ -235,6 +243,146 @@ def health(home_dir: str, *, force: bool = False) -> Dict[str, Any]:
 def _invalidate_health_cache() -> None:
     _health_cache["at"] = 0.0
     _health_cache["value"] = None
+    _catalog_cache["at"] = 0.0
+    _catalog_cache["value"] = None
+
+
+# ── model catalog (#236) ─────────────────────────────────────────────────
+
+
+_catalog_cache: Dict[str, Any] = {"at": 0.0, "value": None}
+
+
+def parse_models_output(text: str) -> Dict[str, Any]:
+    """Parse ``grok models`` stdout into ``{default, models: [{id, default}]}``.
+
+    Observed v0.2.93 shape::
+
+        Default model: grok-4.6
+
+        Available models:
+          * grok-4.6 (default)
+          - grok-4.5
+    """
+    default = ""
+    models: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for raw in (text or "").splitlines():
+        line = raw.strip()
+        lower = line.lower()
+        if lower.startswith("default model:"):
+            default = line.split(":", 1)[1].strip()
+            continue
+        if line.startswith("*") or line.startswith("-"):
+            rest = line[1:].strip()
+            token = rest.split()[0] if rest else ""
+            token = token.strip("*,")
+            if not token or token.lower() in {"available", "models"}:
+                continue
+            if token in seen:
+                continue
+            seen.add(token)
+            is_default = "default" in rest.lower() or (default and token == default)
+            models.append({"id": token, "default": bool(is_default)})
+    if default and default not in seen:
+        models.insert(0, {"id": default, "default": True})
+        seen.add(default)
+    if default:
+        for entry in models:
+            entry["default"] = entry["id"] == default
+    elif models:
+        models[0]["default"] = True
+        default = str(models[0]["id"])
+    return {"default": default, "models": models}
+
+
+def _fallback_catalog() -> Dict[str, Any]:
+    env_default = (os.getenv(MODEL_ENV) or "").strip()
+    models = [dict(m) for m in _FALLBACK_MODELS]
+    default = env_default or _FALLBACK_DEFAULT
+    if env_default and env_default not in {m["id"] for m in models}:
+        models.insert(0, {"id": env_default, "default": True})
+    for entry in models:
+        entry["default"] = entry["id"] == default
+    return {"default": default, "models": models}
+
+
+def catalog(home_dir: str, *, force: bool = False) -> Dict[str, Any]:
+    """Grok Build's own model list — not the workspace ``retinue_models/`` presets.
+
+    Cheap: ``grok models`` with the same cache window as :func:`health`.
+    Missing binary / failed probe fall back to the pinned list so hire and
+    the roster picker still have something to show.
+    """
+    now = time.time()
+    if (
+        not force
+        and _catalog_cache["value"] is not None
+        and now - _catalog_cache["at"] < _HEALTH_CACHE_SECS
+    ):
+        return dict(_catalog_cache["value"])
+    binary = grok_binary()
+    parsed: Optional[Dict[str, Any]] = None
+    if binary:
+        try:
+            proc = subprocess.run(
+                [binary, "models"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if proc.returncode == 0:
+                parsed = parse_models_output(proc.stdout or "")
+                if not parsed.get("models"):
+                    parsed = None
+        except (OSError, subprocess.TimeoutExpired):
+            parsed = None
+    value = parsed if parsed and parsed.get("models") else _fallback_catalog()
+    env_default = (os.getenv(MODEL_ENV) or "").strip()
+    if env_default:
+        value = dict(value)
+        value["default"] = env_default
+        models = [dict(m) for m in value.get("models") or []]
+        if env_default not in {m["id"] for m in models}:
+            models.insert(0, {"id": env_default, "default": True})
+        for entry in models:
+            entry["default"] = entry["id"] == env_default
+        value["models"] = models
+    _catalog_cache["at"] = now
+    _catalog_cache["value"] = dict(value)
+    return dict(value)
+
+
+def default_model(home_dir: str = "") -> str:
+    """Workspace default for a Grok Build member with no ``runtime_model``."""
+    env = (os.getenv(MODEL_ENV) or "").strip()
+    if env:
+        return env
+    cat = catalog(home_dir) if home_dir else _fallback_catalog()
+    return str(cat.get("default") or _FALLBACK_DEFAULT)
+
+
+def validate_model(home_dir: str, model: str) -> str:
+    """Return the catalog id, or raise ValueError."""
+    model = (model or "").strip()
+    if not model:
+        raise ValueError("Grok Build model is required")
+    ids = {str(m.get("id") or "") for m in catalog(home_dir).get("models") or []}
+    ids.discard("")
+    if model not in ids:
+        known = ", ".join(sorted(ids)) or "none"
+        raise ValueError(f"unknown Grok Build model {model!r}; expected one of {known}")
+    return model
+
+
+def agent_argv(binary: str, model: str = "") -> List[str]:
+    """``grok agent [-m MODEL] stdio`` — the child argv for one member process."""
+    argv = [binary, "agent"]
+    model = (model or "").strip()
+    if model:
+        argv += ["-m", model]
+    argv.append("stdio")
+    return argv
 
 
 # ── approval policy ──────────────────────────────────────────────────────
@@ -467,9 +615,16 @@ class AcpProcess:
     the session.
     """
 
-    def __init__(self, home_dir: str, *, env_extra: Optional[Dict[str, str]] = None):
+    def __init__(
+        self,
+        home_dir: str,
+        *,
+        env_extra: Optional[Dict[str, str]] = None,
+        model: str = "",
+    ):
         self._home_dir = home_dir
         self._env_extra = dict(env_extra or {})
+        self._model = (model or "").strip()
         self._proc: Optional[asyncio.subprocess.Process] = None
         self._reader: Optional[asyncio.Task] = None
         self._stderr_task: Optional[asyncio.Task] = None
@@ -503,11 +658,8 @@ class AcpProcess:
         if sandbox:
             env["GROK_SANDBOX"] = sandbox
         env.update(self._env_extra)
-        argv = [binary, "agent"]
-        model = (os.getenv(MODEL_ENV) or "").strip()
-        if model:
-            argv += ["-m", model]
-        argv.append("stdio")
+        model = self._model or (os.getenv(MODEL_ENV) or "").strip()
+        argv = agent_argv(binary, model)
         try:
             self._proc = await asyncio.create_subprocess_exec(
                 *argv,
@@ -889,6 +1041,9 @@ class _MemberSession:
     # Names of the workspace MCP servers THIS session was started with —
     # the allow-list decide_permission grants use_tool against (#220).
     mcp_names: frozenset = frozenset()
+    # Model this process was launched with (`grok agent -m`). A later
+    # switch must drop the session — session/load resumes the old model.
+    model: str = ""
 
 
 class GrokBuildManager:
@@ -927,9 +1082,15 @@ class GrokBuildManager:
             json.dump(state, f, indent=2)
         os.replace(tmp, path)
 
-    def _remember(self, key: Tuple[str, str], session_id: str, cwd: str) -> None:
+    def _remember(
+        self, key: Tuple[str, str], session_id: str, cwd: str, model: str = ""
+    ) -> None:
         state = self._load_state()
-        state["|".join(key)] = {"session_id": session_id, "cwd": cwd}
+        state["|".join(key)] = {
+            "session_id": session_id,
+            "cwd": cwd,
+            "model": (model or "").strip(),
+        }
         self._save_state(state)
 
     def _forget(self, key: Tuple[str, str]) -> None:
@@ -950,30 +1111,44 @@ class GrokBuildManager:
         return lock
 
     async def _acquire(
-        self, room_id: str, member: str, cwd: str
+        self, room_id: str, member: str, cwd: str, model: str = ""
     ) -> Tuple[_MemberSession, bool]:
         """Live session for (room, member); second value = fresh session.
 
         Fresh means the grok session has no prior context, so the caller
         must lead with the full briefing.  A resumed (``session/load``)
-        session is NOT fresh.
+        session is NOT fresh.  A model mismatch vs the live or persisted
+        session also counts as fresh — ``-m`` is process-level.
         """
         key = (room_id, member)
+        model = (model or "").strip()
         await self._reap_idle(exclude=key)
         sess = self._sessions.get(key)
-        if sess is not None and sess.process.alive and sess.cwd == cwd:
+        if (
+            sess is not None
+            and sess.process.alive
+            and sess.cwd == cwd
+            and (sess.model or "") == model
+        ):
             sess.turn_active = True  # claimed before another key's reap can look
             return sess, False
         if sess is not None:
             await self._drop(key)
 
         process = AcpProcess(
-            self._home_dir, env_extra=_member_env_extra(self._home_dir, member)
+            self._home_dir,
+            env_extra=_member_env_extra(self._home_dir, member),
+            model=model,
         )
         await process.start()
         mcp = mcp_servers(self._home_dir)
         remembered = self._recall(key)
-        if remembered and remembered.get("session_id") and remembered.get("cwd") == cwd:
+        if (
+            remembered
+            and remembered.get("session_id")
+            and remembered.get("cwd") == cwd
+            and (remembered.get("model") or "") == model
+        ):
             sid = str(remembered["session_id"])
             try:
                 await asyncio.wait_for(
@@ -989,6 +1164,7 @@ class GrokBuildManager:
                     session_id=sid,
                     cwd=cwd,
                     mcp_names=frozenset(s["name"] for s in mcp),
+                    model=model,
                 )
                 self._sessions[key] = sess
                 logger.info(
@@ -1021,9 +1197,10 @@ class GrokBuildManager:
             session_id=sid,
             cwd=cwd,
             mcp_names=frozenset(s["name"] for s in mcp),
+            model=model,
         )
         self._sessions[key] = sess
-        self._remember(key, sid, cwd)
+        self._remember(key, sid, cwd, model)
         logger.info("grokbuild: new session %s for %s/%s", sid, room_id, member)
         sess.turn_active = True  # claimed by the caller before the lock drops
         return sess, True
@@ -1063,6 +1240,7 @@ class GrokBuildManager:
         cancel_event: Optional[asyncio.Event] = None,
         extra_roots: Tuple[str, ...] = (),
         denied_roots: Optional[Dict[str, str]] = None,
+        model: str = "",
     ) -> TurnResult:
         """One member turn, executed entirely inside Grok Build's loop.
 
@@ -1078,7 +1256,7 @@ class GrokBuildManager:
             # _acquire returns with turn_active already claimed, so an idle
             # reap triggered from another member's turn cannot close this
             # process between acquisition and the prompt below.
-            sess, fresh = await self._acquire(room_id, member, cwd)
+            sess, fresh = await self._acquire(room_id, member, cwd, model=model)
             chunks: List[str] = []
             # Message chunks before and after a tool run are separate
             # assistant messages; joined bare they read as one run-on
@@ -1259,6 +1437,34 @@ class GrokBuildManager:
         async with self._lock(key):
             await self._drop(key)
             self._forget(key)
+
+    async def reset_member(self, member: str) -> int:
+        """Drop every (room, member) session for *member* — live and persisted.
+
+        Used when the retainer's Grok Build model or runtime changes so a
+        ``session/load`` cannot resume a process launched with a different
+        ``-m``. Returns how many persisted keys were forgotten.
+        """
+        member = (member or "").strip()
+        if not member:
+            return 0
+        forgotten = 0
+        for key in [k for k in list(self._sessions) if k[1] == member]:
+            async with self._lock(key):
+                await self._drop(key)
+                self._forget(key)
+                forgotten += 1
+        state = self._load_state()
+        changed = False
+        for k in list(state):
+            parts = str(k).split("|", 1)
+            if len(parts) == 2 and parts[1] == member:
+                state.pop(k, None)
+                changed = True
+                forgotten += 1
+        if changed:
+            self._save_state(state)
+        return forgotten
 
     async def shutdown(self) -> None:
         for key in list(self._sessions):

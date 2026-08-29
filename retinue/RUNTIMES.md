@@ -27,10 +27,14 @@ peers:
   harness; Retinue manages the session, streams its activity into the room,
   answers its permission requests, and posts the final reply.
 
-The runtime is chosen **at hire time** (Hire panel → "Agent runtime") and
-recorded in the member's `retinue-agent.json` (`runtime: "grok-build"`;
-absent = Hermes). It is not switchable after hire — hire a new member
-instead.
+The runtime is chosen at hire (Hire panel → "Agent runtime") and recorded
+in the member's `retinue-agent.json` (`runtime: "grok-build"`; absent =
+Hermes). After hire, the roster (and Edit panel) grouped dropdown can
+switch both axes: Hermes presets stay bare (`grok-4.5`); Grok Build
+catalog ids are qualified (`grok-build:grok-4.5`). A cross-runtime pick
+asks for confirmation — it resets sessions, and Grok Build tools run on
+the host, not in the room container. Identity (slug, rooms, lead, voice,
+SOUL) is unchanged.
 
 ## Two ways to run Grok — do not confuse them
 
@@ -38,7 +42,7 @@ instead.
 |---|---|---|
 | Path | `Hermes loop → xai-oauth provider → Grok API` | `Retinue → grok agent stdio (ACP) → Grok Build harness` |
 | Who runs the tool loop | Hermes (generic loop, Hermes tools) | Grok Build (xAI's own harness and tools) |
-| Select via | model preset `grok-4.6` / `grok-4.5` | Agent runtime → **Grok Build** |
+| Select via | model preset `grok-4.6` / `grok-4.5` | runtime `grok-build` + catalog id (`grok-4.6` / `grok-4.5`) |
 | Tools run | in the room container | on the host, in the room's project tree |
 | Best for | chat-shaped room members on Grok | long-horizon agentic work with Grok's native behavior |
 
@@ -68,12 +72,16 @@ the model weights. The Hermes presets remain available and unchanged.
 | `RETINUE_GROKBUILD_BIN` | grok executable | `grok` on PATH, else `~/.grok/bin/grok` |
 | `RETINUE_GROKBUILD_AUTH_PATH` | token store handed to the agent | `~/.grok/auth.json` |
 | `RETINUE_GROKBUILD_APPROVAL` | `workspace` \| `read-only` \| `always` | `workspace` |
-| `RETINUE_GROKBUILD_MODEL` | model id passed to `grok agent -m` | grok's default (grok-4.6) |
+| `RETINUE_GROKBUILD_MODEL` | workspace default for `grok agent -m` when a member has no `runtime_model` | grok's default (grok-4.6) |
 | `RETINUE_ROOMS_GROK_TURN_TIMEOUT` | per-turn budget (s) | ide-class (900s min) |
 | `RETINUE_GROKBUILD_IDLE_SECS` | reap idle agent processes after | 1800 |
 | `RETINUE_GROKBUILD_SANDBOX` | force a grok sandbox profile (see caveats) | unset |
 
-Per-member override: `grok_approval` in the member's `retinue-agent.json`.
+Per-member overrides in `retinue-agent.json`: `grok_approval` (permission
+mode) and `runtime_model` (Grok catalog id, e.g. `grok-4.5`). Changing
+`runtime_model` or converting runtime drops that member's Grok sessions
+in every room they are in — `session/load` would otherwise resume the
+old `-m`.
 
 ### MCP servers (workspace-declared)
 

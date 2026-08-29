@@ -28,6 +28,9 @@ from typing import Any, Dict, List, Optional
 RUNTIME_HERMES = "hermes"
 RUNTIME_GROK_BUILD = "grok-build"
 
+GROK_BUILD_PICKER_PREFIX = "grok-build:"
+HERMES_PICKER_PREFIX = "hermes:"
+
 _META_FILENAME = "retinue-agent.json"
 
 
@@ -42,6 +45,9 @@ class RuntimeInfo:
     # runtimes; they are not a permission system.  Keys are stable strings
     # so a new runtime can declare a subset without code changes elsewhere.
     capabilities: Dict[str, bool] = field(default_factory=dict)
+    # Where the model list comes from (#236): workspace presets, or the
+    # runtime's own catalog (``grok models``).
+    model_source: str = "presets"
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -49,6 +55,7 @@ class RuntimeInfo:
             "label": self.label,
             "description": self.description,
             "capabilities": dict(self.capabilities),
+            "model_source": self.model_source,
         }
 
 
@@ -66,12 +73,13 @@ _REGISTRY: Dict[str, RuntimeInfo] = {
             "filesystem": True,
             "shell": True,
             "mcp": True,
-            "model_choice": True,  # model presets apply
+            "model_choice": True,  # workspace retinue_models/ presets
             "session_resume": True,
             "approvals": False,  # room turns resolve approvals by config (#208)
             "containerized": True,
             "subagents": False,
         },
+        model_source="presets",
     ),
     RUNTIME_GROK_BUILD: RuntimeInfo(
         id=RUNTIME_GROK_BUILD,
@@ -89,12 +97,13 @@ _REGISTRY: Dict[str, RuntimeInfo] = {
             "filesystem": True,
             "shell": True,
             "mcp": True,  # workspace-declared servers via grokbuild/mcp.json (#220)
-            "model_choice": False,  # Grok Build serves its own model catalog
+            "model_choice": True,  # Grok's own catalog, not workspace presets
             "session_resume": True,
             "approvals": True,  # session/request_permission answered by policy
             "containerized": False,
             "subagents": True,
         },
+        model_source="runtime",
     ),
 }
 
@@ -146,6 +155,32 @@ def runtime_for_member(home_dir: str, slug: str) -> str:
     return runtime if runtime in _REGISTRY else RUNTIME_HERMES
 
 
+def parse_picker_value(value: str) -> tuple[str, str]:
+    """Decode a roster/hire picker value into ``(runtime, model)``.
+
+    Qualified values keep the axes separate on the wire:
+
+    * ``grok-build:grok-4.5`` → Grok Build catalog id
+    * ``hermes:grok-4.5`` → Hermes workspace preset
+    * ``grok-4.5`` (bare) → Hermes preset, the pre-#236 PATCH body
+    """
+    raw = str(value or "").strip()
+    if raw.startswith(GROK_BUILD_PICKER_PREFIX):
+        return RUNTIME_GROK_BUILD, raw[len(GROK_BUILD_PICKER_PREFIX) :].strip()
+    if raw.startswith(HERMES_PICKER_PREFIX):
+        return RUNTIME_HERMES, raw[len(HERMES_PICKER_PREFIX) :].strip()
+    return RUNTIME_HERMES, raw
+
+
+def format_picker_value(runtime: str, model: str) -> str:
+    """Encode ``(runtime, model)`` for the roster <select> value."""
+    runtime = normalize_runtime(runtime)
+    model = (model or "").strip()
+    if runtime == RUNTIME_GROK_BUILD:
+        return f"{GROK_BUILD_PICKER_PREFIX}{model}"
+    return model
+
+
 def list_runtimes(home_dir: str) -> List[Dict[str, Any]]:
     """Registry + live availability, for ``GET /runtimes`` and the hire UI."""
     entries: List[Dict[str, Any]] = []
@@ -155,7 +190,12 @@ def list_runtimes(home_dir: str) -> List[Dict[str, Any]]:
             from . import grokbuild
 
             entry["health"] = grokbuild.health(home_dir)
+            cat = grokbuild.catalog(home_dir)
+            entry["models"] = list(cat.get("models") or [])
+            entry["default_model"] = cat.get("default") or ""
         else:
             entry["health"] = {"status": "available"}
+            entry["models"] = []
+            entry["default_model"] = ""
         entries.append(entry)
     return entries

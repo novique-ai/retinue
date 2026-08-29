@@ -507,6 +507,77 @@ def apply_model_preset(home_dir: str, slug: str, preset: str) -> Dict[str, Any]:
     raise KeyError(slug)
 
 
+def resolved_runtime_model(
+    home_dir: str, slug: str, meta: Optional[Dict[str, Any]] = None
+) -> str:
+    """Effective Grok Build model for *slug*: stored, else workspace default."""
+    from . import grokbuild
+
+    stored = ""
+    if isinstance(meta, dict):
+        stored = str(meta.get("runtime_model") or "").strip()
+    else:
+        pdir = os.path.join(home_dir, "profiles", (slug or "").strip())
+        try:
+            with open(os.path.join(pdir, AGENT_META_FILENAME), encoding="utf-8") as f:
+                loaded = json.load(f)
+            if isinstance(loaded, dict):
+                stored = str(loaded.get("runtime_model") or "").strip()
+        except (OSError, ValueError):
+            stored = ""
+    return stored or grokbuild.default_model(home_dir)
+
+
+def apply_runtime_choice(
+    home_dir: str, slug: str, runtime: str, model: str
+) -> Dict[str, Any]:
+    """Set a hired member's runtime and the model that runtime drives (#236).
+
+    Hermes writes a workspace preset via :func:`apply_model_preset`. Grok
+    Build stores ``runtime_model`` on the member — the YAML preset path is
+    not used. Switching *to* Hermes pops the Grok Build keys first so
+    :func:`apply_model_preset` still refuses a Grok Build member (the YAML
+    contract stays unchanged).
+    """
+    from . import grokbuild
+    from .runtimes import RUNTIME_GROK_BUILD, validate_runtime
+
+    slug = (slug or "").strip()
+    model = (model or "").strip()
+    if not slug or slug in _RESERVED:
+        raise ValueError(f"cannot change model for profile {slug!r}")
+    if not model:
+        raise ValueError("model is required")
+    runtime_id = validate_runtime(runtime)
+    profile_dir = os.path.join(home_dir, "profiles", slug)
+    if not os.path.isdir(profile_dir):
+        raise KeyError(slug)
+    meta_path = os.path.join(profile_dir, AGENT_META_FILENAME)
+    meta = _load_meta(profile_dir, slug)
+
+    if runtime_id == RUNTIME_GROK_BUILD:
+        model = grokbuild.validate_model(home_dir, model)
+        meta["slug"] = slug
+        meta["runtime"] = RUNTIME_GROK_BUILD
+        meta["runtime_model"] = model
+        meta["model_preset"] = None
+        meta["model_switched_at"] = time.time()
+        with open(meta_path, "w", encoding="utf-8") as f:
+            json.dump(meta, f, indent=2)
+        _mirror_ui_meta(profile_dir, meta)
+        for agent in list_agents(home_dir):
+            if agent.get("slug") == slug:
+                return agent
+        raise KeyError(slug)
+
+    # Hermes: drop Grok Build keys so apply_model_preset sees a Hermes member.
+    meta.pop("runtime", None)
+    meta.pop("runtime_model", None)
+    with open(meta_path, "w", encoding="utf-8") as f:
+        json.dump(meta, f, indent=2)
+    return apply_model_preset(home_dir, slug, model)
+
+
 def workspace_auth_is_shared(home_dir: str) -> bool:
     """True when a profile under *home_dir* reads the workspace ``auth.json``.
 
@@ -636,6 +707,7 @@ def scaffold_profile(
     voice: Any = None,
     persona: Any = None,
     runtime: Any = None,
+    runtime_model: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Create ``profiles/<slug>/`` under *home_dir*. Raises ValueError on bad
     input (including an unknown *model_preset* or *runtime*), FileExistsError
@@ -652,6 +724,7 @@ def scaffold_profile(
     display_name = (display_name or "").strip()
     job = (job or "").strip()
     model_preset = (model_preset or "").strip() or None
+    runtime_model = (runtime_model or "").strip() or None
     if not display_name:
         raise ValueError("agent name is required")
     if not job:
@@ -662,6 +735,15 @@ def scaffold_profile(
             "model presets do not apply to the Grok Build runtime — it "
             "serves its own model catalog"
         )
+    if runtime_id != RUNTIME_GROK_BUILD and runtime_model:
+        raise ValueError("runtime_model only applies to the Grok Build runtime")
+    if runtime_id == RUNTIME_GROK_BUILD:
+        from . import grokbuild
+
+        if runtime_model:
+            runtime_model = grokbuild.validate_model(home_dir, runtime_model)
+        else:
+            runtime_model = grokbuild.default_model(home_dir)
     slug = slugify_name(display_name)
     if not slug or slug in _RESERVED:
         raise ValueError(f"cannot derive a usable profile name from {display_name!r}")
@@ -706,6 +788,9 @@ def scaffold_profile(
     }
     if runtime_id != RUNTIME_HERMES:
         meta["runtime"] = runtime_id
+    if runtime_id == RUNTIME_GROK_BUILD and runtime_model:
+        meta["runtime_model"] = runtime_model
+        meta["model_preset"] = None
     if emoji is not None:
         meta["avatar_emoji"] = emoji
     if color is not None:
@@ -814,7 +899,8 @@ def list_agents(home_dir: str) -> List[Dict[str, Any]]:
             # Model choice belongs to Grok Build, not the workspace presets.
             meta["local_llm"] = False
             meta["turn_timeout"] = int(grok_turn_timeout())
-            model = (os.getenv("RETINUE_GROKBUILD_MODEL") or "").strip() or "grok-4.6"
+            model = resolved_runtime_model(home_dir, name, meta)
+            meta["runtime_model"] = model
             meta["model_summary"] = f"Grok Build · {model}"
             meta["model_preset"] = None
             agents.append(enrich_agent(meta))

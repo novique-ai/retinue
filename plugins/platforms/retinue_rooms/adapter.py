@@ -930,8 +930,38 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
                 hire.ensure_bundled_cloud_presets(self._home_dir())
             except Exception:
                 logger.debug("Retinue rooms: preset seed on switch failed", exc_info=True)
-            meta = hire.apply_model_preset(self._home_dir(), slug, model)
+            current_runtime = runtimes.runtime_for_member(self._home_dir(), slug)
+            if "runtime" in body:
+                target_runtime, target_model = (
+                    runtimes.validate_runtime(body.get("runtime")),
+                    model,
+                )
+            else:
+                target_runtime, target_model = runtimes.parse_picker_value(model)
+            if not target_model:
+                raise ValueError("model is required")
+            if target_runtime == runtimes.RUNTIME_GROK_BUILD:
+                state = grokbuild.health(self._home_dir())
+                if state.get("status") != "available":
+                    raise ValueError(
+                        f"Grok Build runtime is not usable here — "
+                        f"{state.get('status')}: {state.get('detail') or ''}".strip()
+                    )
+                meta = hire.apply_runtime_choice(
+                    self._home_dir(), slug, target_runtime, target_model
+                )
+            elif current_runtime == runtimes.RUNTIME_GROK_BUILD:
+                meta = hire.apply_runtime_choice(
+                    self._home_dir(), slug, target_runtime, target_model
+                )
+            else:
+                meta = hire.apply_model_preset(self._home_dir(), slug, target_model)
             evicted = hire.evict_profile_agent_cache(self._live_runner(), slug)
+            if (
+                current_runtime != target_runtime
+                or target_runtime == runtimes.RUNTIME_GROK_BUILD
+            ):
+                self._sync_reset_member_everywhere(slug)
         else:
             evicted = hire.evict_profile_agent_cache(self._live_runner(), slug)
             meta = next(
@@ -1001,18 +1031,33 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
                     f"Grok Build runtime is not usable here — "
                     f"{state.get('status')}: {state.get('detail') or ''}".strip()
                 )
-        meta = hire.scaffold_profile(
-            self._home_dir(),
-            name,
-            job,
-            how,
-            model_preset=model,
-            avatar_emoji=avatar_emoji,
-            avatar_color=avatar_color,
-            voice=voice,
-            persona=persona,
-            runtime=runtime_id,
-        )
+        if runtime_id == runtimes.RUNTIME_GROK_BUILD:
+            meta = hire.scaffold_profile(
+                self._home_dir(),
+                name,
+                job,
+                how,
+                model_preset=None,
+                runtime_model=model,
+                avatar_emoji=avatar_emoji,
+                avatar_color=avatar_color,
+                voice=voice,
+                persona=persona,
+                runtime=runtime_id,
+            )
+        else:
+            meta = hire.scaffold_profile(
+                self._home_dir(),
+                name,
+                job,
+                how,
+                model_preset=model,
+                avatar_emoji=avatar_emoji,
+                avatar_color=avatar_color,
+                voice=voice,
+                persona=persona,
+                runtime=runtime_id,
+            )
         activation = self._activate_slug(meta["slug"])
         meta["online"] = bool(activation.get("online"))
         meta["activation"] = activation.get("activation") or (
@@ -1399,6 +1444,46 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         key = self._session_key_for(source)
         ok = await self._rotate_member_session(key)
         return {"reset": bool(ok), "member": member, "room": room_id}
+
+    def _sync_reset_member_everywhere(self, slug: str) -> None:
+        """Drop this retainer's Hermes + Grok sessions in every room.
+
+        Called after a runtime or Grok Build model change (#236). Uses the
+        gateway loop when it is running; tests without a loop get a private
+        one so the persist-file forget still happens.
+        """
+
+        async def _go() -> None:
+            await self._reset_member_everywhere(slug)
+
+        if self._loop is not None:
+            fut = asyncio.run_coroutine_threadsafe(_go(), self._loop)
+            fut.result(timeout=30)
+            return
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(_go())
+        finally:
+            loop.close()
+
+    async def _reset_member_everywhere(self, slug: str) -> None:
+        slug = (slug or "").strip()
+        if not slug:
+            return
+        await self._grok_manager().reset_member(slug)
+        for room in self.store.list_rooms():
+            if slug not in (room.members or []):
+                continue
+            source = self.build_source(
+                chat_id=room.id,
+                chat_name=f"room:{room.name}",
+                chat_type="group",
+                user_id="user:reset",
+                user_name=_DEFAULT_USER_NAME,
+                thread_id=slug,
+            )
+            source.profile = None if slug == "default" else slug
+            await self._rotate_member_session(self._session_key_for(source))
 
     def save_routine_from_room(
         self,
@@ -2439,6 +2524,7 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
                     timeout=budget,
                     on_activity=on_activity,
                     cancel_event=cancel_ev,
+                    model=hire.resolved_runtime_model(self._home_dir(), member),
                     # Isolated worktrees (#223): the room's checkouts are
                     # writable roots; the shadowed real trees are declined
                     # with a redirect.

@@ -7,7 +7,11 @@ import { api } from "./api";
 import {
   GROK_BUILD_RUNTIME,
   HERMES_RUNTIME,
+  agentPickerValue,
+  formatPickerValue,
+  isCrossRuntime,
   isGrokBuild,
+  parsePickerValue,
   runtimeHealthLabel,
   runtimeOptionLabel,
   runtimeOptionTitle,
@@ -83,13 +87,36 @@ test("listRuntimes hits GET /runtimes", async () => {
   assert.deepEqual(calls, [{ path: "/runtimes", method: "GET", body: undefined }]);
 });
 
-test("hire posts the runtime and omits the model for grok-build", async () => {
+test("hire posts the runtime and grok catalog model for grok-build", async () => {
   nextResponse = { slug: "gizmo" };
-  await api.hire("Gizmo", "build", "well", "", undefined, GROK_BUILD_RUNTIME);
+  await api.hire("Gizmo", "build", "well", "grok-4.5", undefined, GROK_BUILD_RUNTIME);
   assert.equal(calls.length, 1);
   assert.equal(calls[0].path, "/agents");
   assert.equal(calls[0].body?.runtime, GROK_BUILD_RUNTIME);
+  assert.equal(calls[0].body?.model, "grok-4.5");
+});
+
+test("hire omits an empty model so the gateway can default it", async () => {
+  nextResponse = { slug: "gizmo" };
+  await api.hire("Gizmo", "build", "well", "", undefined, GROK_BUILD_RUNTIME);
   assert.equal("model" in (calls[0].body ?? {}), false);
+});
+
+test("picker values are qualified for Grok Build and bare for Hermes", () => {
+  assert.deepEqual(parsePickerValue("grok-build:grok-4.5"), {
+    runtime: GROK_BUILD_RUNTIME,
+    model: "grok-4.5",
+  });
+  assert.deepEqual(parsePickerValue("grok-4.5"), { runtime: HERMES_RUNTIME, model: "grok-4.5" });
+  assert.equal(formatPickerValue(GROK_BUILD_RUNTIME, "grok-4.6"), "grok-build:grok-4.6");
+  assert.equal(formatPickerValue(HERMES_RUNTIME, "grok-4.5"), "grok-4.5");
+  assert.equal(
+    agentPickerValue({ runtime: GROK_BUILD_RUNTIME, runtime_model: "grok-4.5", model_preset: null }),
+    "grok-build:grok-4.5",
+  );
+  assert.equal(isCrossRuntime("hermes", "grok-build:grok-4.5"), true);
+  assert.equal(isCrossRuntime("grok-build", "grok-build:grok-4.5"), false);
+  assert.equal(isCrossRuntime("grok-build", "grok-4.5"), true);
 });
 
 test("hire omits the runtime field for a hermes hire", async () => {
