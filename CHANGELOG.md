@@ -12,6 +12,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Fixed
+
+- **Speak Replies starts from the next reply.** Turning the toggle on in a
+  room with history no longer replays the transcript from the top. Existing
+  lines (including those without `ts`) are treated as backlog; later agent
+  statements still speak. A failed TTS chunk is isolated: the voice bar shows
+  a short note instead of raw HTTP JSON, and later replies still play.
+  Closes #234.
+
 ### Added
 
 - **Per-member Grok Build model, and in-place runtime conversion.** The

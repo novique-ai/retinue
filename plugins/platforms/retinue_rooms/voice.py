@@ -551,12 +551,15 @@ def _extract_transcript(resp: Any) -> str:
 
 
 def _provider_error(label: str, resp: Any) -> str:
+    """Short error for the voice bar. Provider bodies stay in the log (#234)."""
+    status = getattr(resp, "status_code", "?")
     body = ""
     try:
         body = (resp.text or "")[:300]
     except Exception:
         body = ""
-    return f"{label} HTTP {resp.status_code}: {body or 'no body'}"
+    logger.warning("%s HTTP %s: %s", label, status, body or "no body")
+    return f"{label} failed ({status})"
 
 
 # Optional hook for tests that want to stub the whole backend.
