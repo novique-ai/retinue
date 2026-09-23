@@ -32,9 +32,15 @@ def _home() -> str:
 
 
 def _store() -> RoomStore:
-    """Store rooted at the workspace home, not the member's profile home."""
+    """Store rooted at the workspace home, not the member's profile home.
+
+    Composition backfill belongs to the owning adapter's startup store. Tool
+    calls construct short-lived stores and must not reconcile projections.
+    """
     home = crossroom.workspace_home(_home())
-    return RoomStore(base_dir=os.path.join(home, "retinue_rooms"))
+    return RoomStore(
+        base_dir=os.path.join(home, "retinue_rooms"), backfill_templates=False
+    )
 
 
 def _identity() -> Optional[str]:
