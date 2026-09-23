@@ -9,12 +9,15 @@ in this ecosystem).
 from __future__ import annotations
 
 import json
+import logging
 import os
 import threading
 import time
 from typing import Dict, List, Optional
 
 from .engine import Room, RoomMessage
+
+logger = logging.getLogger(__name__)
 
 
 def default_base_dir() -> str:
@@ -76,7 +79,11 @@ def composition_projection(room_dict: Dict[str, object]) -> Dict[str, object]:
 
 class RoomStore:
     def __init__(
-        self, base_dir: Optional[str] = None, templates_dir: Optional[str] = None
+        self,
+        base_dir: Optional[str] = None,
+        templates_dir: Optional[str] = None,
+        *,
+        backfill_templates: bool = True,
     ):
         self.base_dir = base_dir or default_base_dir()
         os.makedirs(self.base_dir, exist_ok=True)
@@ -84,7 +91,8 @@ class RoomStore:
         self._lock = threading.Lock()
         self._cv = threading.Condition(self._lock)
         self._next_seq: Dict[str, int] = {}
-        self._backfill_templates()
+        if backfill_templates:
+            self._backfill_templates()
 
     # ── paths ────────────────────────────────────────────────────────────
 
@@ -105,7 +113,9 @@ class RoomStore:
         try:
             with open(self._meta_path(room_id), encoding="utf-8") as f:
                 return Room.from_dict(json.load(f))
-        except (OSError, ValueError, KeyError):
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            # Torn or non-object meta is absent to callers. One bad file
+            # must not abort list_rooms or store construction.
             return None
 
     def list_rooms(self) -> List[Room]:
@@ -202,7 +212,7 @@ class RoomStore:
         os.replace(tmp, path)
         self._export_template(room.to_dict())
 
-    # ── composition templates (issue #229) ───────────────────────────────
+    # ── composition templates (issues #229, #240) ────────────────────────
 
     def _template_path(self, room_id: str) -> str:
         assert self.templates_dir is not None
@@ -238,21 +248,44 @@ class RoomStore:
             pass
 
     def _backfill_templates(self) -> None:
-        """Converge the templates dir with the live rooms at startup.
+        """Export readable live rooms. Never remove a projection (issue #240).
 
-        Enabling the feature on an existing install must not require any
-        manual capture: export every room, prune projection-shaped files
-        whose room is gone. Only files whose JSON carries an ``id`` matching
-        their basename are pruned — anything else in the directory is not
-        ours to delete.
+        Construction is read/additive only. Enabling the feature on an
+        existing install backfills every room that loads. A missing, empty,
+        unreadable, or mis-rooted room directory is not evidence that a
+        projection was deleted — only ``delete()`` removes one. Orphan
+        projections and unreadable room meta are left in place and logged.
         """
         if not self.templates_dir:
             return
         try:
+            try:
+                os.listdir(self.base_dir)
+            except OSError:
+                logger.warning(
+                    "Retinue rooms: could not read room directory %s; "
+                    "leaving composition projections untouched",
+                    self.base_dir,
+                )
+                return
+
             live = {room.id: room for room in self.list_rooms()}
             for room in live.values():
                 self._export_template(room.to_dict())
-            for name in os.listdir(self.templates_dir):
+
+            try:
+                template_names = os.listdir(self.templates_dir)
+            except FileNotFoundError:
+                return
+            except OSError:
+                logger.warning(
+                    "Retinue rooms: could not read composition directory %s; "
+                    "leaving projections untouched",
+                    self.templates_dir,
+                )
+                return
+
+            for name in template_names:
                 if not name.endswith(".json"):
                     continue
                 room_id = name[: -len(".json")]
@@ -261,10 +294,23 @@ class RoomStore:
                 path = os.path.join(self.templates_dir, name)
                 try:
                     with open(path, encoding="utf-8") as f:
-                        if json.load(f).get("id") == room_id:
-                            os.remove(path)
+                        data = json.load(f)
                 except (OSError, ValueError):
                     continue
+                if not isinstance(data, dict) or data.get("id") != room_id:
+                    continue
+                if os.path.exists(self._meta_path(room_id)):
+                    logger.warning(
+                        "Retinue rooms: room meta %s is unreadable or corrupt; "
+                        "leaving its composition projection in place",
+                        room_id,
+                    )
+                else:
+                    logger.warning(
+                        "Retinue rooms: composition projection %s has no live "
+                        "room; leaving it in place",
+                        room_id,
+                    )
         except OSError:
             pass
 
