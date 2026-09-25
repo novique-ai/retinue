@@ -132,7 +132,7 @@ class Room:
     # Projects group rooms (see projects.py). None = Unfiled. This is the
     # only membership record — do not also track room ids on the project.
     project_id: Optional[str] = None
-    # A member @mentioned the principal; cleared when the principal posts.
+    # Spoken principal @mention. Scheduling barrier until that person posts.
     needs_user: bool = False
 
     def default_responder(self) -> Optional[str]:
@@ -299,8 +299,8 @@ def parse_mentions(
 
     Case-insensitive, de-duplicated. Tokens match a slug, a unique
     display / first name, or a unique alias prefix. Tokens that match no
-    candidate are ignored (so "@Mark" in an agent reply never schedules
-    a turn unless "Mark" is a member). Mentions inside fenced code
+    candidate are ignored (so "@Alex" in an agent reply never schedules
+    a turn unless "Alex" is a member). Mentions inside fenced code
     blocks are not live.
     """
     index = mention_index(candidates, display_names)
@@ -380,7 +380,7 @@ def mentions_principal(
 
     Generic ``@user`` / ``@you`` always count. The principal's display name
     and unique first name count unless that alias already belongs to a
-    member — the retainer wins so ``@Clayton`` still hands off.
+    member — the retainer wins so ``@Alex`` still hands off.
     Mentions inside fenced code are not live.
     """
     generics = {token.lower() for token in PRINCIPAL_GENERIC}
@@ -395,6 +395,29 @@ def mentions_principal(
     return False
 
 
+def is_principal_speaker(speaker: str, principal_name: str = "") -> bool:
+    """True when a user-kind speaker is the principal, not automation.
+
+    Matches the configured display name (case-insensitive), its
+    mentionable first token, and the generic ``You`` / ``User`` aliases.
+    A routine or other system speaker does not match.
+    """
+    given = (speaker or "").strip().lower()
+    if not given:
+        return False
+    if given in {token.lower() for token in PRINCIPAL_GENERIC}:
+        return True
+    name = (principal_name or "").strip()
+    if name and given == name.lower():
+        return True
+    named = {
+        alias.lower()
+        for alias in principal_aliases(principal_name)
+        if alias.lower() not in {token.lower() for token in PRINCIPAL_GENERIC}
+    }
+    return given in named
+
+
 def apply_needs_user(
     room: Room,
     message: RoomMessage,
@@ -404,11 +427,14 @@ def apply_needs_user(
     """Set or clear ``room.needs_user`` for a newly posted message.
 
     An agent line that @mentions the principal sets the flag. The
-    principal's next post clears it. System notices do neither. Returns
-    whether the flag changed.
+    principal's own next post clears it. Another user-kind speaker
+    (automation, a routine) does not. System notices do neither.
+    Returns whether the flag changed.
     """
     before = bool(room.needs_user)
-    if message.kind == KIND_USER:
+    if message.kind == KIND_USER and is_principal_speaker(
+        message.speaker, principal_name
+    ):
         room.needs_user = False
     elif message.kind == KIND_AGENT and mentions_principal(
         message.text,
@@ -418,6 +444,59 @@ def apply_needs_user(
     ):
         room.needs_user = True
     return bool(room.needs_user) != before
+
+
+def principal_escalation_after(
+    messages: List[RoomMessage],
+    since_seq: int,
+    principal_name: str = "",
+    members: Optional[List[str]] = None,
+    display_names: Optional[Dict[str, str]] = None,
+) -> bool:
+    """True when a spoken agent reply after ``since_seq`` @mentions the principal.
+
+    Fenced mentions do not count. The flag may already have been cleared
+    by a later principal post; the transcript line is the record.
+    """
+    for message in messages:
+        if message.seq <= since_seq or message.kind != KIND_AGENT:
+            continue
+        if mentions_principal(
+            message.text,
+            principal_name,
+            members=members,
+            display_names=display_names,
+        ):
+            return True
+    return False
+
+
+def cycle_blocked_by_principal(
+    needs_user: bool,
+    trigger: RoomMessage,
+    later: List[RoomMessage],
+    principal_name: str = "",
+    members: Optional[List[str]] = None,
+    display_names: Optional[Dict[str, str]] = None,
+) -> bool:
+    """True when a cycle waiting on the room lock must not start speakers.
+
+    An escalation posted after the trigger discards the cycle even if
+    the principal has already cleared ``needs_user``. While the barrier
+    is still up, a non-principal user line does not start a cycle.
+    The principal's own post is not blocked by the current flag.
+    """
+    if principal_escalation_after(
+        later,
+        trigger.seq,
+        principal_name,
+        members=members,
+        display_names=display_names,
+    ):
+        return True
+    return bool(needs_user) and not is_principal_speaker(
+        trigger.speaker, principal_name
+    )
 
 
 # Composer prefix on a voice take. Mentions live at the start of the
@@ -1149,10 +1228,19 @@ def room_briefing(
         roster.append(f"@{handle}{extra}{title}")
     people = ", ".join(user_names) if user_names else "the user"
     you_handle = principal_mention_handle(principal_name)
-    escalate = "Escalate a real judgment call with @user"
+    # Named handle leads when one is configured. ``@user`` / ``@you`` stay
+    # accepted aliases. The sentence is stable for the life of the session
+    # (it depends only on the principal card, already part of the briefing).
     if you_handle:
-        escalate += f" (or @{you_handle})"
-    escalate += "; that flags the room as needing them."
+        escalate = (
+            f"Escalate a real judgment call with @{you_handle} "
+            "(@user and @you still count); that flags the room as needing them."
+        )
+    else:
+        escalate = (
+            "Escalate a real judgment call with @user; "
+            "that flags the room as needing them."
+        )
     parts = [
         f'You are {me_name}, a member of the room "{room.name}".',
         f"In this room you speak as @{me_handle}.",

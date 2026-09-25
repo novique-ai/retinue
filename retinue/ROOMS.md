@@ -252,12 +252,25 @@ briefing names the rooms they are also in; `rooms_list` shows them and
 
 ## Needs-you escalation
 
-A member that @mentions the principal — `@user`, `@you`, or the principal's
-display name when no retainer owns it (retainers win name collisions; fenced
-code never counts) — sets a durable `needs_user` flag on the room. The room
-list and open-room header show a rose "needs you" pill until the principal
-next posts; viewing alone does not clear it. Cross-room posts can escalate
-the destination room the same way.
+A spoken agent reply that @mentions the principal sets a durable `needs_user`
+flag and stops the cycle: no later speaker in that cycle starts. Live mentions
+are the configured display-name handle when one is set (the briefing leads
+with that handle), plus the compatibility aliases `@user` and `@you`. A
+retainer who already owns the alias wins the collision. Mentions inside
+fenced code do not count. System lines and tool lines do not escalate.
+
+The flag is a scheduling barrier, not only a badge. The room list and
+open-room header show a rose "needs you" pill until the principal next posts;
+viewing alone does not clear it. A cycle already waiting on the room lock is
+discarded when an escalation was posted after that cycle's trigger, even if
+the principal has already replied and cleared the flag. While the barrier is
+up, a user-kind line from anyone other than the principal stays on the
+transcript but does not clear the flag and does not start a cycle. The
+principal's next post clears the barrier, and that post's own cycle may run.
+Cycles triggered before the escalation never replay.
+
+Cross-room posts can escalate the destination room the same way. They still
+do not start a cycle there.
 
 ## Surfaces
 

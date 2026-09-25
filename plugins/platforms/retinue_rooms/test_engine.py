@@ -170,7 +170,7 @@ def test_mentions_in_order_deduped_case_insensitive():
 
 def test_mentions_ignore_non_members_and_support_hyphens():
     members = ["data-scout", "editor"]
-    got = engine.parse_mentions("cc @data-scout @nobody @Mark", members)
+    got = engine.parse_mentions("cc @data-scout @nobody @Alex", members)
     assert got == ["data-scout"]
 
 
