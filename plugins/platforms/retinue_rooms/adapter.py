@@ -1173,6 +1173,17 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             # Julio asked a yes/no. This line is the answer — do not
             # start a second cycle on top of the one still waiting.
             return {"seq": message.seq, "planned": [], "clarify": True}
+        # needs_user is a scheduling barrier. The principal's own post
+        # cleared it in _note_posted and may start a cycle. Any other
+        # user-kind speaker is recorded and does not.
+        stored = self.store.get(room_id)
+        principal_name = str(principal.load(self._home_dir()).get("display_name") or "")
+        if (
+            stored is not None
+            and stored.needs_user
+            and not engine.is_principal_speaker(message.speaker, principal_name)
+        ):
+            return {"seq": message.seq, "planned": []}
         planned = engine.plan_user_turns(room, text, self._display_names(room))
         fut = asyncio.run_coroutine_threadsafe(self._run_cycle(room_id, message), self._loop)
         if wait:
@@ -1679,6 +1690,26 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         room = self.store.get(room_id)
         if room is None:
             return
+        # A cycle queued behind this lock is stale when a principal
+        # escalation landed after its trigger — even if the principal
+        # already replied and cleared the flag. While the barrier is
+        # still up, a non-principal user line does not start speakers.
+        principal_name = str(principal.load(self._home_dir()).get("display_name") or "")
+        if engine.cycle_blocked_by_principal(
+            room.needs_user,
+            user_message,
+            self.store.read_since(room_id, user_message.seq),
+            principal_name=principal_name,
+            members=room.members,
+            display_names=self._display_names(room),
+        ):
+            logger.info(
+                "Retinue rooms: not starting cycle for %s at seq %s; "
+                "needs_user is a scheduling barrier",
+                room_id,
+                user_message.seq,
+            )
+            return
         # No process-wide lock. The workspace values ride a ContextVar per
         # cycle, so concurrent rooms cannot interleave each other's mounts and
         # nothing has to be serialized to keep them apart. This used to hold
@@ -1709,6 +1740,18 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         cycle_members = list(room.members)
         names = self._display_names(room)
         max_rounds = room.max_followup_rounds
+
+        def escalated_since(since_seq: int) -> bool:
+            """A spoken principal mention posted after ``since_seq``."""
+            name = str(principal.load(self._home_dir()).get("display_name") or "")
+            return engine.principal_escalation_after(
+                self.store.read_since(room_id, since_seq),
+                since_seq,
+                principal_name=name,
+                members=cycle_members,
+                display_names=names,
+            )
+
         planned_room = engine.with_members(room, cycle_members)
         queue = engine.plan_user_turns(planned_room, user_message.text, names)
         attempted: List[str] = []
@@ -1884,6 +1927,8 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         while queue:
             if self._stop_event(room_id).is_set():
                 break
+            if escalated_since(user_message.seq):
+                return
             if turns_taken >= budget:
                 self._post_system(
                     room_id, engine.cycle_budget_notice(budget, queue)
@@ -1900,6 +1945,10 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             verdict, posted_text = await run_speaker(member)
             if self._stop_event(room_id).is_set():
                 break
+            # The escalating reply is already on the transcript. No later
+            # speaker in this cycle starts, and their mentions are not queued.
+            if escalated_since(user_message.seq):
+                return
             if verdict in (engine.TURN_SPEAK, engine.TURN_FAIL):
                 merge_into(queue, member, posted_text)
 
@@ -1908,6 +1957,8 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         # / turn budget is hit. Budget remains the hard ceiling.
         rounds_used = 0
         if self._stop_event(room_id).is_set():
+            return
+        if escalated_since(user_message.seq):
             return
         if first_wave_budget_hit:
             post_pending_drop(engine.REASON_AGENT_TURNS, turns_taken)
@@ -1923,6 +1974,8 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         while rounds_used < max_rounds:
             if self._stop_event(room_id).is_set():
                 break
+            if escalated_since(user_message.seq):
+                return
             remaining = budget - turns_taken
             if remaining <= 0:
                 leftover = engine.plan_followup_round(cycle_members, attempted, 8)
@@ -1940,6 +1993,8 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             while round_queue:
                 if self._stop_event(room_id).is_set():
                     break
+                if escalated_since(user_message.seq):
+                    return
                 if turns_taken >= budget:
                     if round_queue:
                         self._post_system(
@@ -1958,6 +2013,8 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
                 verdict, posted_text = await run_speaker(member)
                 if self._stop_event(room_id).is_set():
                     break
+                if escalated_since(user_message.seq):
+                    return
                 if verdict == engine.TURN_SPEAK:
                     round_speakers.append(member)
                     merge_into(round_queue, member, posted_text)

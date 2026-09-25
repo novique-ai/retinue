@@ -1,17 +1,18 @@
-"""@user escalation surfaces as a durable needs_user flag (issue #141).
+"""Principal @mention is a needs_user scheduling barrier (issues #141, #243).
 
 Run:
-  .venv/bin/python -m pytest plugins/platforms/retinue_rooms/test_needs_user.py -q
+  scripts/run_tests.sh plugins/platforms/retinue_rooms/test_needs_user.py
 """
 
 from __future__ import annotations
 
 import asyncio
+from contextlib import contextmanager
 
 import pytest
 from gateway.config import PlatformConfig
 
-from . import engine, principal, tools
+from . import engine, ide, principal, tools
 from .adapter import RetinueRoomsAdapter
 from .engine import KIND_AGENT, KIND_SYSTEM, KIND_USER, Room, RoomMessage
 from .store import RoomStore
@@ -50,9 +51,9 @@ def test_generic_user_and_you_mentions_count():
 
 
 def test_principal_display_name_and_first_name_count():
-    assert engine.mentions_principal("@Clayton this needs you", "Clayton")
-    assert engine.mentions_principal("@Mark the invoice is ready", "Mark Howell")
-    assert not engine.mentions_principal("@Howell the invoice is ready", "Mark Howell")
+    assert engine.mentions_principal("@Riley this needs you", "Riley")
+    assert engine.mentions_principal("@Alex the invoice is ready", "Alex Rivera")
+    assert not engine.mentions_principal("@Rivera the invoice is ready", "Alex Rivera")
 
 
 def test_ordinary_prose_and_fenced_mentions_do_not_count():
@@ -80,14 +81,21 @@ def test_named_alias_does_not_steal_a_member_mention():
     )
 
 
-def test_briefing_teaches_user_escalation():
+def test_briefing_leads_with_the_named_principal_handle():
+    """The configured handle is how to escalate. @user and @you stay aliases."""
     room = _room()
-    named = engine.room_briefing(room, "scout", ["Clayton"], principal_name="Clayton")
-    assert "@user" in named and "@Clayton" in named
+    named = engine.room_briefing(
+        room, "scout", ["Ada Lovelace"], principal_name="Ada Lovelace"
+    )
     assert "flags the room as needing them" in named
+    clause = named[named.index("Escalate a real judgment call with ") :]
+    assert clause.startswith("Escalate a real judgment call with @Ada ")
+    assert clause.index("@Ada") < clause.index("@user")
+    assert "@you" in clause.split(";", 1)[0]
     generic = engine.room_briefing(room, "scout", ["You"])
-    assert "@user" in generic
+    assert "Escalate a real judgment call with @user;" in generic
     assert "or @You" not in generic
+    assert "@Ada" not in generic
 
 
 # ── set / not-set / clear ─────────────────────────────────────────────────
@@ -115,6 +123,59 @@ def test_principal_post_clears_needs_user():
     assert room.needs_user is False
     _apply(room, _msg(KIND_USER, "@scout carry on", speaker="Clayton"))
     assert room.needs_user is False
+
+
+def test_non_principal_user_line_does_not_clear_needs_user():
+    room = _room(needs_user=True)
+    _apply(room, _msg(KIND_USER, "ping", speaker="Room System"), name="Ada Lovelace")
+    assert room.needs_user is True
+    # A short signed name still counts as the principal.
+    _apply(room, _msg(KIND_USER, "use the first one", speaker="Ada"), name="Ada Lovelace")
+    assert room.needs_user is False
+
+
+def test_cycle_blocked_when_escalation_follows_the_trigger():
+    """The flag can already be clear; a later escalation still discards the cycle."""
+    members = ["scout", "editor"]
+    trigger = RoomMessage(
+        seq=92, ts=0, kind=KIND_USER, speaker="Ada Lovelace", text="status?"
+    )
+    later = [
+        RoomMessage(seq=94, ts=0, kind=KIND_USER, speaker="Room System", text="ping"),
+        RoomMessage(
+            seq=99, ts=0, kind=KIND_AGENT, speaker="scout", text="@Ada I need a decision"
+        ),
+        RoomMessage(
+            seq=100, ts=0, kind=KIND_USER, speaker="Ada Lovelace", text="carry on"
+        ),
+    ]
+    assert engine.cycle_blocked_by_principal(
+        False, trigger, later, principal_name="Ada Lovelace", members=members
+    )
+    fresh = later[-1]
+    assert not engine.cycle_blocked_by_principal(
+        False, fresh, [], principal_name="Ada Lovelace", members=members
+    )
+    # Barrier still up: a non-principal line posted after the escalation
+    # does not start a cycle either.
+    ping = RoomMessage(
+        seq=101, ts=0, kind=KIND_USER, speaker="Room System", text="later ping"
+    )
+    assert engine.cycle_blocked_by_principal(
+        True, ping, [], principal_name="Ada Lovelace", members=members
+    )
+    fenced = [
+        RoomMessage(
+            seq=99,
+            ts=0,
+            kind=KIND_AGENT,
+            speaker="scout",
+            text="draft:\n```\nAsk @Ada in the body.\n```\n",
+        )
+    ]
+    assert not engine.cycle_blocked_by_principal(
+        False, trigger, fenced, principal_name="Ada Lovelace", members=members
+    )
 
 
 def test_system_notice_neither_sets_nor_clears():
@@ -269,3 +330,250 @@ def test_cross_room_post_mention_sets_needs_user_on_destination(
     assert dest is not None
     assert dest.needs_user is True
     assert store.get("r-a").needs_user is False
+
+
+# ── scheduling barrier (issue #243) ──────────────────────────────────────
+
+
+def _principal(tmp_path, name: str = "Ada Lovelace") -> None:
+    principal.save(str(tmp_path), {"display_name": name, "about": ""})
+
+
+def test_principal_mention_stops_later_speakers(tmp_path, monkeypatch):
+    """A spoken principal mention ends the cycle; the next planned speaker waits."""
+    adapter = _adapter(tmp_path, monkeypatch)
+    _principal(tmp_path)
+    room = _room(members=["scout", "editor"], lead="scout", max_followup_rounds=3)
+    adapter.store.create(room)
+    user_message = adapter.store.append(
+        room.id,
+        RoomMessage(
+            seq=0, ts=0, kind=KIND_USER, speaker="Ada Lovelace", text="@scout @editor go"
+        ),
+    )
+    calls: list[str] = []
+
+    async def fake_turn(_room, member):
+        calls.append(member)
+        if member == "scout":
+            return True, "@Ada I need a decision before anyone else continues."
+        return True, "editor should not start"
+
+    monkeypatch.setattr(adapter, "_agent_turn", fake_turn)
+    asyncio.run(_run_locked(adapter, room, user_message))
+    assert calls == ["scout"]
+    assert adapter.store.get(room.id).needs_user is True
+
+
+def test_principal_mention_skips_followup_rounds(tmp_path, monkeypatch):
+    adapter = _adapter(tmp_path, monkeypatch)
+    _principal(tmp_path)
+    room = _room(members=["scout", "editor"], lead="scout", max_followup_rounds=3)
+    adapter.store.create(room)
+    user_message = adapter.store.append(
+        room.id,
+        RoomMessage(
+            seq=0, ts=0, kind=KIND_USER, speaker="Ada Lovelace", text="what do you think?"
+        ),
+    )
+    calls: list[str] = []
+
+    async def fake_turn(_room, member):
+        calls.append(member)
+        if member == "scout":
+            return True, "@user I need you to pick."
+        return True, engine.pass_payload_text()
+
+    monkeypatch.setattr(adapter, "_agent_turn", fake_turn)
+    asyncio.run(_run_locked(adapter, room, user_message))
+    assert calls == ["scout"]
+    assert adapter.store.get(room.id).needs_user is True
+
+
+def test_fenced_principal_mention_does_not_stop_the_cycle(tmp_path, monkeypatch):
+    adapter = _adapter(tmp_path, monkeypatch)
+    _principal(tmp_path)
+    room = _room(members=["scout", "editor"], lead="scout", max_followup_rounds=0)
+    adapter.store.create(room)
+    user_message = adapter.store.append(
+        room.id,
+        RoomMessage(seq=0, ts=0, kind=KIND_USER, speaker="Ada Lovelace", text="@scout go"),
+    )
+    calls: list[str] = []
+
+    async def fake_turn(_room, member):
+        calls.append(member)
+        if member == "scout":
+            return True, "draft:\n```\nAsk @Ada in the body.\n```\n@editor please edit."
+        return True, "edited"
+
+    monkeypatch.setattr(adapter, "_agent_turn", fake_turn)
+    asyncio.run(_run_locked(adapter, room, user_message))
+    assert calls == ["scout", "editor"]
+    assert adapter.store.get(room.id).needs_user is False
+
+
+def test_member_mention_still_continues_the_cycle(tmp_path, monkeypatch):
+    adapter = _adapter(tmp_path, monkeypatch)
+    _principal(tmp_path)
+    room = _room(members=["scout", "editor"], lead="scout", max_followup_rounds=0)
+    adapter.store.create(room)
+    user_message = adapter.store.append(
+        room.id,
+        RoomMessage(seq=0, ts=0, kind=KIND_USER, speaker="Ada Lovelace", text="@scout go"),
+    )
+    calls: list[str] = []
+
+    async def fake_turn(_room, member):
+        calls.append(member)
+        if member == "scout":
+            return True, "@editor please tighten this."
+        return True, "tightened"
+
+    monkeypatch.setattr(adapter, "_agent_turn", fake_turn)
+    asyncio.run(_run_locked(adapter, room, user_message))
+    assert calls == ["scout", "editor"]
+    assert adapter.store.get(room.id).needs_user is False
+
+
+def test_non_principal_post_does_not_clear_or_schedule(tmp_path, monkeypatch):
+    adapter = _adapter(tmp_path, monkeypatch)
+    _principal(tmp_path)
+    adapter.store.create(_room(needs_user=True, members=["scout"], lead="scout"))
+    loop = asyncio.new_event_loop()
+    adapter._loop = loop
+    scheduled: list = []
+
+    def capture(coro, _loop):
+        scheduled.append(coro)
+        coro.close()
+
+        class _Fut:
+            def result(self, timeout=None):
+                return None
+
+        return _Fut()
+
+    monkeypatch.setattr(asyncio, "run_coroutine_threadsafe", capture)
+    try:
+        adapter.post_user_message("r-1", "ping", "Room System")
+        assert scheduled == []
+        assert adapter.store.get("r-1").needs_user is True
+        posted = adapter.store.read_since("r-1", 0)
+        assert [(m.kind, m.speaker, m.text) for m in posted] == [
+            (KIND_USER, "Room System", "ping")
+        ]
+        adapter.post_user_message("r-1", "I decided", "You")
+        assert adapter.store.get("r-1").needs_user is False
+        assert len(scheduled) == 1
+        assert adapter.store.read_since("r-1", 0)[-1].speaker == "Ada Lovelace"
+    finally:
+        loop.close()
+
+
+def test_queued_cycle_after_escalation_never_replays(tmp_path, monkeypatch):
+    """Cycle B queued behind the lock is dropped even if the principal clears first.
+
+    Reproduces the two-cycle failure: trigger A, a non-principal user line
+    queues B, A's reply @mentions the principal, the principal replies
+    before B acquires the lock. B must not start. The principal's own
+    cycle may.
+    """
+
+    async def scenario():
+        adapter = _adapter(tmp_path, monkeypatch)
+        _principal(tmp_path)
+        adapter._loop = asyncio.get_running_loop()
+
+        @contextmanager
+        def _no_workspace(*_args, **_kwargs):
+            yield {}
+
+        # The barrier decision is in front of workspace binding. Skip the
+        # docker env publish so this test stays a scheduler test.
+        monkeypatch.setattr(ide, "apply_room_workspace", _no_workspace)
+        scheduled: list = []
+
+        def _schedule(coro, loop):
+            scheduled.append(asyncio.ensure_future(coro, loop=loop))
+
+            class _Done:
+                def result(self, timeout=None):
+                    return None
+
+            return _Done()
+
+        # post_user_message hops to the gateway loop. On this loop, queue
+        # the cycle as a task so it waits on the room lock deterministically.
+        monkeypatch.setattr(asyncio, "run_coroutine_threadsafe", _schedule)
+        room = _room(members=["scout", "editor"], lead="scout", max_followup_rounds=0)
+        adapter.store.create(room)
+        calls: list[str] = []
+        started: list[str] = []
+        flag_around_reply: list[bool] = []
+
+        original_workspace = adapter._run_cycle_workspace
+
+        async def trace_workspace(room_obj, user_message):
+            started.append(user_message.text)
+            await original_workspace(room_obj, user_message)
+
+        adapter._run_cycle_workspace = trace_workspace  # type: ignore[method-assign]
+
+        original_note = adapter._note_posted
+
+        def note(room_id, message):
+            original_note(room_id, message)
+            if message.kind == KIND_AGENT and "@Ada" in (message.text or ""):
+                flag_around_reply.append(bool(adapter.store.get(room_id).needs_user))
+                adapter.post_user_message(room_id, "carry on", "Ada Lovelace")
+                flag_around_reply.append(bool(adapter.store.get(room_id).needs_user))
+
+        adapter._note_posted = note  # type: ignore[method-assign]
+
+        async def fake_turn(_room, member):
+            calls.append(member)
+            if member == "scout" and calls.count("scout") == 1:
+                adapter.post_user_message(room.id, "ping", "Room System")
+                await asyncio.sleep(0)
+                return True, "@Ada I need a decision before anyone else continues."
+            return True, "answering the principal's fresh cycle"
+
+        monkeypatch.setattr(adapter, "_agent_turn", fake_turn)
+        trigger = adapter.store.append(
+            room.id,
+            RoomMessage(
+                seq=0,
+                ts=0,
+                kind=KIND_USER,
+                speaker="Ada Lovelace",
+                text="@scout @editor status?",
+            ),
+        )
+        await adapter._run_cycle(room.id, trigger)
+        pending = [task for task in scheduled if not task.done()]
+        if pending:
+            await asyncio.wait(pending)
+        for task in scheduled:
+            task.result()
+
+        assert calls == ["scout", "scout"]
+        assert "editor" not in calls
+        assert started == ["@scout @editor status?", "carry on"]
+        assert "ping" not in started
+        assert flag_around_reply == [True, False]
+        assert adapter.store.get(room.id).needs_user is False
+        speakers = [
+            m.speaker
+            for m in adapter.store.read_since(room.id, 0)
+            if m.kind == KIND_AGENT
+        ]
+        assert speakers == ["scout", "scout"]
+        user_lines = [
+            (m.speaker, m.text)
+            for m in adapter.store.read_since(room.id, 0)
+            if m.kind == KIND_USER
+        ]
+        assert ("Room System", "ping") in user_lines
+
+    asyncio.run(scenario())
