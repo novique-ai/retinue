@@ -721,6 +721,63 @@ def test_connect_rescan_picks_up_disk_profiles(tmp_path, monkeypatch):
     assert "janitor" in adapter.gateway_runner.pairing_stores
 
 
+def test_versioned_opus_is_not_hidden_by_a_later_point_release(tmp_path):
+    """``claude-opus-5-5`` is another model, not a suffix that retires Opus 5."""
+    d = tmp_path / hire.MODELS_DIRNAME
+    d.mkdir()
+    for stem in ("claude-opus-5", "claude-opus-5-5", "claude-sonnet", "claude-sonnet-5"):
+        (d / f"{stem}.yaml").write_text(
+            f"model:\n  default: {stem}\n  provider: anthropic\n", encoding="utf-8"
+        )
+
+    listed = [p["name"] for p in hire.list_model_presets(str(tmp_path))]
+    assert listed == ["claude-opus-5", "claude-opus-5-5", "claude-sonnet-5"]
+
+
+def test_bundled_gpt6_and_opus_55_presets_seed_list_and_do_not_overwrite(tmp_path):
+    """Fresh homes gain all four presets; an existing pin is left byte-for-byte."""
+    fresh = hire.ensure_bundled_cloud_presets(str(tmp_path))
+    for name in ("gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "claude-opus-5-5"):
+        assert name in fresh
+
+    presets = {p["name"]: p for p in hire.list_model_presets(str(tmp_path))}
+    for name in ("gpt-6-astra", "gpt-6-sol", "gpt-6-luna"):
+        assert presets[name]["provider"] == "openai-codex"
+        assert presets[name]["model"] == name
+        assert presets[name]["local"] is False
+        assert presets[name]["summary"] == f"openai-codex · {name}"
+    opus = presets["claude-opus-5-5"]
+    assert opus["provider"] == "anthropic"
+    assert opus["model"] == "claude-opus-5-5"
+    assert opus["local"] is False
+    assert opus["summary"] == "anthropic · claude-opus-5-5"
+    # Predecessors stay listed beside the new files.
+    for name in ("gpt-5.6-sol", "gpt-5.6-luna", "claude-opus-5", "claude-sonnet-5", "grok-4.6"):
+        assert name in presets
+
+    d = tmp_path / hire.MODELS_DIRNAME
+    pinned = d / "gpt-6-astra.yaml"
+    original = pinned.read_text(encoding="utf-8")
+    pinned.write_text(original + "# operator pin\n", encoding="utf-8")
+    (d / "claude-opus-5.yaml").write_text(
+        "model:\n  default: claude-opus-5\n  provider: anthropic\n  # keep opus\n",
+        encoding="utf-8",
+    )
+    again = hire.ensure_bundled_cloud_presets(str(tmp_path))
+    assert again == []
+    assert "# operator pin" in pinned.read_text(encoding="utf-8")
+    assert "# keep opus" in (d / "claude-opus-5.yaml").read_text(encoding="utf-8")
+    listed = {p["name"] for p in hire.list_model_presets(str(tmp_path))}
+    assert {"gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "claude-opus-5-5", "claude-opus-5"} <= listed
+
+    meta = hire.scaffold_profile(
+        str(tmp_path), "Astra", "lead the work", "", model_preset="gpt-6-astra"
+    )
+    config = (tmp_path / "profiles" / meta["slug"] / "config.yaml").read_text(encoding="utf-8")
+    assert "default: gpt-6-astra" in config
+    assert "provider: openai-codex" in config
+
+
 def test_bundled_claude_opus_preset_is_seeded_and_listed(tmp_path):
     """Opus is a shipped cloud preset, so a workspace that has never seen one
     gets it on the next seed and the hire dropdown can offer it by name."""

@@ -13,6 +13,12 @@ import os
 logger = logging.getLogger(__name__)
 
 DEFAULT_CODEX_MODELS: List[str] = [
+    # GPT-6 series (Astra/Sol/Luna). Same curated-fallback role as the 5.6
+    # series below: offered when live discovery is unavailable. No "-pro"
+    # slugs — the 5.6 precedent keeps those out of this OAuth fallback.
+    "gpt-6-astra",
+    "gpt-6-sol",
+    "gpt-6-luna",
     # GPT-5.6 series (Sol/Terra/Luna). The public API exposes "-pro"
     # variants, but the ChatGPT Codex OAuth backend rejects them with HTTP 400,
     # so the curated offline fallback must not surface those dead choices.
@@ -51,6 +57,13 @@ DEFAULT_CODEX_MODELS: List[str] = [
 ]
 
 _FORWARD_COMPAT_TEMPLATE_MODELS: List[tuple[str, tuple[str, ...]]] = [
+    # Newest series first. Templates are previous-generation slugs a live
+    # catalog may still be returning; any one of them is enough to surface
+    # the GPT-6 id. Listed before the 5.6 rows so an older lineup (only
+    # gpt-5.4 / gpt-5.5) still synthesizes Astra/Sol/Luna in this order.
+    ("gpt-6-astra", ("gpt-5.6-sol", "gpt-5.5", "gpt-5.4")),
+    ("gpt-6-sol", ("gpt-5.6-sol", "gpt-5.5", "gpt-5.4")),
+    ("gpt-6-luna", ("gpt-5.6-sol", "gpt-5.5", "gpt-5.4")),
     ("gpt-5.6-sol", ("gpt-5.5", "gpt-5.4")),
     ("gpt-5.6-terra", ("gpt-5.5", "gpt-5.4")),
     ("gpt-5.6-luna", ("gpt-5.5", "gpt-5.4")),

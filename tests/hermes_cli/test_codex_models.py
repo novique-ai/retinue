@@ -35,6 +35,80 @@ def test_curated_codex_fallback_excludes_chatgpt_rejected_pro_slugs(monkeypatch)
     assert CHATGPT_REJECTED_CODEX_PRO_SLUGS.isdisjoint(model_ids)
 
 
+_GPT6_CODEX_IDS = ("gpt-6-astra", "gpt-6-sol", "gpt-6-luna")
+_PRIOR_CODEX_IDS = (
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+    "gpt-5.6-luna",
+    "gpt-5.5",
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
+)
+
+
+def test_gpt6_fallback_keeps_series_order_and_predecessors(monkeypatch, tmp_path):
+    """Offline fallback leads with Astra, Sol, Luna and still lists older ids."""
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+
+    model_ids = get_codex_model_ids()
+
+    assert model_ids[:3] == list(_GPT6_CODEX_IDS)
+    assert model_ids.index("gpt-6-luna") < model_ids.index("gpt-5.6-sol")
+    for slug in _PRIOR_CODEX_IDS:
+        assert slug in model_ids
+    assert len(model_ids) == len(set(model_ids))
+
+
+def test_gpt6_forward_compat_synthesizes_from_older_live_catalog(monkeypatch):
+    """A live catalog that has not listed GPT-6 yet still surfaces the series."""
+    monkeypatch.setattr(
+        "hermes_cli.codex_models._fetch_models_from_api",
+        lambda access_token: ["gpt-5.4"],
+    )
+
+    model_ids = get_codex_model_ids(access_token="codex-access-token")
+
+    assert [slug for slug in model_ids if slug.startswith("gpt-6-")] == list(_GPT6_CODEX_IDS)
+    for slug in ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"):
+        assert slug in model_ids
+    assert CHATGPT_REJECTED_CODEX_PRO_SLUGS.isdisjoint(model_ids)
+    assert len(model_ids) == len(set(model_ids))
+
+
+def test_gpt6_live_catalog_keeps_returned_order_without_duplicates(monkeypatch):
+    """Ids the live catalog already returned stay put; missing siblings append."""
+    live = ["gpt-6-luna", "gpt-5.5", "gpt-6-astra"]
+    monkeypatch.setattr(
+        "hermes_cli.codex_models._fetch_models_from_api",
+        lambda access_token: list(live),
+    )
+
+    model_ids = get_codex_model_ids(access_token="codex-access-token")
+
+    assert model_ids[:3] == live
+    assert model_ids.count("gpt-6-astra") == 1
+    assert model_ids.count("gpt-6-luna") == 1
+    assert "gpt-6-sol" in model_ids
+    assert model_ids.index("gpt-6-luna") < model_ids.index("gpt-6-sol")
+
+
+def test_gpt6_codex_catalog_recognizes_each_id(monkeypatch, tmp_path):
+    """Selection against the curated catalog accepts the three GPT-6 ids."""
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    monkeypatch.setattr(
+        "hermes_cli.auth.resolve_codex_runtime_credentials",
+        lambda *args, **kwargs: {},
+    )
+    from hermes_cli.models import validate_requested_model
+
+    for slug in _GPT6_CODEX_IDS:
+        result = validate_requested_model(slug, "openai-codex")
+        assert result["accepted"] is True, slug
+        assert result["recognized"] is True, slug
+        assert "corrected_model" not in result, slug
+
+
 
 
 def test_setup_wizard_codex_import_resolves():
