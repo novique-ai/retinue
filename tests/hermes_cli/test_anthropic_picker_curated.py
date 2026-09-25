@@ -58,3 +58,47 @@ def test_anthropic_falls_back_to_curated_when_live_unavailable():
 
     assert result == list(M._PROVIDER_MODELS["anthropic"])
     assert "claude-fable-5" in result
+
+
+def test_claude_opus_5_5_survives_when_live_omits_it():
+    """The new Opus id stays in the picker when /v1/models has not listed it."""
+    live = ["claude-opus-5", "claude-sonnet-5", "claude-opus-4-8"]
+    with patch.object(M, "_fetch_anthropic_models", return_value=live), patch(
+        "hermes_cli.config.load_config",
+        return_value={"model": {"provider": "anthropic"}},
+    ):
+        result = M.provider_model_ids("anthropic")
+
+    assert "claude-opus-5-5" in result
+    assert result.count("claude-opus-5-5") == 1
+    assert result.count("claude-sonnet-5") == 1
+    assert result.count("claude-opus-4-8") == 1
+    # Predecessors stay selectable. Opus 5 is live-only here, so the curated
+    # id leads it.
+    for slug in ("claude-opus-5", "claude-sonnet-5", "claude-opus-4-8", "claude-fable-5"):
+        assert slug in result
+    assert result.index("claude-opus-5-5") < result.index("claude-opus-5")
+
+
+def test_claude_opus_5_5_is_not_rewritten_to_its_predecessor():
+    """Close-match auto-correct must not turn claude-opus-5-5 into claude-opus-5."""
+    live = ["claude-opus-5", "claude-sonnet-5", "claude-opus-4-8"]
+    with patch.object(M, "_fetch_anthropic_models", return_value=live):
+        result = M.validate_requested_model("claude-opus-5-5", "anthropic")
+
+    assert result["accepted"] is True
+    assert result["recognized"] is True
+    assert result.get("corrected_model") in (None, "")
+    assert "claude-opus-5-5" in (result.get("message") or "")
+
+
+def test_claude_opus_5_5_recognized_when_live_catalog_unreachable():
+    """No token / network failure still accepts the curated id."""
+    with patch.object(M, "_fetch_anthropic_models", return_value=None), patch.object(
+        M, "fetch_api_models", return_value=None
+    ):
+        result = M.validate_requested_model("claude-opus-5-5", "anthropic")
+
+    assert result["accepted"] is True
+    assert result["recognized"] is True
+    assert result.get("corrected_model") in (None, "")

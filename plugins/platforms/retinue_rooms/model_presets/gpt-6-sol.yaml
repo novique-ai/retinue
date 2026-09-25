@@ -1,0 +1,4 @@
+# Cloud: OpenAI GPT-6 Sol via workspace device-code login.
+model:
+  default: gpt-6-sol
+  provider: openai-codex

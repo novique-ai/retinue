@@ -441,6 +441,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "MiniMax-M2",
     ],
     "anthropic": [
+        "claude-opus-5-5",
         "claude-fable-5",
         "claude-sonnet-5",
         "claude-opus-4-8",
@@ -6228,6 +6229,22 @@ def validate_requested_model(
                     "persist": True,
                     "recognized": True,
                     "message": None,
+                }
+            # Curated aliases are reachable before /v1/models enumerates them.
+            # Check the catalog before close-match auto-correct: a new id such
+            # as ``claude-opus-5-5`` scores above the 0.9 cutoff against its
+            # predecessor (``claude-opus-5``) and would otherwise be rewritten.
+            if _model_in_provider_catalog(
+                requested_for_lookup.lower(), _provider_keys(normalized)
+            ):
+                return {
+                    "accepted": True,
+                    "persist": True,
+                    "recognized": True,
+                    "message": (
+                        f"Note: `{requested}` was not found in Anthropic's /v1/models listing "
+                        f"but exists in the curated catalog — accepted."
+                    ),
                 }
             auto = get_close_matches(requested_for_lookup, anthropic_models, n=1, cutoff=0.9)
             if auto:

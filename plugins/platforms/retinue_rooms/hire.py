@@ -308,12 +308,17 @@ def _is_generic_alias(name: str, names: set[str]) -> bool:
     """``grok`` is an alias once ``grok-4.5`` / ``grok-4.6`` exist — and so is
     ``claude-sonnet`` once ``claude-sonnet-5`` does.
 
-    The test is "a sibling extends this stem by a *version*". The suffix has to
-    parse as one: ``claude-opus-5-thinking`` names a different model from
-    ``claude-opus-5`` rather than a newer cut of it, so a plain prefix match
-    would hide a real choice. Family stems are themselves hyphenated outside
-    xAI's naming, which is why this cannot key off "the stem has no hyphen".
+    The test is "a sibling extends this stem by a *version*" and the stem is
+    still an unversioned family bucket. A name that already ends in a version
+    (``claude-opus-5``, ``grok-4.5``) is a specific model: ``claude-opus-5-5``
+    must not retire it. A non-version suffix is a different model too —
+    ``claude-opus-5-thinking`` is not a newer cut of ``claude-opus-5``. Family
+    stems are themselves hyphenated outside xAI's naming, which is why this
+    cannot key off "the stem has no hyphen".
     """
+    tail = name.rsplit("-", 1)[-1]
+    if _VERSION_SUFFIX.match(tail):
+        return False
     prefix = name + "-"
     return any(
         other != name
