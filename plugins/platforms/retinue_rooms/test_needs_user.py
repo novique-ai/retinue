@@ -562,7 +562,9 @@ def test_queued_cycle_after_escalation_never_replays(tmp_path, monkeypatch):
         assert started == ["@scout @editor status?", "carry on"]
         assert "ping" not in started
         assert flag_around_reply == [True, False]
-        assert adapter.store.get(room.id).needs_user is False
+        # "carry on" cleared the escalation, so scout's answer is owed back
+        # to the principal and re-raises the flag (#246).
+        assert adapter.store.get(room.id).needs_user is True
         speakers = [
             m.speaker
             for m in adapter.store.read_since(room.id, 0)
@@ -577,3 +579,66 @@ def test_queued_cycle_after_escalation_never_replays(tmp_path, monkeypatch):
         assert ("Room System", "ping") in user_lines
 
     asyncio.run(scenario())
+
+
+# ── owed reply (#246): an answer back to the principal re-raises the flag ──
+
+
+def test_answer_to_principal_follow_up_re_raises_without_a_mention():
+    room = _room()
+    _apply(room, _msg(KIND_AGENT, "@user which option?"))
+    assert room.needs_user is True
+    _apply(room, _msg(KIND_USER, "Explain the options in more detail.", speaker="Clayton"))
+    assert room.needs_user is False
+    _apply(room, _msg(KIND_AGENT, "Here is the detail, Clayton: option A is ..."))
+    assert room.needs_user is True
+
+
+def test_owed_reply_handed_to_a_member_does_not_raise():
+    room = _room(needs_user=True)
+    _apply(room, _msg(KIND_USER, "Go with A.", speaker="Clayton"))
+    _apply(room, _msg(KIND_AGENT, "@editor please implement option A."))
+    assert room.needs_user is False
+    # The owed reply was consumed by the handoff; later lines are ordinary.
+    _apply(room, _msg(KIND_AGENT, "Done: option A shipped.", speaker="editor"))
+    assert room.needs_user is False
+
+
+def test_principal_post_that_cleared_nothing_owes_no_reply():
+    room = _room()
+    _apply(room, _msg(KIND_USER, "@scout summarise the backlog", speaker="Clayton"))
+    _apply(room, _msg(KIND_AGENT, "Backlog: three items."))
+    assert room.needs_user is False
+
+
+def test_owed_reply_is_consumed_once():
+    room = _room(needs_user=True)
+    _apply(room, _msg(KIND_USER, "More detail please.", speaker="Clayton"))
+    _apply(room, _msg(KIND_AGENT, "Detail: ..."))
+    assert room.needs_user is True
+    _apply(room, _msg(KIND_USER, "Thanks, go ahead.", speaker="Clayton"))
+    assert room.needs_user is False
+    _apply(room, _msg(KIND_AGENT, "Detail again: ..."))
+    # Cleared again by the principal, so the next answer is owed again.
+    assert room.needs_user is True
+    room.needs_user = False
+    _apply(room, _msg(KIND_AGENT, "An unrelated status line."))
+    assert room.needs_user is False
+
+
+def test_non_principal_user_line_does_not_create_an_owed_reply():
+    room = _room(needs_user=True)
+    _apply(room, _msg(KIND_USER, "ping", speaker="Room System"))
+    room.needs_user = False
+    _apply(room, _msg(KIND_AGENT, "Status: fine."))
+    assert room.needs_user is False
+
+
+def test_owed_reply_roundtrips_and_stays_out_of_composition():
+    from .store import COMPOSITION_FIELDS
+
+    room = _room(needs_user=True)
+    _apply(room, _msg(KIND_USER, "More detail please.", speaker="Clayton"))
+    again = Room.from_dict(room.to_dict())
+    assert again.needs_user_reply is True
+    assert "needs_user_reply" not in COMPOSITION_FIELDS

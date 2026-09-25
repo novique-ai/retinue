@@ -134,6 +134,10 @@ class Room:
     project_id: Optional[str] = None
     # Spoken principal @mention. Scheduling barrier until that person posts.
     needs_user: bool = False
+    # The principal's post cleared needs_user, so the room owes them an
+    # answer: the next agent line re-raises the flag unless it hands off to
+    # a member (#246). Runtime state, never composition.
+    needs_user_reply: bool = False
 
     def default_responder(self) -> Optional[str]:
         if self.lead and self.lead in self.members:
@@ -161,6 +165,7 @@ class Room:
             shared_mode=(str(data["shared_mode"]) if data.get("shared_mode") else None),
             project_id=(str(data["project_id"]) if data.get("project_id") else None),
             needs_user=bool(data.get("needs_user")),
+            needs_user_reply=bool(data.get("needs_user_reply")),
         )
 
 
@@ -427,22 +432,30 @@ def apply_needs_user(
     """Set or clear ``room.needs_user`` for a newly posted message.
 
     An agent line that @mentions the principal sets the flag. The
-    principal's own next post clears it. Another user-kind speaker
-    (automation, a routine) does not. System notices do neither.
+    principal's own next post clears it and leaves the room owing them an
+    answer: the next agent line re-raises the flag even without a mention,
+    unless it hands off to a member (#246). Another user-kind speaker
+    (automation, a routine) does not clear it. System notices do neither.
     Returns whether the flag changed.
     """
     before = bool(room.needs_user)
     if message.kind == KIND_USER and is_principal_speaker(
         message.speaker, principal_name
     ):
+        room.needs_user_reply = bool(room.needs_user_reply) or before
         room.needs_user = False
-    elif message.kind == KIND_AGENT and mentions_principal(
-        message.text,
-        principal_name,
-        members=room.members,
-        display_names=member_names,
-    ):
-        room.needs_user = True
+    elif message.kind == KIND_AGENT:
+        owed = bool(room.needs_user_reply)
+        room.needs_user_reply = False
+        if mentions_principal(
+            message.text,
+            principal_name,
+            members=room.members,
+            display_names=member_names,
+        ):
+            room.needs_user = True
+        elif owed and not parse_mentions(message.text, room.members, member_names):
+            room.needs_user = True
     return bool(room.needs_user) != before
 
 
