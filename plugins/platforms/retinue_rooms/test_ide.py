@@ -868,3 +868,97 @@ def test_mount_map_puts_worktree_binds_before_the_workspace(tmp_path, monkeypatc
     assert [p[0] for p in pairs] == ["/workspace/infra", "/workspace"]
     assert pairs[0][1].startswith(str(tmp_path / "wt"))
     assert pairs[1][1] == str(root)
+
+
+# ---------------------------------------------------------------------------
+# Host venvs are read-only in ide rooms (infra-e7ke). A room's `uv sync` in
+# /workspace/projects/janus rebuilt the host venv on the container's
+# interpreter; every host spawn of that venv then failed.
+
+
+def _make_venv(root, rel):
+    venv = root / rel
+    venv.mkdir(parents=True)
+    (venv / "pyvenv.cfg").write_text("home = /x\n", encoding="utf-8")
+
+
+def test_ide_room_binds_host_venvs_read_only(tmp_path, monkeypatch):
+    monkeypatch.delenv("RETINUE_SHARED_DIR", raising=False)
+    root = tmp_path / "IDE"
+    _make_venv(root, "projects/janus/.venv")
+    _make_venv(root, "infra/dashboard/.venv")
+    (root / "projects" / "web" / "node_modules" / "x" / ".venv").mkdir(parents=True)
+    (root / "projects" / "empty" / ".venv").mkdir(parents=True)  # no pyvenv.cfg
+    _make_venv(root, "a/b/c/d/.venv")  # deeper than the scan
+    room = _room(workspace="ide", ide_path=str(root))
+    vols = json.loads(ide.overlay_env(room)["TERMINAL_DOCKER_VOLUMES"])
+    assert vols == [
+        f"{root}:/workspace:rw",
+        f"{root}/infra/dashboard/.venv:/workspace/infra/dashboard/.venv:ro",
+        f"{root}/projects/janus/.venv:/workspace/projects/janus/.venv:ro",
+    ]
+
+
+def test_scoped_ide_room_binds_its_own_venv(tmp_path, monkeypatch):
+    monkeypatch.delenv("RETINUE_SHARED_DIR", raising=False)
+    scoped = tmp_path / "janus"
+    _make_venv(scoped, ".venv")
+    vols = json.loads(ide.overlay_env(_room(workspace="ide", ide_path=str(scoped)))["TERMINAL_DOCKER_VOLUMES"])
+    assert f"{scoped}/.venv:/workspace/.venv:ro" in vols
+
+
+def test_ide_room_mounts_uv_python_store_at_host_path(tmp_path, monkeypatch):
+    monkeypatch.delenv("RETINUE_SHARED_DIR", raising=False)
+    store = tmp_path / "uv-python"
+    store.mkdir()
+    monkeypatch.setenv("UV_PYTHON_INSTALL_DIR", str(store))
+    root = tmp_path / "IDE"
+    root.mkdir()
+    ide_vols = json.loads(ide.overlay_env(_room(workspace="ide", ide_path=str(root)))["TERMINAL_DOCKER_VOLUMES"])
+    assert f"{store}:{store}:ro" in ide_vols
+    sandbox_vols = json.loads(ide.overlay_env(_room(workspace="sandbox"))["TERMINAL_DOCKER_VOLUMES"])
+    assert not any(str(store) in v for v in sandbox_vols)
+
+
+def test_uv_python_store_follows_uv_resolution(tmp_path, monkeypatch):
+    monkeypatch.delenv("UV_PYTHON_INSTALL_DIR", raising=False)
+    (tmp_path / "uv" / "python").mkdir(parents=True)
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    assert ide.uv_python_store() == str(tmp_path / "uv" / "python")
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "absent"))
+    monkeypatch.setenv("HOME", str(tmp_path / "nohome"))
+    assert ide.uv_python_store() is None
+
+
+def test_worktree_repo_venv_is_not_bound_from_host(tmp_path, monkeypatch):
+    monkeypatch.delenv("RETINUE_SHARED_DIR", raising=False)
+    root = tmp_path / "IDE"
+    _make_venv(root, "infra/.venv")
+    _make_venv(root, "projects/janus/.venv")
+    monkeypatch.setenv("RETINUE_IDE_ROOT", str(root))
+    monkeypatch.setenv("RETINUE_WORKTREE_ROOT", str(tmp_path / "wt"))
+    room = _room(id="r-wt", workspace="ide", ide_path=str(root), worktree_repos=["infra"])
+    vols = json.loads(ide.overlay_env(room)["TERMINAL_DOCKER_VOLUMES"])
+    venv_specs = [v for v in vols if "/.venv:" in v]
+    assert venv_specs == [f"{root}/projects/janus/.venv:/workspace/projects/janus/.venv:ro"]
+    # Nested venv binds come after the worktree bind they could sit under.
+    assert vols.index(venv_specs[0]) > vols.index(next(v for v in vols if v.endswith(":/workspace/infra:rw")))
+
+
+def test_editable_source_is_bound_at_its_host_path(tmp_path, monkeypatch):
+    # The .pth of an editable install names the HOST source dir; without this
+    # bind, `python -m <pkg>` from the host venv fails inside the room.
+    monkeypatch.delenv("RETINUE_SHARED_DIR", raising=False)
+    root = tmp_path / "IDE"
+    _make_venv(root, "projects/janus/.venv")
+    src = root / "projects" / "janus" / "src"
+    src.mkdir()
+    site = root / "projects" / "janus" / ".venv" / "lib" / "python3.12" / "site-packages"
+    site.mkdir(parents=True)
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    (site / "_editable_impl_janus.pth").write_text(f"{src}\n", encoding="utf-8")
+    (site / "other.pth").write_text(f"import sys\n{outside}\nrelative/dir\n", encoding="utf-8")
+    vols = json.loads(ide.overlay_env(_room(workspace="ide", ide_path=str(root)))["TERMINAL_DOCKER_VOLUMES"])
+    assert f"{src}:{src}:ro" in vols
+    assert not any(str(outside) in v for v in vols)

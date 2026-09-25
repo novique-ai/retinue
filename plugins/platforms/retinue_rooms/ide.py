@@ -17,6 +17,7 @@ parallel; they never have.)
 
 from __future__ import annotations
 
+import glob
 import hashlib
 import json
 import logging
@@ -223,6 +224,111 @@ def _broker_volumes() -> List[str]:
     return specs
 
 
+def uv_python_store() -> Optional[str]:
+    """Host directory holding uv-managed interpreters, if it exists.
+
+    Resolved the way uv resolves it: ``UV_PYTHON_INSTALL_DIR``, else
+    ``$XDG_DATA_HOME/uv/python``, else ``~/.local/share/uv/python``.
+    """
+    raw = (os.getenv("UV_PYTHON_INSTALL_DIR") or "").strip()
+    if not raw:
+        data = (os.getenv("XDG_DATA_HOME") or "").strip() or os.path.expanduser("~/.local/share")
+        raw = os.path.join(data, "uv", "python")
+    path = os.path.abspath(os.path.expanduser(raw))
+    return path if os.path.isdir(path) else None
+
+
+# How deep under the mounted tree a host venv is looked for:
+# ``.venv``, ``infra/.venv``, ``projects/<repo>/.venv``, ``infra/<app>/.venv``.
+VENV_SCAN_DEPTH = 3
+_VENV_SCAN_SKIP = frozenset({"node_modules", "__pycache__"})
+
+
+def host_venvs(path: str, skip_rels: List[str]) -> List[str]:
+    """Relative paths of host ``.venv`` dirs under *path*, sorted.
+
+    Skips anything inside *skip_rels* (worktree-bound repos: what the room
+    sees there is its own worktree, not the host checkout).
+    """
+    found: List[str] = []
+
+    def walk(rel: str, depth: int) -> None:
+        try:
+            entries = list(os.scandir(os.path.join(path, rel) if rel else path))
+        except OSError:
+            return
+        for entry in entries:
+            if not entry.is_dir(follow_symlinks=False):
+                continue
+            child = f"{rel}/{entry.name}" if rel else entry.name
+            if any(child == s or child.startswith(f"{s}/") for s in skip_rels):
+                continue
+            if entry.name == ".venv":
+                if os.path.isfile(os.path.join(entry.path, "pyvenv.cfg")):
+                    found.append(child)
+                continue
+            if depth < VENV_SCAN_DEPTH and not entry.name.startswith(".") and entry.name not in _VENV_SCAN_SKIP:
+                walk(child, depth + 1)
+
+    walk("", 0)
+    return sorted(found)
+
+
+def editable_source_dirs(venv: str, within: str) -> List[str]:
+    """Absolute source dirs a venv's editable ``.pth`` files point at, under *within*.
+
+    An editable install records its source as an absolute HOST path, which
+    does not exist in the container (the tree is at /workspace). Anything
+    outside the mounted tree is left alone: the room was not given it.
+    """
+    within = os.path.realpath(within)
+    dirs: List[str] = []
+    for pth in glob.glob(os.path.join(venv, "lib", "python*", "site-packages", "*.pth")):
+        try:
+            with open(pth, encoding="utf-8") as fh:
+                lines = fh.read().splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            line = line.strip()
+            if not os.path.isabs(line) or not os.path.isdir(line):
+                continue
+            real = os.path.realpath(line)
+            if real.startswith(within + os.sep) and real not in dirs:
+                dirs.append(real)
+    return sorted(dirs)
+
+
+def _host_python_volumes(room: Room, path: str) -> List[str]:
+    """Keep a room from rebuilding the host's Python venvs.
+
+    The workspace is the host tree, read-write, so its ``.venv`` dirs are the
+    ones host services run from. Their interpreter symlinks point at host
+    paths the container lacks, so inside a room they look broken, and an agent
+    that "repairs" one (``uv sync``) rebuilds it on the container's
+    interpreter, which is missing on the host. Every host process that spawns
+    from that venv then fails (infra-e7ke: the Janus stdio gateway).
+
+    Read-only binds, so host venvs run as-is in the room and nothing in the
+    room can rewrite one: the uv interpreter store at its identical host path;
+    each host venv; and each venv's editable source dirs at their identical
+    host path (the ``.pth`` holds that path; edits made through /workspace
+    show there because it is the same tree). A room that needs different
+    dependencies builds its own environment (``uv run --isolated``).
+    """
+    specs: List[str] = []
+    store = uv_python_store()
+    if store:
+        specs.append(f"{store}:{store}:ro")
+    sources: List[str] = []
+    for rel in host_venvs(path, room_worktree_repos(room)):
+        venv = os.path.join(path, rel)
+        specs.append(f"{venv}:{CONTAINER_MOUNT}/{rel}:ro")
+        sources.extend(d for d in editable_source_dirs(venv, path) if d not in sources)
+    specs.extend(f"{src}:{src}:ro" for src in sorted(sources))
+    return specs
+
+
 def workspace_mount_map(room: Room) -> List[List[str]]:
     """``[[container_path, host_path], ...]`` for *room*, longest prefix first.
 
@@ -355,6 +461,8 @@ def _room_overlay_volumes(room: Room) -> List[str]:
                     path,
                 )
             )
+        # After the worktree binds too: a venv bind nests inside the workspace.
+        volumes.extend(_host_python_volumes(room, path))
         volumes.extend(_broker_volumes())
     # Both room kinds: a member's skills are the member's, not the workspace's
     # — a sandbox room's members lose them exactly the same way (#188).
