@@ -34,8 +34,19 @@ Design points, each verified against grok v0.2.93 before this was built:
 * **Sandbox profiles are deliberately NOT used**: under ``agent stdio``
   a ``GROK_SANDBOX`` profile either fails open (unknown profile → runs
   unsandboxed) or kills the process on ``session/new`` (defined
-  profile).  Safety rides the permission gate here instead.  The
-  operator can still force one via ``RETINUE_GROKBUILD_SANDBOX``.
+  profile).  The operator can still force one via
+  ``RETINUE_GROKBUILD_SANDBOX``.
+* **Confinement (#254).** The permission gate cannot police what a shell
+  command does, so the ``grok agent stdio`` process itself runs inside
+  bubblewrap — kernel-enforced, no tty needed — at the same level as a
+  Hermes member's room container: the room tree and worktrees read-write;
+  host venvs, the uv interpreter store and a worktree's shadowed checkout
+  read-only; toolchains and system dirs read-only; its Grok home and auth;
+  a private ``/tmp``; nothing else from ``$HOME``; no ``/run`` (no
+  container socket); and no-new-privileges (no ``sudo``).  Network stays —
+  the agent loop needs its model API.  On by default; a missing ``bwrap``
+  fails the member's start closed.  ``RETINUE_GROKBUILD_CONFINE=0`` is an
+  explicit, logged operator opt-out.
 
 Hidden reasoning: ``agent_thought_chunk`` updates are received and
 dropped.  They are never surfaced, stored, or logged.
@@ -63,6 +74,8 @@ AUTH_PATH_ENV = "RETINUE_GROKBUILD_AUTH_PATH"
 APPROVAL_ENV = "RETINUE_GROKBUILD_APPROVAL"
 MODEL_ENV = "RETINUE_GROKBUILD_MODEL"
 SANDBOX_ENV = "RETINUE_GROKBUILD_SANDBOX"
+CONFINE_ENV = "RETINUE_GROKBUILD_CONFINE"
+BWRAP_ENV = "RETINUE_GROKBUILD_BWRAP"
 IDLE_ENV = "RETINUE_GROKBUILD_IDLE_SECS"
 
 APPROVAL_WORKSPACE = "workspace"
@@ -138,6 +151,115 @@ def auth_path() -> str:
     if override:
         return os.path.abspath(os.path.expanduser(override))
     return os.path.expanduser("~/.grok/auth.json")
+
+
+# ── confinement (#254) ───────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class Confinement:
+    """What a confined member may see. Paths are absolute host paths.
+
+    ``rw``: the room tree and its worktrees. ``ro``: bound read-only AFTER
+    ``rw`` so they win inside it — host venvs, the uv interpreter store, and
+    a worktree's shadowed checkout.
+    """
+
+    rw: Tuple[str, ...]
+    ro: Tuple[str, ...] = ()
+
+
+def confinement_enabled() -> bool:
+    raw = (os.getenv(CONFINE_ENV) or "1").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+def bwrap_binary() -> Optional[str]:
+    override = (os.getenv(BWRAP_ENV) or "").strip()
+    if override:
+        return override if os.path.isfile(override) else None
+    return shutil.which("bwrap")
+
+
+def build_confinement(
+    cwd: str,
+    extra_roots: Tuple[str, ...] = (),
+    denied_roots: Optional[Dict[str, str]] = None,
+) -> Confinement:
+    """The confinement for one turn, derived from the turn's own roots."""
+    from . import ide
+
+    rw = tuple(dict.fromkeys(os.path.realpath(p) for p in (cwd, *extra_roots) if p))
+    ro: List[str] = [os.path.realpath(p) for p in (denied_roots or {})]
+    store = ide.uv_python_store()
+    if store:
+        ro.append(store)
+    # Host venvs under the room tree only; a worktree's venv is the room's own.
+    root = rw[0] if rw else ""
+    if root and os.path.isdir(root):
+        skip = [os.path.relpath(p, root) for p in ro if p.startswith(root + os.sep)]
+        ro.extend(os.path.join(root, rel) for rel in ide.host_venvs(root, skip))
+    return Confinement(rw=rw, ro=tuple(dict.fromkeys(ro)))
+
+
+def _toolchain_roots(binary: str) -> List[str]:
+    """Read-only dirs the grok launcher and its tools resolve into."""
+    home = os.path.expanduser("~")
+    roots: List[str] = []
+    mise = os.path.join(home, ".local", "share", "mise")
+    for p in (binary, shutil.which("node") or "", shutil.which("bd") or ""):
+        if not p:
+            continue
+        real = os.path.realpath(p)
+        if real.startswith(mise + os.sep):
+            roots.append(mise)
+        elif real.startswith(home + os.sep):
+            roots.append(os.path.dirname(real))
+    return list(dict.fromkeys(roots))
+
+
+def confine_argv(
+    bwrap: str,
+    spec: Confinement,
+    *,
+    binary: str,
+    grok_home_dir: str,
+    auth: str,
+    cwd: str,
+) -> List[str]:
+    """bubblewrap prefix for one member process. ORDER IS LOAD-BEARING:
+    a later bind wins over an earlier one inside it, so read-only overlays
+    come after the read-write roots they sit in."""
+    home = os.path.expanduser("~")
+    argv = [
+        bwrap, "--die-with-parent", "--new-session", "--unshare-ipc",
+        "--unshare-uts", "--proc", "/proc", "--dev", "/dev",
+        "--tmpfs", "/tmp", "--tmpfs", "/run",
+    ]
+    for d in ("/usr", "/etc", "/opt"):
+        if os.path.isdir(d) and not os.path.islink(d):
+            argv += ["--ro-bind", d, d]
+    for d in ("/bin", "/sbin", "/lib", "/lib64"):
+        if os.path.islink(d):
+            argv += ["--symlink", os.readlink(d), d]
+        elif os.path.isdir(d):
+            argv += ["--ro-bind", d, d]
+    resolv = os.path.realpath("/etc/resolv.conf")
+    if resolv.startswith("/run/"):
+        argv += ["--ro-bind-try", os.path.dirname(resolv), os.path.dirname(resolv)]
+    for d in _toolchain_roots(binary):
+        argv += ["--ro-bind-try", d, d]
+    for p in spec.rw:
+        argv += ["--bind", p, p]
+    for p in spec.ro:
+        argv += ["--ro-bind-try", p, p]
+    argv += ["--bind", grok_home_dir, grok_home_dir]
+    argv += ["--bind-try", auth, auth]
+    for rel in (".gitconfig", ".config/git"):
+        path = os.path.join(home, rel)
+        argv += ["--ro-bind-try", path, path]
+    argv += ["--setenv", "HOME", home, "--chdir", cwd]
+    return argv
 
 
 def grok_home(home_dir: str) -> str:
@@ -621,10 +743,14 @@ class AcpProcess:
         *,
         env_extra: Optional[Dict[str, str]] = None,
         model: str = "",
+        confine: Optional[Confinement] = None,
+        cwd: str = "",
     ):
         self._home_dir = home_dir
         self._env_extra = dict(env_extra or {})
         self._model = (model or "").strip()
+        self._confine = confine
+        self._cwd = cwd
         self._proc: Optional[asyncio.subprocess.Process] = None
         self._reader: Optional[asyncio.Task] = None
         self._stderr_task: Optional[asyncio.Task] = None
@@ -660,6 +786,25 @@ class AcpProcess:
         env.update(self._env_extra)
         model = self._model or (os.getenv(MODEL_ENV) or "").strip()
         argv = agent_argv(binary, model)
+        if self._confine is not None:
+            bwrap = bwrap_binary()
+            if not bwrap:
+                raise GrokBuildUnavailable(
+                    "bubblewrap (bwrap) is required to confine Grok Build members; "
+                    f"install it, or set {CONFINE_ENV}=0 to run them unconfined"
+                )
+            argv = confine_argv(
+                bwrap,
+                self._confine,
+                binary=binary,
+                grok_home_dir=env["GROK_HOME"],
+                auth=env["GROK_AUTH_PATH"],
+                cwd=self._cwd or self._confine.rw[0],
+            ) + argv
+        else:
+            logger.warning(
+                "grokbuild: member process running UNCONFINED (%s=0)", CONFINE_ENV
+            )
         try:
             self._proc = await asyncio.create_subprocess_exec(
                 *argv,
@@ -1044,6 +1189,8 @@ class _MemberSession:
     # Model this process was launched with (`grok agent -m`). A later
     # switch must drop the session — session/load resumes the old model.
     model: str = ""
+    # Confinement the process was launched under; a change needs a new process.
+    confine: Optional[Confinement] = None
 
 
 class GrokBuildManager:
@@ -1111,7 +1258,12 @@ class GrokBuildManager:
         return lock
 
     async def _acquire(
-        self, room_id: str, member: str, cwd: str, model: str = ""
+        self,
+        room_id: str,
+        member: str,
+        cwd: str,
+        model: str = "",
+        confine: Optional[Confinement] = None,
     ) -> Tuple[_MemberSession, bool]:
         """Live session for (room, member); second value = fresh session.
 
@@ -1129,6 +1281,7 @@ class GrokBuildManager:
             and sess.process.alive
             and sess.cwd == cwd
             and (sess.model or "") == model
+            and sess.confine == confine
         ):
             sess.turn_active = True  # claimed before another key's reap can look
             return sess, False
@@ -1139,6 +1292,8 @@ class GrokBuildManager:
             self._home_dir,
             env_extra=_member_env_extra(self._home_dir, member),
             model=model,
+            confine=confine,
+            cwd=cwd,
         )
         await process.start()
         mcp = mcp_servers(self._home_dir)
@@ -1165,6 +1320,7 @@ class GrokBuildManager:
                     cwd=cwd,
                     mcp_names=frozenset(s["name"] for s in mcp),
                     model=model,
+                    confine=confine,
                 )
                 self._sessions[key] = sess
                 logger.info(
@@ -1198,6 +1354,7 @@ class GrokBuildManager:
             cwd=cwd,
             mcp_names=frozenset(s["name"] for s in mcp),
             model=model,
+            confine=confine,
         )
         self._sessions[key] = sess
         self._remember(key, sid, cwd, model)
@@ -1256,7 +1413,14 @@ class GrokBuildManager:
             # _acquire returns with turn_active already claimed, so an idle
             # reap triggered from another member's turn cannot close this
             # process between acquisition and the prompt below.
-            sess, fresh = await self._acquire(room_id, member, cwd, model=model)
+            confine = (
+                build_confinement(cwd, tuple(extra_roots), denied_roots)
+                if confinement_enabled()
+                else None
+            )
+            sess, fresh = await self._acquire(
+                room_id, member, cwd, model=model, confine=confine
+            )
             chunks: List[str] = []
             # Message chunks before and after a tool run are separate
             # assistant messages; joined bare they read as one run-on
