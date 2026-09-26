@@ -557,16 +557,68 @@ def _codex_status(home_dir: str) -> Dict[str, Any]:
     return {"id": _CODEX_PROVIDER, "status": STATUS_MISSING, "error": None}
 
 
+# Env names the runtime reads a Claude subscription (OAuth / setup) token
+# from, ahead of ANTHROPIC_API_KEY — agent/anthropic_adapter.resolve_anthropic_token.
+_CLAUDE_SUBSCRIPTION_ENV = ("ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN")
+LOGIN_SUBSCRIPTION = "subscription"
+LOGIN_API_KEY = "api_key"
+_CLAUDE_RELOGIN_ERROR = (
+    "Claude subscription login expired — sign in again with Claude Code on the host"
+)
+
+
+def _has_env_value(home_dir: str, name: str) -> bool:
+    return bool(os.environ.get(name, "").strip()) or _env_has_key(home_dir, name)
+
+
+def _claude_code_credential_status() -> Optional[str]:
+    """Status of the Claude Code OAuth credential (file / keychain), or None.
+
+    Uses the runtime's own read-only readers — never the resolver, which can
+    refresh and rewrite the credential. Status only; token values stay here.
+    """
+    try:
+        from agent.anthropic_adapter import (
+            is_claude_code_token_valid,
+            read_claude_code_credentials,
+        )
+
+        creds = read_claude_code_credentials()
+    except Exception:
+        logger.debug("Retinue auth: Claude Code credential read failed", exc_info=True)
+        return None
+    if not creds:
+        return None
+    if is_claude_code_token_valid(creds):
+        return STATUS_OK
+    # Expired, but the runtime refreshes it on first use.
+    if str(creds.get("refreshToken") or "").strip():
+        return STATUS_OK
+    return STATUS_RELOGIN
+
+
 def _anthropic_status(home_dir: str) -> Dict[str, Any]:
-    if _env_has_key(home_dir, "ANTHROPIC_API_KEY"):
-        return {"id": _ANTHROPIC_PROVIDER, "status": STATUS_OK, "error": None}
+    """Claude status + which login the runtime will use, in runtime order."""
+
+    def _row(status: str, login: Optional[str], error: Optional[str] = None) -> Dict[str, Any]:
+        return {"id": _ANTHROPIC_PROVIDER, "status": status, "error": error, "login": login}
+
+    if any(_has_env_value(home_dir, name) for name in _CLAUDE_SUBSCRIPTION_ENV):
+        return _row(STATUS_OK, LOGIN_SUBSCRIPTION)
+    if _has_env_value(home_dir, "ANTHROPIC_API_KEY"):
+        return _row(STATUS_OK, LOGIN_API_KEY)
+    cc_status = _claude_code_credential_status()
+    if cc_status is not None:
+        error = _CLAUDE_RELOGIN_ERROR if cc_status == STATUS_RELOGIN else None
+        return _row(cc_status, LOGIN_SUBSCRIPTION, error)
     state = _provider_state(_load_auth_store(_auth_path(home_dir)), _ANTHROPIC_PROVIDER)
     tokens = state.get("tokens") if isinstance(state, dict) else {}
-    if isinstance(tokens, dict) and (
-        str(tokens.get("access_token") or tokens.get("api_key") or "").strip()
-    ):
-        return {"id": _ANTHROPIC_PROVIDER, "status": STATUS_OK, "error": None}
-    return {"id": _ANTHROPIC_PROVIDER, "status": STATUS_MISSING, "error": None}
+    if isinstance(tokens, dict):
+        if str(tokens.get("access_token") or "").strip():
+            return _row(STATUS_OK, LOGIN_SUBSCRIPTION)
+        if str(tokens.get("api_key") or "").strip():
+            return _row(STATUS_OK, LOGIN_API_KEY)
+    return _row(STATUS_MISSING, None)
 
 
 def account_status(home_dir: str) -> List[Dict[str, Any]]:
@@ -574,7 +626,7 @@ def account_status(home_dir: str) -> List[Dict[str, Any]]:
     xai = workspace_provider_status(home_dir)
     return [
         {**xai[0], "login": "device_code"},
-        {**_anthropic_status(home_dir), "login": "api_key"},
+        _anthropic_status(home_dir),
         {**_codex_status(home_dir), "login": "device_code"},
     ]
 
