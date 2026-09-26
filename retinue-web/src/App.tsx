@@ -63,6 +63,13 @@ import {
   type SaveRoutineFormState,
 } from "./cron";
 import { LOGO_SRC, YOU_SRC, agentIcon } from "./icons";
+import {
+  attentionBadge,
+  attentionLabel,
+  clearedByPrincipalPost,
+  isHeldNotice,
+  roomAttention,
+} from "./attention";
 import { includeBusyThinkers, isWorkingIn, remainingThinkers, remainingThinkersAfter } from "./thinking";
 import { PushToTalkButton } from "./voice/PushToTalkButton";
 import { formatSpeakError, nextSpeakSeqs } from "./voice/speakQueue";
@@ -750,6 +757,17 @@ function ReorderButtons({
   );
 }
 
+/** Paused-on-you (blocking) or answered-for-you (non-blocking); nothing when idle. */
+function AttentionBadgeChip({ room }: { room: RoomMeta }) {
+  const badge = attentionBadge(roomAttention(room));
+  if (!badge) return null;
+  return (
+    <span className={badge.className} title={badge.title}>
+      {badge.label}
+    </span>
+  );
+}
+
 /**
  * Collapsed-sidebar rail entry for one room — an initial today, structured so
  * a richer per-agent avatar badge can drop in later without a reshape.
@@ -764,7 +782,8 @@ function RailButton({
   onClick: () => void;
 }) {
   const initial = (room.name.trim()[0] || "?").toUpperCase();
-  const label = room.needs_user ? `${room.name} — needs you` : room.name;
+  const attention = roomAttention(room);
+  const label = attentionLabel(room.name, attention);
   return (
     <button
       type="button"
@@ -776,7 +795,12 @@ function RailButton({
       onClick={onClick}
     >
       {initial}
-      {room.needs_user && <span className="rail-needs-you" aria-hidden="true" />}
+      {attention !== "idle" && (
+        <span
+          className={attention === "waiting" ? "rail-needs-you" : "rail-answered"}
+          aria-hidden="true"
+        />
+      )}
     </button>
   );
 }
@@ -884,8 +908,10 @@ function MessageRow({
     </time>
   ) : null;
   if (msg.kind === "system") {
+    // A post the needs-you barrier kept from starting a turn (#256).
+    const held = isHeldNotice(msg.text);
     return (
-      <div className="msg-system">
+      <div className={held ? "msg-system msg-held" : "msg-system"}>
         — {msg.text} —{stamp}
       </div>
     );
@@ -1343,11 +1369,7 @@ function RoomView({
           <h2>
             {room.name}
             {room.archived ? " (archived)" : ""}
-            {room.needs_user && (
-              <span className="needs-you-badge" title="A retainer asked for you">
-                needs you
-              </span>
-            )}
+            <AttentionBadgeChip room={room} />
             {(room.workspace ?? "sandbox") === "ide" && (
               <span className="mode-badge" title={room.ide_path || ""}>
                 {ideFolderLabel(room.ide_path)}
@@ -3930,11 +3952,7 @@ export default function App() {
                 >
                   {r.name}
                   {r.archived ? " (archived)" : ""}
-                  {r.needs_user && (
-                    <span className="needs-you-badge" title="A retainer asked for you">
-                      needs you
-                    </span>
-                  )}
+                  <AttentionBadgeChip room={r} />
                   {(r.workspace ?? "sandbox") === "ide" && (
                     <span className="mode-badge" title={r.ide_path || ""}>
                       {ideFolderLabel(r.ide_path)}
@@ -4282,9 +4300,9 @@ export default function App() {
             onUserPosted={() => {
               const id = current.id;
               setRooms((prev) =>
-                prev.map((r) => (r.id === id ? { ...r, needs_user: false } : r)),
+                prev.map((r) => (r.id === id ? clearedByPrincipalPost(r) : r)),
               );
-              setCurrent((cur) => (cur ? { ...cur, needs_user: false } : cur));
+              setCurrent((cur) => (cur ? clearedByPrincipalPost(cur) : cur));
             }}
             sidebarCollapsed={sidebarCollapsed}
             onToggleSidebar={toggleSidebar}

@@ -11,8 +11,12 @@ export interface RoomMeta {
   ide_path?: string | null;
   /** Which project this room is filed under. null = Unfiled. */
   project_id?: string | null;
-  /** A retainer @mentioned the principal; cleared when they next post. */
+  /** A retainer @mentioned the principal: the room is paused (a scheduling
+   * barrier) until they next post. */
   needs_user?: boolean;
+  /** A retainer answered the principal without asking anything. Surfaced,
+   * never a barrier; cleared when they next post (#256). */
+  answered_user?: boolean;
 }
 
 /** Projects group rooms (separate from team separators, which group agents). */

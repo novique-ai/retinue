@@ -1175,7 +1175,8 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             return {"seq": message.seq, "planned": [], "clarify": True}
         # needs_user is a scheduling barrier. The principal's own post
         # cleared it in _note_posted and may start a cycle. Any other
-        # user-kind speaker is recorded and does not.
+        # user-kind speaker is recorded, starts no turn, and is marked as
+        # held so the pause is visible (#256).
         stored = self.store.get(room_id)
         principal_name = str(principal.load(self._home_dir()).get("display_name") or "")
         if (
@@ -1183,7 +1184,11 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             and stored.needs_user
             and not engine.is_principal_speaker(message.speaker, principal_name)
         ):
-            return {"seq": message.seq, "planned": []}
+            self._post_system(
+                room_id,
+                engine.held_post_notice(message.speaker, message.seq, principal_name),
+            )
+            return {"seq": message.seq, "planned": [], "held": True}
         planned = engine.plan_user_turns(room, text, self._display_names(room))
         fut = asyncio.run_coroutine_threadsafe(self._run_cycle(room_id, message), self._loop)
         if wait:
@@ -1709,6 +1714,16 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
                 room_id,
                 user_message.seq,
             )
+            # A queued non-principal post the barrier caught is held, not
+            # silently dropped (#256). The principal's own post needs no
+            # notice: they are the one being waited on.
+            if not engine.is_principal_speaker(user_message.speaker, principal_name):
+                self._post_system(
+                    room_id,
+                    engine.held_post_notice(
+                        user_message.speaker, user_message.seq, principal_name
+                    ),
+                )
             return
         # No process-wide lock. The workspace values ride a ContextVar per
         # cycle, so concurrent rooms cannot interleave each other's mounts and
@@ -2668,7 +2683,7 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         return path if path and os.path.isdir(path) else ""
 
     def _note_posted(self, room_id: str, message: RoomMessage) -> None:
-        """Set or clear the room's needs_user flag for a just-posted line."""
+        """Update the room's needs_user / answered_user flags for a just-posted line."""
         if message.kind == KIND_SYSTEM:
             return
         room = self.store.get(room_id)
