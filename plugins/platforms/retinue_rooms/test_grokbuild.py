@@ -1112,3 +1112,40 @@ class TestConfinement:
         # dir, so no container control socket.
         assert set(out[4].split()) <= {"systemd"}
         assert out[5] == "NO_RUN_USER"
+
+
+    def test_confined_process_execs_the_resolved_binary(self, tmp_path, monkeypatch):
+        # The gateway finds grok via a PATH symlink (e.g. ~/.local/bin/grok ->
+        # ~/.grok/bin/grok -> grok-<ver>). The sandbox only exposes the real
+        # binary's dir, so exec'ing the symlink path fails with ENOENT.
+        real_dir = tmp_path / "grok-real"
+        real_dir.mkdir()
+        real = real_dir / "grok-1.0.40"
+        real.write_text("#!/bin/sh\n", encoding="utf-8")
+        real.chmod(0o755)
+        link_dir = tmp_path / "local-bin"
+        link_dir.mkdir()
+        link = link_dir / "grok"
+        link.symlink_to(real)
+        bwrap = tmp_path / "bwrap"
+        bwrap.write_text("#!/bin/sh\n", encoding="utf-8")
+        bwrap.chmod(0o755)
+        monkeypatch.setenv(grokbuild.BIN_ENV, str(link))
+        monkeypatch.setenv(grokbuild.BWRAP_ENV, str(bwrap))
+        monkeypatch.setenv(grokbuild.AUTH_PATH_ENV, str(tmp_path / "auth.json"))
+        seen = {}
+
+        async def fake_exec(*argv, **kwargs):
+            seen["argv"] = list(argv)
+            raise OSError("captured")
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+        proc = grokbuild.AcpProcess(
+            str(tmp_path), confine=grokbuild.Confinement(rw=(str(tmp_path),)), cwd=str(tmp_path)
+        )
+        with pytest.raises(grokbuild.GrokBuildUnavailable):
+            _run(proc.start())
+        assert seen["argv"][-3:] == [str(real), "agent", "stdio"]
+        assert str(link) not in seen["argv"]
+        joined = " ".join(seen["argv"])
+        assert f"--ro-bind-try {real_dir} {real_dir}" in joined

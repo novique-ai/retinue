@@ -206,6 +206,10 @@ def _toolchain_roots(binary: str) -> List[str]:
     """Read-only dirs the grok launcher and its tools resolve into."""
     home = os.path.expanduser("~")
     roots: List[str] = []
+    # The grok binary's own dir, wherever it lives; /usr is already bound.
+    real_bin = os.path.realpath(binary)
+    if not real_bin.startswith("/usr/"):
+        roots.append(os.path.dirname(real_bin))
     mise = os.path.join(home, ".local", "share", "mise")
     for p in (binary, shutil.which("node") or "", shutil.which("bd") or ""):
         if not p:
@@ -793,6 +797,10 @@ class AcpProcess:
                     "bubblewrap (bwrap) is required to confine Grok Build members; "
                     f"install it, or set {CONFINE_ENV}=0 to run them unconfined"
                 )
+            # Exec the RESOLVED binary: PATH entries such as ~/.local/bin are
+            # symlinks into dirs the sandbox does not expose (#254 follow-up).
+            binary = os.path.realpath(binary)
+            argv = agent_argv(binary, model)
             argv = confine_argv(
                 bwrap,
                 self._confine,
