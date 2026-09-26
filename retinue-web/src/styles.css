@@ -446,6 +446,18 @@ span.agent-runtime {
   position: relative;
 }
 
+.rail-answered {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 2px solid var(--bg-raised);
+  pointer-events: none;
+}
+
 .rail-needs-you {
   position: absolute;
   top: -2px;
@@ -648,6 +660,22 @@ span.agent-runtime {
   background: #3a2430;
   color: #f7768e;
   border: 1px solid #f7768e;
+}
+
+/* Answered-for-you (#256): informational, the room keeps working. Same
+   pill as .needs-you-badge, in the accent blue instead of the alert rose. */
+.answered-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  vertical-align: middle;
+  background: #1f2a44;
+  color: var(--accent);
+  border: 1px solid var(--accent);
 }
 
 .room-members {
@@ -873,6 +901,12 @@ span.agent-runtime {
   color: var(--text-dim);
   font-size: 12.5px;
   font-style: italic;
+}
+
+/* A post the needs-you barrier held (#256): louder than routine notices. */
+.msg-system.msg-held {
+  color: #f7768e;
+  font-style: normal;
 }
 
 .msg-system .msg-time {
