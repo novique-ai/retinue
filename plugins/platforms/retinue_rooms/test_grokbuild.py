@@ -1149,3 +1149,54 @@ class TestConfinement:
         assert str(link) not in seen["argv"]
         joined = " ".join(seen["argv"])
         assert f"--ro-bind-try {real_dir} {real_dir}" in joined
+
+
+class TestConfinedBrokerAccess:
+    """A confined member reaches host commands through the broker, like a
+    container member does via the image's shims (#254 follow-up)."""
+
+    def _ide(self, tmp_path):
+        root = tmp_path / "IDE"
+        (root / "data" / "broker").mkdir(parents=True)
+        (root / "infra" / "scripts").mkdir(parents=True)
+        (root / "infra" / "scripts" / "room-broker-client.py").write_text("# client\n", encoding="utf-8")
+        (root / "infra" / "governance").mkdir(parents=True)
+        (root / "infra" / "governance" / "broker-commands.yaml").write_text(
+            "commands:\n  bd: {}\n  git: {}\n  gh: {}\n  'bad name;rm': {}\n", encoding="utf-8"
+        )
+        return root
+
+    def test_shims_mirror_the_broker_allowlist(self, tmp_path, monkeypatch):
+        root = self._ide(tmp_path)
+        monkeypatch.setenv("RETINUE_IDE_ROOT", str(root))
+        gh = tmp_path / "gh"
+        gh.mkdir()
+        args, env = grokbuild.broker_access(str(gh))
+        shims = sorted(os.listdir(gh / "broker-bin"))
+        assert shims == ["bd", "gh", "host-git", "job"]  # git -> host-git; unsafe name dropped
+        client = root / "infra" / "scripts" / "room-broker-client.py"
+        assert (gh / "broker-bin" / "host-git").read_text(encoding="utf-8") == (
+            f'#!/bin/sh\nexec python3 "{client}" git "$@"\n'
+        )
+        assert args == ["--ro-bind", str(client), str(client), "--bind",
+                        str(root / "data" / "broker"), str(root / "data" / "broker")]
+        assert env["PATH"].split(os.pathsep)[0] == str(gh / "broker-bin")
+        assert env["RETINUE_BROKER_SOCK"] == str(root / "data" / "broker" / "broker.sock")
+
+    def test_no_broker_means_no_shims(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("RETINUE_IDE_ROOT", raising=False)
+        assert grokbuild.broker_access(str(tmp_path)) == ([], {})
+
+    def test_confine_argv_carries_broker_binds_and_path(self, tmp_path, monkeypatch):
+        root = self._ide(tmp_path)
+        monkeypatch.setenv("RETINUE_IDE_ROOT", str(root))
+        gh = tmp_path / "gh"
+        gh.mkdir()
+        argv = grokbuild.confine_argv(
+            "bwrap", grokbuild.Confinement(rw=(str(root),)), binary=str(tmp_path / "grok"),
+            grok_home_dir=str(gh), auth=str(tmp_path / "auth.json"), cwd=str(root),
+        )
+        joined = " ".join(argv)
+        assert f"--bind {root}/data/broker {root}/data/broker" in joined
+        i = argv.index("PATH")
+        assert argv[i - 1] == "--setenv" and argv[i + 1].startswith(str(gh / "broker-bin"))

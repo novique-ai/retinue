@@ -58,6 +58,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -222,6 +223,65 @@ def _toolchain_roots(binary: str) -> List[str]:
     return list(dict.fromkeys(roots))
 
 
+# Commands a confined member reaches through the host broker, exactly as a
+# container member does via the workspace image's shims: the broker's own
+# allowlist is the single source; `git` is exposed as `host-git` (native git
+# stays local, only host-git routes to the host), plus the `job` poller.
+_BROKER_ALLOWLIST_REL = ("infra", "governance", "broker-commands.yaml")
+
+
+def broker_shim_commands(ide_root: str) -> List[str]:
+    try:
+        import yaml
+
+        with open(os.path.join(ide_root, *_BROKER_ALLOWLIST_REL), encoding="utf-8") as fh:
+            names = list((yaml.safe_load(fh) or {}).get("commands") or {})
+    except Exception:
+        logger.warning("grokbuild: broker allowlist unreadable; no broker shims", exc_info=True)
+        return []
+    out = ["host-git" if n == "git" else str(n) for n in names if _SAFE_SHIM.match(str(n))]
+    return sorted(set(out + ["job"]))
+
+
+_SAFE_SHIM = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+
+
+def broker_access(grok_home_dir: str) -> Tuple[List[str], Dict[str, str]]:
+    """bwrap args + env giving a confined member the same broker a container
+    member has (#254): shims for every allowlisted command, the client
+    read-only, and the socket. Empty when this host has no broker."""
+    from . import ide
+
+    root = ide.configured_ide_root()
+    if not root:
+        return [], {}
+    client = os.path.join(root, *ide.BROKER_CLIENT_REL)
+    sock_dir = os.path.join(root, *ide.BROKER_SOCK_REL)
+    if not (os.path.isfile(client) and os.path.isdir(sock_dir)):
+        return [], {}
+    shim_dir = os.path.join(grok_home_dir, "broker-bin")
+    os.makedirs(shim_dir, exist_ok=True)
+    for name in broker_shim_commands(root):
+        cmd = "git" if name == "host-git" else name
+        path = os.path.join(shim_dir, name)
+        body = f'#!/bin/sh\nexec python3 "{client}" {cmd} "$@"\n'
+        try:
+            with open(path, encoding="utf-8") as fh:
+                current = fh.read()
+        except OSError:
+            current = None
+        if current != body:
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(body)
+            os.chmod(path, 0o755)
+    args = ["--ro-bind", client, client, "--bind", sock_dir, sock_dir]
+    env = {
+        "RETINUE_BROKER_SOCK": os.path.join(sock_dir, "broker.sock"),
+        "PATH": shim_dir + os.pathsep + (os.environ.get("PATH") or "/usr/bin:/bin"),
+    }
+    return args, env
+
+
 def confine_argv(
     bwrap: str,
     spec: Confinement,
@@ -259,6 +319,10 @@ def confine_argv(
         argv += ["--ro-bind-try", p, p]
     argv += ["--bind", grok_home_dir, grok_home_dir]
     argv += ["--bind-try", auth, auth]
+    broker_args, broker_env = broker_access(grok_home_dir)
+    argv += broker_args
+    for key, value in broker_env.items():
+        argv += ["--setenv", key, value]
     for rel in (".gitconfig", ".config/git"):
         path = os.path.join(home, rel)
         argv += ["--ro-bind-try", path, path]
