@@ -148,6 +148,19 @@ body {
   min-width: 0;
 }
 
+.settings-claude {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  min-width: 0;
+  text-align: right;
+}
+
+.settings-claude summary {
+  cursor: pointer;
+}
+
 .settings-key input {
   width: 160px;
 }

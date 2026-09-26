@@ -39,6 +39,7 @@ import {
   VoiceStatus,
   WorkspaceStatus,
 } from "./api";
+import { ClaudeAccountControls, type AccountRow } from "./accounts";
 import { formatMessageTime, messageTimeMs } from "./time";
 import {
   CROSS_RUNTIME_CONFIRM,
@@ -3013,7 +3014,7 @@ function SettingsPanel({
   onPrincipal?: (p: Principal) => void;
   onDirtyChange?: (dirty: boolean) => void;
 }) {
-  const [accounts, setAccounts] = useState<Array<ProviderAuth & { login?: string }>>([]);
+  const [accounts, setAccounts] = useState<AccountRow[]>([]);
   const [voice, setVoice] = useState<VoiceStatus | null>(null);
   const [workspace, setWorkspace] = useState<WorkspaceStatus | null>(null);
   const [models, setModels] = useState<ModelPreset[]>([]);
@@ -3128,31 +3129,22 @@ function SettingsPanel({
               {acct.error ? ` · ${acct.error}` : ""}
             </div>
           </div>
-          {acct.login === "api_key" || acct.id === "anthropic" ? (
-            <div className="settings-key">
-              <input
-                type="password"
-                placeholder="Anthropic API key"
-                value={claudeKey}
-                onChange={(e) => setClaudeKey(e.target.value)}
-              />
-              <button
-                className="mini"
-                disabled={!claudeKey.trim()}
-                onClick={async () => {
-                  try {
-                    await api.saveApiKey("anthropic", claudeKey.trim());
-                    setClaudeKey("");
-                    setNote("Claude key saved in this workspace.");
-                    reload();
-                  } catch (e) {
-                    setNote(String(e));
-                  }
-                }}
-              >
-                Save
-              </button>
-            </div>
+          {acct.id === "anthropic" ? (
+            <ClaudeAccountControls
+              acct={acct}
+              apiKey={claudeKey}
+              onApiKeyChange={setClaudeKey}
+              onSaveApiKey={async () => {
+                try {
+                  await api.saveApiKey("anthropic", claudeKey.trim());
+                  setClaudeKey("");
+                  setNote("Claude API key saved in this workspace (API billing).");
+                  reload();
+                } catch (e) {
+                  setNote(String(e));
+                }
+              }}
+            />
           ) : (
             <button
               className="mini"

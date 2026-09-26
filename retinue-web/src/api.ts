@@ -430,7 +430,7 @@ export const api = {
   authStatus: () =>
     req<{
       providers: ProviderAuth[];
-      accounts?: Array<ProviderAuth & { login?: string }>;
+      accounts?: Array<ProviderAuth & { login?: string | null }>;
       session: ReauthSession | null;
     }>("GET", "/auth"),
   startReauth: (provider = "xai-oauth") =>

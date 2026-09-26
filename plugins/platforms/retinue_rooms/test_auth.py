@@ -12,6 +12,39 @@ from . import auth, hire
 from .store import RoomStore
 
 
+@pytest.fixture(autouse=True)
+def isolated_claude_home(tmp_path, monkeypatch):
+    """Never read the host's real Claude Code login (file, keychain, env).
+
+    Public name on purpose: tests/retinue_rooms re-exports this module with
+    ``import *``, which skips underscore names — the autouse fixture must travel.
+    """
+    import agent.anthropic_adapter as adapter_mod
+
+    home = tmp_path / "fake-user-home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(adapter_mod, "_read_claude_code_credentials_from_keychain", lambda: None)
+    for name in ("ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+    return home
+
+
+def _write_claude_credentials(home: Path, *, expires_in_ms: int, refresh: str) -> None:
+    import time
+
+    _write(
+        home / ".claude" / ".credentials.json",
+        {
+            "claudeAiOauth": {
+                "accessToken": "fixture-access",
+                "refreshToken": refresh,
+                "expiresAt": int(time.time() * 1000) + expires_in_ms,
+            }
+        },
+    )
+
+
 def _write(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload), encoding="utf-8")
@@ -314,6 +347,50 @@ def test_account_status_and_anthropic_api_key(tmp_path):
     assert "ANTHROPIC_API_KEY=sk-ant-test" in env
     accounts = {a["id"]: a for a in auth.account_status(str(tmp_path))}
     assert accounts["anthropic"]["status"] == auth.STATUS_OK
+    assert accounts["anthropic"]["login"] == auth.LOGIN_API_KEY
+
+
+def test_anthropic_subscription_valid_is_ok(tmp_path, isolated_claude_home):
+    _write_claude_credentials(isolated_claude_home, expires_in_ms=3_600_000, refresh="")
+    row = {a["id"]: a for a in auth.account_status(str(tmp_path))}["anthropic"]
+    assert row["status"] == auth.STATUS_OK
+    assert row["login"] == auth.LOGIN_SUBSCRIPTION
+    assert row["error"] is None
+    assert "fixture-access" not in json.dumps(row)
+
+
+def test_anthropic_subscription_expired_with_refresh_is_ok(tmp_path, isolated_claude_home):
+    _write_claude_credentials(
+        isolated_claude_home, expires_in_ms=-3_600_000, refresh="fixture-refresh"
+    )
+    row = {a["id"]: a for a in auth.account_status(str(tmp_path))}["anthropic"]
+    assert row["status"] == auth.STATUS_OK
+    assert row["login"] == auth.LOGIN_SUBSCRIPTION
+    assert "fixture-refresh" not in json.dumps(row)
+
+
+def test_anthropic_subscription_expired_without_refresh_needs_relogin(
+    tmp_path, isolated_claude_home
+):
+    _write_claude_credentials(isolated_claude_home, expires_in_ms=-3_600_000, refresh="")
+    row = {a["id"]: a for a in auth.account_status(str(tmp_path))}["anthropic"]
+    assert row["status"] == auth.STATUS_RELOGIN
+    assert row["login"] == auth.LOGIN_SUBSCRIPTION
+    assert row["error"]
+    assert "fixture-access" not in json.dumps(row)
+
+
+def test_anthropic_nothing_is_missing(tmp_path):
+    row = {a["id"]: a for a in auth.account_status(str(tmp_path))}["anthropic"]
+    assert row["status"] == auth.STATUS_MISSING
+    assert row["login"] is None
+
+
+def test_anthropic_oauth_env_token_is_subscription(tmp_path):
+    (tmp_path / ".env").write_text("CLAUDE_CODE_OAUTH_TOKEN=fixture-setup\n", encoding="utf-8")
+    row = {a["id"]: a for a in auth.account_status(str(tmp_path))}["anthropic"]
+    assert row["status"] == auth.STATUS_OK
+    assert row["login"] == auth.LOGIN_SUBSCRIPTION
 
 
 def test_reauth_reuses_pending_session(monkeypatch):
