@@ -31,6 +31,8 @@ KIND_TOOL = "tool"
 CYCLE_INTERNAL_ERROR_PREFIX = "internal error running the turn cycle"
 CYCLE_BUDGET_PREFIX = "turn budget"
 CYCLE_STOPPED_PREFIX = "Stopped."
+# System line for a post the needs_user barrier kept from starting a turn.
+HELD_POST_PREFIX = "Held:"
 CYCLE_ROUND_BUDGET_PREFIX = "⚠️ round budget reached"
 DID_NOT_REPLY_INFIX = " did not reply ("
 
@@ -135,9 +137,12 @@ class Room:
     # Spoken principal @mention. Scheduling barrier until that person posts.
     needs_user: bool = False
     # The principal's post cleared needs_user, so the room owes them an
-    # answer: the next agent line re-raises the flag unless it hands off to
-    # a member (#246). Runtime state, never composition.
+    # answer: the next agent line surfaces it unless it hands off to a
+    # member (#246). Runtime state, never composition.
     needs_user_reply: bool = False
+    # An agent answered the principal without asking anything. Surfaced to
+    # them, never a scheduling barrier; cleared when they next post (#256).
+    answered_user: bool = False
 
     def default_responder(self) -> Optional[str]:
         if self.lead and self.lead in self.members:
@@ -166,6 +171,7 @@ class Room:
             project_id=(str(data["project_id"]) if data.get("project_id") else None),
             needs_user=bool(data.get("needs_user")),
             needs_user_reply=bool(data.get("needs_user_reply")),
+            answered_user=bool(data.get("answered_user")),
         )
 
 
@@ -429,21 +435,31 @@ def apply_needs_user(
     principal_name: str = "",
     member_names: Optional[Dict[str, str]] = None,
 ) -> bool:
-    """Set or clear ``room.needs_user`` for a newly posted message.
+    """Update ``needs_user`` / ``answered_user`` for a newly posted message.
 
-    An agent line that @mentions the principal sets the flag. The
-    principal's own next post clears it and leaves the room owing them an
-    answer: the next agent line re-raises the flag even without a mention,
-    unless it hands off to a member (#246). Another user-kind speaker
-    (automation, a routine) does not clear it. System notices do neither.
-    Returns whether the flag changed.
+    Two states, one rule (#256): only an explicit ask blocks.
+
+    * An agent line with a live ``@principal`` mention is an ask. It sets
+      ``needs_user``, the scheduling barrier, and supersedes any pending
+      answer.
+    * The principal's own post clears both flags. If it cleared the
+      barrier, the room owes them an answer (#246).
+    * The next agent line pays that debt. A handoff to a member moves the
+      work inside the room and surfaces nothing. Any other answer sets
+      ``answered_user``: shown to the principal, never a barrier. To pause
+      the room again the agent must @mention them.
+
+    Another user-kind speaker (automation, a routine) clears nothing and
+    creates no debt. System notices do neither. Returns whether either
+    flag changed.
     """
-    before = bool(room.needs_user)
+    before = (bool(room.needs_user), bool(room.answered_user))
     if message.kind == KIND_USER and is_principal_speaker(
         message.speaker, principal_name
     ):
-        room.needs_user_reply = bool(room.needs_user_reply) or before
+        room.needs_user_reply = bool(room.needs_user_reply) or before[0]
         room.needs_user = False
+        room.answered_user = False
     elif message.kind == KIND_AGENT:
         owed = bool(room.needs_user_reply)
         room.needs_user_reply = False
@@ -454,9 +470,27 @@ def apply_needs_user(
             display_names=member_names,
         ):
             room.needs_user = True
+            room.answered_user = False
         elif owed and not parse_mentions(message.text, room.members, member_names):
-            room.needs_user = True
-    return bool(room.needs_user) != before
+            room.answered_user = True
+    return (bool(room.needs_user), bool(room.answered_user)) != before
+
+
+def held_post_notice(speaker: str, seq: int, principal_name: str = "") -> str:
+    """System line for a post the needs_user barrier kept from starting a turn.
+
+    The post stays in the transcript; members read it on their next turn.
+    """
+    who = (principal_name or "").strip() or "the principal"
+    return (
+        f"{HELD_POST_PREFIX} {speaker or 'a post'}'s message #{int(seq)} started "
+        f"no turn — the room is paused, waiting on {who}. Members will read "
+        f"it on their next turn."
+    )
+
+
+def is_held_post_notice(text: str) -> bool:
+    return (text or "").startswith(HELD_POST_PREFIX)
 
 
 def principal_escalation_after(

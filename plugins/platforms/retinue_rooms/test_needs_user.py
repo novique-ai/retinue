@@ -1,5 +1,9 @@
 """Principal @mention is a needs_user scheduling barrier (issues #141, #243).
 
+An owed answer without an @mention is surfaced as answered_user and does
+not pause the room; a post the barrier holds is marked in the transcript
+(issue #256).
+
 Run:
   scripts/run_tests.sh plugins/platforms/retinue_rooms/test_needs_user.py
 """
@@ -460,9 +464,13 @@ def test_non_principal_post_does_not_clear_or_schedule(tmp_path, monkeypatch):
         assert scheduled == []
         assert adapter.store.get("r-1").needs_user is True
         posted = adapter.store.read_since("r-1", 0)
-        assert [(m.kind, m.speaker, m.text) for m in posted] == [
-            (KIND_USER, "Room System", "ping")
+        # The held post is followed by a system line saying so (#256).
+        assert [(m.kind, m.speaker) for m in posted] == [
+            (KIND_USER, "Room System"),
+            (KIND_SYSTEM, "room"),
         ]
+        assert posted[0].text == "ping"
+        assert engine.is_held_post_notice(posted[1].text)
         adapter.post_user_message("r-1", "I decided", "You")
         assert adapter.store.get("r-1").needs_user is False
         assert len(scheduled) == 1
@@ -563,8 +571,11 @@ def test_queued_cycle_after_escalation_never_replays(tmp_path, monkeypatch):
         assert "ping" not in started
         assert flag_around_reply == [True, False]
         # "carry on" cleared the escalation, so scout's answer is owed back
-        # to the principal and re-raises the flag (#246).
-        assert adapter.store.get(room.id).needs_user is True
+        # to the principal (#246). It asks nothing, so it is surfaced as an
+        # answer and does not re-raise the barrier (#256).
+        stored = adapter.store.get(room.id)
+        assert stored.needs_user is False
+        assert stored.answered_user is True
         speakers = [
             m.speaker
             for m in adapter.store.read_since(room.id, 0)
@@ -577,21 +588,31 @@ def test_queued_cycle_after_escalation_never_replays(tmp_path, monkeypatch):
             if m.kind == KIND_USER
         ]
         assert ("Room System", "ping") in user_lines
+        # The discarded "ping" cycle is marked, not silently absorbed (#256).
+        held = [
+            m.text
+            for m in adapter.store.read_since(room.id, 0)
+            if m.kind == KIND_SYSTEM and engine.is_held_post_notice(m.text)
+        ]
+        assert len(held) == 1
+        assert "Room System" in held[0]
 
     asyncio.run(scenario())
 
 
-# ── owed reply (#246): an answer back to the principal re-raises the flag ──
+# ── owed reply (#246, #256): an answer back to the principal is surfaced ──
 
 
-def test_answer_to_principal_follow_up_re_raises_without_a_mention():
+def test_answer_to_principal_follow_up_is_surfaced_without_a_mention():
+    """#246 re-raised needs_user here; #256 surfaces it without pausing."""
     room = _room()
     _apply(room, _msg(KIND_AGENT, "@user which option?"))
     assert room.needs_user is True
     _apply(room, _msg(KIND_USER, "Explain the options in more detail.", speaker="Clayton"))
     assert room.needs_user is False
     _apply(room, _msg(KIND_AGENT, "Here is the detail, Clayton: option A is ..."))
-    assert room.needs_user is True
+    assert room.needs_user is False
+    assert room.answered_user is True
 
 
 def test_owed_reply_handed_to_a_member_does_not_raise():
@@ -599,9 +620,11 @@ def test_owed_reply_handed_to_a_member_does_not_raise():
     _apply(room, _msg(KIND_USER, "Go with A.", speaker="Clayton"))
     _apply(room, _msg(KIND_AGENT, "@editor please implement option A."))
     assert room.needs_user is False
+    assert room.answered_user is False
     # The owed reply was consumed by the handoff; later lines are ordinary.
     _apply(room, _msg(KIND_AGENT, "Done: option A shipped.", speaker="editor"))
     assert room.needs_user is False
+    assert room.answered_user is False
 
 
 def test_principal_post_that_cleared_nothing_owes_no_reply():
@@ -615,14 +638,18 @@ def test_owed_reply_is_consumed_once():
     room = _room(needs_user=True)
     _apply(room, _msg(KIND_USER, "More detail please.", speaker="Clayton"))
     _apply(room, _msg(KIND_AGENT, "Detail: ..."))
-    assert room.needs_user is True
-    _apply(room, _msg(KIND_USER, "Thanks, go ahead.", speaker="Clayton"))
+    assert room.answered_user is True
     assert room.needs_user is False
+    _apply(room, _msg(KIND_USER, "Thanks, go ahead.", speaker="Clayton"))
+    # The principal's post reads the answer and owes nothing: the barrier
+    # was not up, so there is no fresh owed reply (#256).
+    assert room.answered_user is False
+    assert room.needs_user_reply is False
     _apply(room, _msg(KIND_AGENT, "Detail again: ..."))
-    # Cleared again by the principal, so the next answer is owed again.
-    assert room.needs_user is True
-    room.needs_user = False
+    assert room.answered_user is False
+    assert room.needs_user is False
     _apply(room, _msg(KIND_AGENT, "An unrelated status line."))
+    assert room.answered_user is False
     assert room.needs_user is False
 
 
@@ -642,3 +669,165 @@ def test_owed_reply_roundtrips_and_stays_out_of_composition():
     again = Room.from_dict(room.to_dict())
     assert again.needs_user_reply is True
     assert "needs_user_reply" not in COMPOSITION_FIELDS
+
+
+# ── answered-for-you vs waiting-on-you (#256) ─────────────────────────────
+
+
+def test_owed_fyi_answer_does_not_pause_but_is_surfaced():
+    """A PASS or an acknowledgement back to the principal is not an ask."""
+    for reply in ("PASS: re-review of X is clean.", "Recorded — the terminal will restart."):
+        room = _room(needs_user=True)
+        _apply(room, _msg(KIND_USER, "Please re-review X.", speaker="Clayton"))
+        _apply(room, _msg(KIND_AGENT, reply))
+        assert room.needs_user is False
+        assert room.answered_user is True
+        assert not engine.cycle_blocked_by_principal(
+            room.needs_user,
+            _msg(KIND_USER, "ping", speaker="Room System"),
+            [],
+            principal_name="Clayton",
+            members=room.members,
+        )
+
+
+def test_explicit_ask_in_owed_reply_still_raises_the_barrier():
+    room = _room(needs_user=True)
+    _apply(room, _msg(KIND_USER, "Explain the options.", speaker="Clayton"))
+    _apply(room, _msg(KIND_AGENT, "@Clayton A or B — which do you want?"))
+    assert room.needs_user is True
+    assert room.answered_user is False
+
+
+def test_explicit_ask_supersedes_an_earlier_answer():
+    room = _room(answered_user=True)
+    _apply(room, _msg(KIND_AGENT, "@user I need approval to deploy."))
+    assert room.needs_user is True
+    assert room.answered_user is False
+
+
+def test_principal_post_clears_answered_user():
+    room = _room(answered_user=True)
+    _apply(room, _msg(KIND_USER, "Seen, thanks.", speaker="Clayton"))
+    assert room.answered_user is False
+    assert room.needs_user is False
+    assert room.needs_user_reply is False
+
+
+def test_non_principal_post_does_not_clear_answered_user():
+    room = _room(answered_user=True)
+    _apply(room, _msg(KIND_USER, "ping", speaker="Room System"))
+    _apply(room, _msg(KIND_AGENT, "Unrelated status."))
+    assert room.answered_user is True
+
+
+def test_answered_user_defaults_on_old_records_and_stays_out_of_composition():
+    from .store import COMPOSITION_FIELDS
+
+    old = Room.from_dict(
+        {"id": "r-1", "name": "Test", "members": ["scout"], "needs_user": True}
+    )
+    assert old.answered_user is False
+    assert old.needs_user is True
+    again = Room.from_dict(_room(answered_user=True).to_dict())
+    assert again.answered_user is True
+    assert "answered_user" not in COMPOSITION_FIELDS
+
+
+def test_payloads_expose_answered_user(tmp_path, monkeypatch):
+    adapter = _adapter(tmp_path, monkeypatch)
+    adapter.store.create(_room(answered_user=True))
+    row = adapter.list_rooms_public()[0]
+    assert row["answered_user"] is True
+    assert row["needs_user"] is False
+
+
+def test_fyi_answer_leaves_later_posts_free_to_start_turns(tmp_path, monkeypatch):
+    """End to end: a PASS back to the principal does not park the next post."""
+    adapter = _adapter(tmp_path, monkeypatch)
+    _principal(tmp_path)
+    room = _room(needs_user=True, members=["scout"], lead="scout", max_followup_rounds=0)
+    adapter.store.create(room)
+    trigger = adapter.store.append(
+        room.id,
+        RoomMessage(
+            seq=0, ts=0, kind=KIND_USER, speaker="Ada Lovelace", text="please re-review X"
+        ),
+    )
+    adapter._note_posted(room.id, trigger)
+
+    async def fake_turn(_room, member):
+        return True, "PASS: X is clean."
+
+    monkeypatch.setattr(adapter, "_agent_turn", fake_turn)
+    asyncio.run(_run_locked(adapter, adapter.store.get(room.id), trigger))
+    stored = adapter.store.get(room.id)
+    assert stored.needs_user is False
+    assert stored.answered_user is True
+
+    loop = asyncio.new_event_loop()
+    adapter._loop = loop
+    scheduled: list = []
+
+    def capture(coro, _loop):
+        scheduled.append(coro)
+        coro.close()
+
+        class _Fut:
+            def result(self, timeout=None):
+                return None
+
+        return _Fut()
+
+    monkeypatch.setattr(asyncio, "run_coroutine_threadsafe", capture)
+    try:
+        result = adapter.post_user_message(room.id, "@scout also check Y", "Ops Session")
+        assert len(scheduled) == 1
+        assert not result.get("held")
+        tail = adapter.store.read_since(room.id, 0)[-1]
+        assert tail.kind == KIND_USER
+    finally:
+        loop.close()
+
+
+def test_held_post_is_marked(tmp_path, monkeypatch):
+    adapter = _adapter(tmp_path, monkeypatch)
+    _principal(tmp_path)
+    adapter.store.create(_room(needs_user=True, members=["scout"], lead="scout"))
+    loop = asyncio.new_event_loop()
+    adapter._loop = loop
+    scheduled: list = []
+
+    def capture(coro, _loop):
+        scheduled.append(coro)
+        coro.close()
+
+        class _Fut:
+            def result(self, timeout=None):
+                return None
+
+        return _Fut()
+
+    monkeypatch.setattr(asyncio, "run_coroutine_threadsafe", capture)
+    try:
+        result = adapter.post_user_message("r-1", "@scout please start", "Ops Session")
+        assert scheduled == []
+        assert result["held"] is True
+        tail = adapter.store.read_since("r-1", 0)[-1]
+        assert tail.kind == KIND_SYSTEM
+        assert engine.is_held_post_notice(tail.text)
+        assert "Ops Session" in tail.text
+        assert "Ada Lovelace" in tail.text
+        # The barrier and the held post are unchanged by the notice.
+        assert adapter.store.get("r-1").needs_user is True
+    finally:
+        loop.close()
+
+
+def test_held_post_notice_text():
+    text = engine.held_post_notice("Ops Session", 7, "Ada Lovelace")
+    assert engine.is_held_post_notice(text)
+    assert "Ops Session" in text and "#7" in text and "Ada Lovelace" in text
+    assert not engine.is_held_post_notice("scout is on it.")
+    # No configured principal still reads cleanly.
+    assert "the principal" in engine.held_post_notice("Ops", 3, "")
