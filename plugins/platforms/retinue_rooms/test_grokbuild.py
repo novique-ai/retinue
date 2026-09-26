@@ -11,7 +11,9 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
 import stat
+import subprocess
 import sys
 import textwrap
 
@@ -188,6 +190,9 @@ def fake_agent(tmp_path, monkeypatch):
     log = tmp_path / "acp-events.jsonl"
     monkeypatch.setenv("FAKE_ACP_LOG", str(log))
     monkeypatch.setenv(grokbuild.BIN_ENV, str(script))
+    # The fake runs on the test venv's python, which a confined process cannot
+    # see; confinement has its own tests (TestConfinement).
+    monkeypatch.setenv(grokbuild.CONFINE_ENV, "0")
     monkeypatch.setenv(grokbuild.AUTH_PATH_ENV, str(tmp_path / "auth.json"))
     (tmp_path / "auth.json").write_text('{"fake": true}', encoding="utf-8")
     # The fake is a python script; make sure "#!" resolution finds python.
@@ -956,3 +961,154 @@ class TestWorktreeIsolationRoots:
             denied_roots={real: wt},
         )
         assert ok
+
+
+
+# ── confinement (#254) ───────────────────────────────────────────────────
+
+
+def _bwrap_works() -> bool:
+    bw = shutil.which("bwrap")
+    if not bw:
+        return False
+    try:
+        return subprocess.run(
+            [bw, "--ro-bind", "/", "/", "true"], capture_output=True, timeout=10
+        ).returncode == 0
+    except Exception:
+        return False
+
+
+class TestConfinement:
+    def test_enabled_by_default_and_explicit_opt_out(self, monkeypatch):
+        monkeypatch.delenv(grokbuild.CONFINE_ENV, raising=False)
+        assert grokbuild.confinement_enabled() is True
+        for off in ("0", "false", "no", "off"):
+            monkeypatch.setenv(grokbuild.CONFINE_ENV, off)
+            assert grokbuild.confinement_enabled() is False
+
+    def test_confined_process_still_runs_grok_build_agent_stdio(self, tmp_path, monkeypatch):
+        # Confinement wraps Grok Build; it must never replace it.
+        binary = tmp_path / "grok"
+        binary.write_text("#!/bin/sh\n", encoding="utf-8")
+        binary.chmod(0o755)
+        bwrap = tmp_path / "bwrap"
+        bwrap.write_text("#!/bin/sh\n", encoding="utf-8")
+        bwrap.chmod(0o755)
+        monkeypatch.setenv(grokbuild.BIN_ENV, str(binary))
+        monkeypatch.setenv(grokbuild.BWRAP_ENV, str(bwrap))
+        monkeypatch.setenv(grokbuild.AUTH_PATH_ENV, str(tmp_path / "auth.json"))
+        seen = {}
+
+        async def fake_exec(*argv, **kwargs):
+            seen["argv"] = list(argv)
+            raise OSError("captured")
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        proc = grokbuild.AcpProcess(
+            str(tmp_path),
+            model="grok-4.7",
+            confine=grokbuild.Confinement(rw=(str(ws),)),
+            cwd=str(ws),
+        )
+        with pytest.raises(grokbuild.GrokBuildUnavailable):
+            _run(proc.start())
+        argv = seen["argv"]
+        assert argv[0] == str(bwrap)
+        assert argv[-5:] == [str(binary), "agent", "-m", "grok-4.7", "stdio"]
+
+    def test_missing_bwrap_fails_closed(self, tmp_path, monkeypatch):
+        binary = tmp_path / "grok"
+        binary.write_text("#!/bin/sh\n", encoding="utf-8")
+        binary.chmod(0o755)
+        monkeypatch.setenv(grokbuild.BIN_ENV, str(binary))
+        monkeypatch.setenv(grokbuild.BWRAP_ENV, str(tmp_path / "no-bwrap"))
+        launched = []
+
+        async def fake_exec(*argv, **kwargs):
+            launched.append(argv)
+            raise OSError("must not launch")
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+        proc = grokbuild.AcpProcess(
+            str(tmp_path), confine=grokbuild.Confinement(rw=(str(tmp_path),)), cwd=str(tmp_path)
+        )
+        with pytest.raises(grokbuild.GrokBuildUnavailable, match="bwrap"):
+            _run(proc.start())
+        assert launched == []  # never fell back to an unconfined launch
+
+    def test_read_only_overlays_bind_after_read_write_roots(self, tmp_path):
+        rw = tmp_path / "ide"
+        venv = rw / "projects" / "a" / ".venv"
+        venv.mkdir(parents=True)
+        argv = grokbuild.confine_argv(
+            "bwrap",
+            grokbuild.Confinement(rw=(str(rw),), ro=(str(venv),)),
+            binary=str(tmp_path / "grok"),
+            grok_home_dir=str(tmp_path / "gh"),
+            auth=str(tmp_path / "auth.json"),
+            cwd=str(rw),
+        )
+        joined = " ".join(argv)
+        assert argv.index(str(venv)) > argv.index(str(rw))
+        assert f"--ro-bind-try {venv} {venv}" in joined
+        assert "--tmpfs /run" in joined and "--tmpfs /tmp" in joined
+        assert f"--bind {os.path.expanduser('~')} " not in joined + " "
+
+    def test_build_confinement_covers_venvs_uv_store_and_shadowed_tree(self, tmp_path, monkeypatch):
+        ide_root = tmp_path / "IDE"
+        venv = ide_root / "projects" / "janus" / ".venv"
+        venv.mkdir(parents=True)
+        (venv / "pyvenv.cfg").write_text("home = /x\n", encoding="utf-8")
+        shadowed = ide_root / "infra"
+        (shadowed / ".venv").mkdir(parents=True)
+        (shadowed / ".venv" / "pyvenv.cfg").write_text("home = /x\n", encoding="utf-8")
+        store = tmp_path / "uvpy"
+        store.mkdir()
+        monkeypatch.setenv("UV_PYTHON_INSTALL_DIR", str(store))
+        wt = tmp_path / "wt" / "infra"
+        wt.mkdir(parents=True)
+        spec = grokbuild.build_confinement(
+            str(ide_root), (str(wt),), {str(shadowed): "use the worktree"}
+        )
+        assert spec.rw == (str(ide_root), str(wt))
+        assert str(shadowed) in spec.ro and str(store) in spec.ro and str(venv) in spec.ro
+        assert str(shadowed / ".venv") not in spec.ro  # already read-only via the shadowed tree
+
+    @pytest.mark.skipif(not _bwrap_works(), reason="needs working bubblewrap")
+    def test_live_confinement_blocks_sudo_home_and_venv_writes(self, tmp_path):
+        rw = tmp_path / "ide"
+        venv = rw / ".venv"
+        venv.mkdir(parents=True)
+        gh = tmp_path / "grok-home"
+        gh.mkdir()
+        argv = grokbuild.confine_argv(
+            shutil.which("bwrap"),
+            grokbuild.Confinement(rw=(str(rw),), ro=(str(venv),)),
+            binary="/bin/sh",
+            grok_home_dir=str(gh),
+            auth=str(tmp_path / "auth.json"),
+            cwd=str(rw),
+        )
+        script = (
+            "sudo -n true >/dev/null 2>&1 && echo SUDO_OK || echo SUDO_BLOCKED; "
+            "touch ok.txt && echo RW_OK; "
+            "touch .venv/x 2>/dev/null && echo VENV_WRITABLE || echo VENV_RO; "
+            f"ls -A {tmp_path} 2>/dev/null | tr '\\n' ' '; echo; "
+            "ls -A /run | tr '\\n' ' '; echo; "
+            "test -e /run/user && echo RUN_USER || echo NO_RUN_USER"
+        )
+        out = subprocess.run(
+            argv + ["/bin/sh", "-c", script], capture_output=True, text=True, timeout=30
+        ).stdout.split("\n")
+        assert out[0] == "SUDO_BLOCKED"
+        assert out[1] == "RW_OK" and (rw / "ok.txt").exists()
+        assert out[2] == "VENV_RO"
+        # Only the bound paths exist; the rest of the host tree is not there.
+        assert set(out[3].split()) <= {"ide", "grok-home"}
+        # /run holds at most the read-only DNS resolver dir: no user runtime
+        # dir, so no container control socket.
+        assert set(out[4].split()) <= {"systemd"}
+        assert out[5] == "NO_RUN_USER"
