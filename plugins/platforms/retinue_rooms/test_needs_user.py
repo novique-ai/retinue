@@ -2,7 +2,8 @@
 
 An owed answer without an @mention is surfaced as answered_user and does
 not pause the room; a post the barrier holds is marked in the transcript
-(issue #256).
+(issue #256). A trusted sender who @mentions a member may start that
+turn during the pause without clearing it (issue #258).
 
 Run:
   scripts/run_tests.sh plugins/platforms/retinue_rooms/test_needs_user.py
@@ -831,3 +832,254 @@ def test_held_post_notice_text():
     assert not engine.is_held_post_notice("scout is on it.")
     # No configured principal still reads cleanly.
     assert "the principal" in engine.held_post_notice("Ops", 3, "")
+
+
+# ── trusted senders during a needs-you pause (#258) ──────────────────────
+
+
+def _trust(tmp_path, senders, name: str = "Ada Lovelace") -> None:
+    principal.save(
+        str(tmp_path),
+        {"display_name": name, "about": "", "trusted_senders": list(senders)},
+    )
+
+
+def _post_while_paused(adapter, monkeypatch, text: str, speaker: str):
+    """Post a user line with the gateway loop stubbed. Returns (result, scheduled)."""
+    loop = asyncio.new_event_loop()
+    adapter._loop = loop
+    scheduled: list = []
+
+    def capture(coro, _loop):
+        scheduled.append(coro)
+        coro.close()
+
+        class _Fut:
+            def result(self, timeout=None):
+                return None
+
+        return _Fut()
+
+    monkeypatch.setattr(asyncio, "run_coroutine_threadsafe", capture)
+    try:
+        result = adapter.post_user_message("r-1", text, speaker)
+    finally:
+        loop.close()
+    return result, scheduled
+
+
+def _paused_room(adapter, **kwargs) -> None:
+    defaults = dict(
+        needs_user=True,
+        members=["scout", "editor"],
+        lead="scout",
+        max_followup_rounds=0,
+    )
+    defaults.update(kwargs)
+    adapter.store.create(_room(**defaults))
+
+
+def test_trusted_sender_mention_during_pause_starts_the_member(tmp_path, monkeypatch):
+    """Trusted + @member during the pause plans that member. The pause stays.
+
+    The mentioned member is not the lead, so a default-responder fallback
+    would not satisfy this. The member's reply does not @ the principal
+    and must not become an owed answer.
+    """
+    adapter = _adapter(tmp_path, monkeypatch)
+    _trust(tmp_path, ["Claude-Terminal"])
+    _paused_room(adapter)
+    calls: list[str] = []
+
+    async def fake_turn(_room, member):
+        calls.append(member)
+        return True, "Host action finished. No decision needed."
+
+    monkeypatch.setattr(adapter, "_agent_turn", fake_turn)
+    result, scheduled = _post_while_paused(
+        adapter,
+        monkeypatch,
+        "@editor the host action Mark approved is done",
+        "claude-terminal",
+    )
+    assert result.get("held") is not True, result
+    assert result["planned"] == ["editor"]
+    assert scheduled, "the mention should schedule a cycle"
+    stored = adapter.store.get("r-1")
+    assert stored.needs_user is True
+    assert stored.answered_user is False
+    assert stored.needs_user_reply is False
+    posted = adapter.store.read_since("r-1", 0)
+    assert not any(engine.is_held_post_notice(m.text) for m in posted)
+    user_message = next(m for m in posted if m.kind == KIND_USER)
+
+    asyncio.run(adapter._run_cycle("r-1", user_message))
+    assert calls == ["editor"]
+    stored = adapter.store.get("r-1")
+    assert stored.needs_user is True
+    assert stored.answered_user is False
+    assert stored.needs_user_reply is False
+    assert not any(
+        engine.is_held_post_notice(m.text) for m in adapter.store.read_since("r-1", 0)
+    )
+
+
+def test_trusted_sender_reply_mentioning_principal_keeps_the_pause(
+    tmp_path, monkeypatch
+):
+    """The woken member can @ the principal and the room stays paused."""
+    adapter = _adapter(tmp_path, monkeypatch)
+    _trust(tmp_path, ["claude-terminal"])
+    _paused_room(adapter)
+    calls: list[str] = []
+
+    async def fake_turn(_room, member):
+        calls.append(member)
+        return True, "@Ada I still need you to confirm this."
+
+    monkeypatch.setattr(adapter, "_agent_turn", fake_turn)
+    result, _scheduled = _post_while_paused(
+        adapter,
+        monkeypatch,
+        "@editor @scout the host action is done",
+        "claude-terminal",
+    )
+    assert result.get("held") is not True, result
+    assert result["planned"] == ["editor", "scout"]
+    user_message = next(
+        m for m in adapter.store.read_since("r-1", 0) if m.kind == KIND_USER
+    )
+    asyncio.run(adapter._run_cycle("r-1", user_message))
+    # Editor's @Ada stops the cycle; scout does not start.
+    assert calls == ["editor"]
+    stored = adapter.store.get("r-1")
+    assert stored.needs_user is True
+    assert stored.answered_user is False
+
+
+def test_trusted_sender_without_mention_stays_held(tmp_path, monkeypatch):
+    adapter = _adapter(tmp_path, monkeypatch)
+    _trust(tmp_path, ["claude-terminal"])
+    _paused_room(adapter)
+    result, scheduled = _post_while_paused(
+        adapter, monkeypatch, "the host action is done", "claude-terminal"
+    )
+    assert scheduled == []
+    assert result["held"] is True
+    assert result["planned"] == []
+    tail = adapter.store.read_since("r-1", 0)[-1]
+    assert tail.kind == KIND_SYSTEM
+    assert engine.is_held_post_notice(tail.text)
+    assert "claude-terminal" in tail.text
+    stored = adapter.store.get("r-1")
+    assert stored.needs_user is True
+    assert stored.answered_user is False
+    assert stored.needs_user_reply is False
+
+
+def test_untrusted_sender_mention_during_pause_stays_held(tmp_path, monkeypatch):
+    adapter = _adapter(tmp_path, monkeypatch)
+    _trust(tmp_path, ["claude-terminal"])
+    _paused_room(adapter)
+    result, scheduled = _post_while_paused(
+        adapter, monkeypatch, "@editor please start", "Ops Session"
+    )
+    assert scheduled == []
+    assert result["held"] is True
+    assert result["planned"] == []
+    tail = adapter.store.read_since("r-1", 0)[-1]
+    assert engine.is_held_post_notice(tail.text)
+    assert "Ops Session" in tail.text
+    assert adapter.store.get("r-1").needs_user is True
+
+
+def test_default_empty_trusted_list_holds_mentions_during_pause(tmp_path, monkeypatch):
+    """No list configured: a member mention from anyone else is still held."""
+    adapter = _adapter(tmp_path, monkeypatch)
+    _principal(tmp_path)
+    _paused_room(adapter)
+    result, scheduled = _post_while_paused(
+        adapter,
+        monkeypatch,
+        "@editor the host action is done",
+        "claude-terminal",
+    )
+    assert scheduled == []
+    assert result["held"] is True
+    assert result["planned"] == []
+    assert engine.is_held_post_notice(adapter.store.read_since("r-1", 0)[-1].text)
+    assert adapter.store.get("r-1").needs_user is True
+
+
+def test_cycle_blocked_trusted_mention_is_the_only_exception():
+    """The lock-time gate matches the post gate: mention required, user-kind only.
+
+    An escalation posted after the trigger still discards the cycle.
+    """
+    members = ["scout", "editor"]
+    trusted = ["claude-terminal"]
+    mention = RoomMessage(
+        seq=3,
+        ts=0,
+        kind=KIND_USER,
+        speaker="claude-terminal",
+        text="@editor result is in",
+    )
+    kwargs = dict(
+        principal_name="Ada Lovelace",
+        members=members,
+        trusted_senders=trusted,
+    )
+    assert not engine.cycle_blocked_by_principal(True, mention, [], **kwargs)
+    bare = RoomMessage(
+        seq=4, ts=0, kind=KIND_USER, speaker="claude-terminal", text="result is in"
+    )
+    assert engine.cycle_blocked_by_principal(True, bare, [], **kwargs)
+    stranger = RoomMessage(
+        seq=5, ts=0, kind=KIND_USER, speaker="Ops Session", text="@editor go"
+    )
+    assert engine.cycle_blocked_by_principal(True, stranger, [], **kwargs)
+    assert engine.cycle_blocked_by_principal(
+        True,
+        mention,
+        [],
+        principal_name="Ada Lovelace",
+        members=members,
+    )
+    fenced = RoomMessage(
+        seq=6,
+        ts=0,
+        kind=KIND_USER,
+        speaker="claude-terminal",
+        text="log:\n```\n@editor go\n```\n",
+    )
+    assert engine.cycle_blocked_by_principal(True, fenced, [], **kwargs)
+    # A live @display-name is a member mention, same as planning.
+    by_name = RoomMessage(
+        seq=6,
+        ts=0,
+        kind=KIND_USER,
+        speaker="claude-terminal",
+        text="@Edith the result is in",
+    )
+    assert not engine.cycle_blocked_by_principal(
+        True,
+        by_name,
+        [],
+        principal_name="Ada Lovelace",
+        members=members,
+        display_names={"editor": "Edith"},
+        trusted_senders=trusted,
+    )
+    agent = RoomMessage(
+        seq=7, ts=0, kind=KIND_AGENT, speaker="claude-terminal", text="@editor go"
+    )
+    assert engine.cycle_blocked_by_principal(True, agent, [], **kwargs)
+    later = [
+        RoomMessage(
+            seq=8, ts=0, kind=KIND_AGENT, speaker="scout", text="@Ada I need a decision"
+        )
+    ]
+    assert engine.cycle_blocked_by_principal(True, mention, later, **kwargs)
+    # Barrier down: a trusted post is an ordinary user line.
+    assert not engine.cycle_blocked_by_principal(False, mention, [], **kwargs)

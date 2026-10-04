@@ -217,6 +217,8 @@ export interface AgentPatch {
 export interface Principal {
   display_name: string;
   about: string;
+  /** Speaker names that may @mention a retainer during a needs-you pause. */
+  trusted_senders?: string[];
 }
 
 export interface ModelPreset {
@@ -425,8 +427,11 @@ function watchTranscript(
 export const api = {
   health: () => req<HealthInfo>("GET", "/health"),
   getPrincipal: () => req<Principal>("GET", "/principal"),
-  savePrincipal: (body: { display_name: string; about?: string }) =>
-    req<Principal>("PUT", "/principal", body),
+  savePrincipal: (body: {
+    display_name: string;
+    about?: string;
+    trusted_senders?: string[];
+  }) => req<Principal>("PUT", "/principal", body),
   authStatus: () =>
     req<{
       providers: ProviderAuth[];

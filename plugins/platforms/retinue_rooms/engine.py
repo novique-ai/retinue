@@ -449,9 +449,9 @@ def apply_needs_user(
       ``answered_user``: shown to the principal, never a barrier. To pause
       the room again the agent must @mention them.
 
-    Another user-kind speaker (automation, a routine) clears nothing and
-    creates no debt. System notices do neither. Returns whether either
-    flag changed.
+    Another user-kind speaker (automation, a routine, a trusted sender)
+    clears nothing and creates no debt. System notices do neither.
+    Returns whether either flag changed.
     """
     before = (bool(room.needs_user), bool(room.answered_user))
     if message.kind == KIND_USER and is_principal_speaker(
@@ -518,6 +518,36 @@ def principal_escalation_after(
     return False
 
 
+def _is_trusted_speaker(speaker: str, trusted_senders: Optional[List[str]]) -> bool:
+    """Case-insensitive match of a user-line speaker against the trust list."""
+    given = (speaker or "").strip().lower()
+    if not given or not trusted_senders:
+        return False
+    for name in trusted_senders:
+        if str(name or "").strip().lower() == given:
+            return True
+    return False
+
+
+def _trusted_post_starts_turns(
+    trigger: RoomMessage,
+    members: Optional[List[str]],
+    display_names: Optional[Dict[str, str]],
+    trusted_senders: Optional[List[str]],
+) -> bool:
+    """A trusted USER post may start turns during a needs_user pause.
+
+    The line must live-@mention at least one room member. No mention,
+    an untrusted speaker, or any non-user kind stays held. This does
+    not clear the pause.
+    """
+    if trigger.kind != KIND_USER:
+        return False
+    if not _is_trusted_speaker(trigger.speaker, trusted_senders):
+        return False
+    return bool(parse_mentions(trigger.text, list(members or []), display_names))
+
+
 def cycle_blocked_by_principal(
     needs_user: bool,
     trigger: RoomMessage,
@@ -525,13 +555,17 @@ def cycle_blocked_by_principal(
     principal_name: str = "",
     members: Optional[List[str]] = None,
     display_names: Optional[Dict[str, str]] = None,
+    trusted_senders: Optional[List[str]] = None,
 ) -> bool:
     """True when a cycle waiting on the room lock must not start speakers.
 
     An escalation posted after the trigger discards the cycle even if
     the principal has already cleared ``needs_user``. While the barrier
-    is still up, a non-principal user line does not start a cycle.
-    The principal's own post is not blocked by the current flag.
+    is still up, a non-principal user line does not start a cycle,
+    except a trusted sender who @mentions a room member (#258). That
+    exception starts those members only; it does not clear the pause.
+    The principal's own post is not blocked by the current flag. An
+    empty trust list — the default — holds every non-principal post.
     """
     if principal_escalation_after(
         later,
@@ -541,9 +575,15 @@ def cycle_blocked_by_principal(
         display_names=display_names,
     ):
         return True
-    return bool(needs_user) and not is_principal_speaker(
-        trigger.speaker, principal_name
-    )
+    if not needs_user:
+        return False
+    if is_principal_speaker(trigger.speaker, principal_name):
+        return False
+    if _trusted_post_starts_turns(
+        trigger, members, display_names, trusted_senders
+    ):
+        return False
+    return True
 
 
 # Composer prefix on a voice take. Mentions live at the start of the
