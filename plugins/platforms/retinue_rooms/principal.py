@@ -2,18 +2,25 @@
 
 Stored at ``$HERMES_HOME/retinue_principal.json``. Agents read the name
 and about-you from the room briefing. The human does not take turns.
+
+``trusted_senders`` names speakers (the name stamped on a user line, not
+a retainer slug) who may @mention a room member and start that turn
+while the room is paused on the principal. The pause stays up. Empty —
+the default, and what a save omits — holds every non-principal post.
 """
 
 from __future__ import annotations
 
 import json
 import os
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 FILENAME = "retinue_principal.json"
 DEFAULT_NAME = "You"
 _MAX_NAME = 80
 _MAX_ABOUT = 800
+_MAX_TRUSTED_SENDERS = 32
+_MAX_SENDER_NAME = 80
 
 
 def _path(home_dir: str) -> str:
@@ -21,7 +28,47 @@ def _path(home_dir: str) -> str:
 
 
 def empty() -> Dict[str, Any]:
-    return {"display_name": DEFAULT_NAME, "about": ""}
+    return {"display_name": DEFAULT_NAME, "about": "", "trusted_senders": []}
+
+
+def _clean_trusted_senders(raw: Any, *, strict: bool) -> List[str]:
+    """Speaker names, de-duplicated case-insensitively, first spelling kept.
+
+    Save is strict: a wrong type, an over-long name, or more than
+    ``_MAX_TRUSTED_SENDERS`` unique names is an error, and nothing is
+    written. Load is lenient so a hand-edited file cannot wedge the room;
+    junk entries are dropped. ``None`` is an empty list either way.
+    """
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        if strict:
+            raise ValueError("trusted senders must be a list of speaker names")
+        return []
+    seen: set[str] = set()
+    out: List[str] = []
+    for item in raw:
+        if not isinstance(item, str):
+            if strict:
+                raise ValueError("trusted senders must be speaker names")
+            continue
+        name = item.strip()
+        if not name:
+            continue
+        if len(name) > _MAX_SENDER_NAME:
+            if strict:
+                raise ValueError("a trusted sender name is too long")
+            continue
+        key = name.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(name)
+    if len(out) > _MAX_TRUSTED_SENDERS:
+        if strict:
+            raise ValueError("too many trusted senders")
+        return out[:_MAX_TRUSTED_SENDERS]
+    return out
 
 
 def load(home_dir: str) -> Dict[str, Any]:
@@ -33,7 +80,8 @@ def load(home_dir: str) -> Dict[str, Any]:
         return empty()
     name = str(data.get("display_name") or "").strip()[:_MAX_NAME] or DEFAULT_NAME
     about = str(data.get("about") or "").strip()[:_MAX_ABOUT]
-    return {"display_name": name, "about": about}
+    trusted = _clean_trusted_senders(data.get("trusted_senders"), strict=False)
+    return {"display_name": name, "about": about, "trusted_senders": trusted}
 
 
 def save(home_dir: str, body: Dict[str, Any]) -> Dict[str, Any]:
@@ -45,7 +93,13 @@ def save(home_dir: str, body: Dict[str, Any]) -> Dict[str, Any]:
     about = str(body.get("about") or "").strip()
     if len(about) > _MAX_ABOUT:
         raise ValueError("about is too long")
-    payload = {"display_name": name[:_MAX_NAME], "about": about[:_MAX_ABOUT]}
+    # Full replace, same as about: a body that omits the list stores [].
+    trusted = _clean_trusted_senders(body.get("trusted_senders"), strict=True)
+    payload = {
+        "display_name": name[:_MAX_NAME],
+        "about": about[:_MAX_ABOUT],
+        "trusted_senders": trusted,
+    }
     dest = _path(home_dir)
     tmp = dest + ".tmp"
     os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)

@@ -3003,6 +3003,24 @@ function ReauthPanel({
   );
 }
 
+function trustedSendersToText(names: string[] | undefined): string {
+  return (names || []).join("\n");
+}
+
+function trustedSendersFromText(text: string): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const line of text.split(/\r?\n/)) {
+    const name = line.trim();
+    if (!name) continue;
+    const key = name.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(name);
+  }
+  return out;
+}
+
 function SettingsPanel({
   onReauth,
   onDone,
@@ -3020,10 +3038,12 @@ function SettingsPanel({
   const [models, setModels] = useState<ModelPreset[]>([]);
   const [youName, setYouName] = useState("");
   const [youAbout, setYouAbout] = useState("");
+  const [youTrusted, setYouTrusted] = useState("");
   // What the server has stored — the dirty comparison baseline. Updated on
   // load and again after a successful save.
   const [baseName, setBaseName] = useState("");
   const [baseAbout, setBaseAbout] = useState("");
+  const [baseTrusted, setBaseTrusted] = useState("");
   const [claudeKey, setClaudeKey] = useState("");
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
@@ -3045,10 +3065,13 @@ function SettingsPanel({
         // is also the dirty baseline, so an untouched panel isn't flagged.
         const name = p.display_name === "You" ? "" : p.display_name || "";
         const about = p.about || "";
+        const trusted = trustedSendersToText(p.trusted_senders);
         setYouName(name);
         setYouAbout(about);
+        setYouTrusted(trusted);
         setBaseName(name);
         setBaseAbout(about);
+        setBaseTrusted(trusted);
       })
       .catch(() => {});
   }, []);
@@ -3056,7 +3079,7 @@ function SettingsPanel({
     reload();
   }, [reload]);
 
-  const dirty = youName !== baseName || youAbout !== baseAbout;
+  const dirty = youName !== baseName || youAbout !== baseAbout || youTrusted !== baseTrusted;
   useEffect(() => {
     onDirtyChange?.(dirty);
   }, [dirty, onDirtyChange]);
@@ -3066,11 +3089,18 @@ function SettingsPanel({
     if (!trimmed || busy) return;
     setBusy(true);
     try {
-      const saved = await api.savePrincipal({ display_name: trimmed, about: youAbout });
+      const saved = await api.savePrincipal({
+        display_name: trimmed,
+        about: youAbout,
+        trusted_senders: trustedSendersFromText(youTrusted),
+      });
       onPrincipal?.(saved);
+      const trusted = trustedSendersToText(saved.trusted_senders);
       setYouName(trimmed);
+      setYouTrusted(trusted);
       setBaseName(trimmed);
       setBaseAbout(youAbout);
+      setBaseTrusted(trusted);
       setNote("Saved your name for this workspace.");
     } catch (e) {
       setNote(String(e));
@@ -3080,7 +3110,8 @@ function SettingsPanel({
   };
 
   const confirmDiscard = () =>
-    !dirty || window.confirm("Discard unsaved changes to your name and about you?");
+    !dirty ||
+    window.confirm("Discard unsaved changes to your name, about you, and trusted senders?");
 
   const handleDone = () => {
     if (confirmDiscard()) onDone();
@@ -3109,6 +3140,20 @@ function SettingsPanel({
           placeholder="How retainers should address you, what you care about."
         />
       </label>
+      <label>
+        Trusted senders
+        <textarea
+          value={youTrusted}
+          onChange={(e) => setYouTrusted(e.target.value)}
+          rows={3}
+          spellCheck={false}
+          placeholder="One speaker name per line, e.g. claude-terminal"
+        />
+      </label>
+      <p className="note">
+        While a room is waiting on you, these speakers can @mention a retainer and start
+        that turn. They do not clear the pause. Leave this empty to hold every other post.
+      </p>
       <p className="note">This is you, not a hire. Retainers will use this name. You do not take turns.</p>
       <div className="settings-save-row">
         <button
@@ -4404,7 +4449,9 @@ export default function App() {
             if (
               modal === "settings" &&
               settingsDirty &&
-              !window.confirm("Discard unsaved changes to your name and about you?")
+              !window.confirm(
+                "Discard unsaved changes to your name, about you, and trusted senders?",
+              )
             ) {
               return;
             }

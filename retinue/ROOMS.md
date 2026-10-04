@@ -265,8 +265,14 @@ viewing alone does not clear it. A cycle already waiting on the room lock is
 discarded when an escalation was posted after that cycle's trigger, even if
 the principal has already replied and cleared the flag. While the barrier is
 up, a user-kind line from anyone other than the principal stays on the
-transcript but does not clear the flag and does not start a cycle. The
-principal's next post clears the barrier, and that post's own cycle may run.
+transcript but does not clear the flag and does not start a cycle, unless
+the speaker is on the principal's trusted-sender list and the line
+@mentions a room member. That post starts those members on the normal
+mention plan and budget, and still does not clear the pause or create an
+owed reply. A trusted post with no member mention is held like any other.
+The list is `trusted_senders` on the principal card
+(`retinue_principal.json`, `GET`/`PUT /principal`); empty is the default.
+The principal's next post clears the barrier, and that post's own cycle may run.
 Cycles triggered before the escalation never replay.
 
 Cross-room posts can escalate the destination room the same way. They still

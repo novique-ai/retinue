@@ -1174,22 +1174,29 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             # start a second cycle on top of the one still waiting.
             return {"seq": message.seq, "planned": [], "clarify": True}
         # needs_user is a scheduling barrier. The principal's own post
-        # cleared it in _note_posted and may start a cycle. Any other
-        # user-kind speaker is recorded, starts no turn, and is marked as
-        # held so the pause is visible (#256).
+        # cleared it in _note_posted and may start a cycle. A trusted
+        # sender who @mentions a room member may start those turns
+        # without clearing the pause (#258). Any other user-kind speaker
+        # is recorded, starts no turn, and is marked as held (#256).
         stored = self.store.get(room_id)
-        principal_name = str(principal.load(self._home_dir()).get("display_name") or "")
-        if (
-            stored is not None
-            and stored.needs_user
-            and not engine.is_principal_speaker(message.speaker, principal_name)
+        me = principal.load(self._home_dir())
+        principal_name = str(me.get("display_name") or "")
+        names = self._display_names(stored or room)
+        if stored is not None and engine.cycle_blocked_by_principal(
+            stored.needs_user,
+            message,
+            [],
+            principal_name=principal_name,
+            members=stored.members,
+            display_names=names,
+            trusted_senders=list(me.get("trusted_senders") or []),
         ):
             self._post_system(
                 room_id,
                 engine.held_post_notice(message.speaker, message.seq, principal_name),
             )
             return {"seq": message.seq, "planned": [], "held": True}
-        planned = engine.plan_user_turns(room, text, self._display_names(room))
+        planned = engine.plan_user_turns(room, text, names)
         fut = asyncio.run_coroutine_threadsafe(self._run_cycle(room_id, message), self._loop)
         if wait:
             home = self._home_dir()
@@ -1698,8 +1705,10 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         # A cycle queued behind this lock is stale when a principal
         # escalation landed after its trigger — even if the principal
         # already replied and cleared the flag. While the barrier is
-        # still up, a non-principal user line does not start speakers.
-        principal_name = str(principal.load(self._home_dir()).get("display_name") or "")
+        # still up, a non-principal user line does not start speakers,
+        # unless it is a trusted sender @mentioning a member (#258).
+        me = principal.load(self._home_dir())
+        principal_name = str(me.get("display_name") or "")
         if engine.cycle_blocked_by_principal(
             room.needs_user,
             user_message,
@@ -1707,6 +1716,7 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             principal_name=principal_name,
             members=room.members,
             display_names=self._display_names(room),
+            trusted_senders=list(me.get("trusted_senders") or []),
         ):
             logger.info(
                 "Retinue rooms: not starting cycle for %s at seq %s; "
