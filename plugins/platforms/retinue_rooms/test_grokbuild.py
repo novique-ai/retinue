@@ -1200,3 +1200,309 @@ class TestConfinedBrokerAccess:
         assert f"--bind {root}/data/broker {root}/data/broker" in joined
         i = argv.index("PATH")
         assert argv[i - 1] == "--setenv" and argv[i + 1].startswith(str(gh / "broker-bin"))
+
+
+# ── member child environment (infra-6i3j) ────────────────────────────────
+
+
+_VOICE_KEY = "voice-key-value"
+_JANUS_TOKEN = "janus-bearer-value"
+_ROOMS_KEY = "rooms-api-key-value"
+_AMBIENT = "ambient-secret-value"
+_EXTRA_SECRET = "extra-secret-value"
+_BROKER_TOKEN = "v1:scout:1:abc"
+
+# Fixture userinfo. Proxy URL vars can carry user:password@host. These are
+# not live credentials. Assertions must not interpolate them into messages.
+_PROXY_USER = "px-user-sentinel"
+_PROXY_PASSWORD = "px-password-sentinel"
+_PROXY_URL_ENV = {
+    "HTTP_PROXY": f"http://{_PROXY_USER}:{_PROXY_PASSWORD}@proxy.example:8080",
+    "HTTPS_PROXY": f"https://{_PROXY_USER}:{_PROXY_PASSWORD}@proxy.example:8443",
+    "ALL_PROXY": f"socks5://{_PROXY_USER}:{_PROXY_PASSWORD}@proxy.example:1080",
+    "http_proxy": f"http://{_PROXY_USER}:{_PROXY_PASSWORD}@lower.example:8080",
+    "https_proxy": f"http://{_PROXY_USER}:{_PROXY_PASSWORD}@lower.example:8443",
+    "all_proxy": f"socks5h://{_PROXY_USER}:{_PROXY_PASSWORD}@lower.example:1080",
+}
+# Hostname bypass list. Not a proxy URL and not a credential.
+_NO_PROXY = "localhost,127.0.0.1,.internal.example"
+_NO_PROXY_LOWER = ".corp.example"
+
+
+def _plant_gateway_secrets(monkeypatch):
+    """Gateway-only credentials and one unrelated ambient secret.
+
+    Values are fixtures, not live secrets. The child must not receive the
+    names or the values. Credential-bearing proxy URLs are planted the
+    same way: the child must omit the names and the userinfo.
+    """
+    monkeypatch.setenv("RETINUE_VOICE_API_KEY", _VOICE_KEY)
+    monkeypatch.setenv("RETINUE_JANUS_APPROVAL_TOKEN", _JANUS_TOKEN)
+    monkeypatch.setenv("RETINUE_JANUS_APPROVAL_URL", "https://janus.example")
+    monkeypatch.setenv("RETINUE_ROOMS_API_KEY", _ROOMS_KEY)
+    monkeypatch.setenv("UNRELATED_GATEWAY_SECRET", _AMBIENT)
+    monkeypatch.setenv("XAI_API_KEY", "xai-ambient-key")
+    monkeypatch.setenv("RETINUE_BROKER_KEY_FILE", "/var/lib/retinue/broker.key")
+    monkeypatch.setenv("GROK_SANDBOX", "inherit-me")
+    for name, value in _PROXY_URL_ENV.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("NO_PROXY", _NO_PROXY)
+    monkeypatch.setenv("no_proxy", _NO_PROXY_LOWER)
+
+
+def _assert_name_absent(env, name):
+    # Raise without the mapping's repr so a failure cannot dump secret values.
+    if name in env:
+        raise AssertionError(f"{name} leaked into spawn env")
+
+
+def _assert_value_absent(env, secret):
+    if secret in env.values():
+        raise AssertionError("a gateway secret value leaked into spawn env")
+
+
+def _assert_secret_not_substring(env, secret):
+    """Fail if ``secret`` appears inside any copied value. Do not print it."""
+    if not secret:
+        raise AssertionError("sentinel secret was empty")
+    for value in env.values():
+        if secret in str(value):
+            raise AssertionError("a credential-bearing proxy value leaked into spawn env")
+
+
+def _assert_proxy_urls_omitted(env):
+    for name in _PROXY_URL_ENV:
+        _assert_name_absent(env, name)
+    for url in _PROXY_URL_ENV.values():
+        _assert_value_absent(env, url)
+    _assert_secret_not_substring(env, _PROXY_PASSWORD)
+    _assert_secret_not_substring(env, _PROXY_USER)
+    if env.get("NO_PROXY") != _NO_PROXY:
+        raise AssertionError("NO_PROXY hostname bypass list was not copied")
+    if env.get("no_proxy") != _NO_PROXY_LOWER:
+        raise AssertionError("no_proxy hostname bypass list was not copied")
+
+
+def _assert_spawn_env_closed(env, *, tmp_path, broker=_BROKER_TOKEN):
+    if not isinstance(env, dict):
+        raise AssertionError("spawn env was not an explicit mapping")
+    for name in (
+        "RETINUE_VOICE_API_KEY",
+        "RETINUE_JANUS_APPROVAL_TOKEN",
+        "RETINUE_JANUS_APPROVAL_URL",
+        "RETINUE_ROOMS_API_KEY",
+        "UNRELATED_GATEWAY_SECRET",
+        "UNRELATED_EXTRA_SECRET",
+        "XAI_API_KEY",
+        "RETINUE_BROKER_KEY_FILE",
+    ):
+        _assert_name_absent(env, name)
+    for secret in (_VOICE_KEY, _JANUS_TOKEN, _ROOMS_KEY, _AMBIENT, _EXTRA_SECRET, "xai-ambient-key"):
+        _assert_value_absent(env, secret)
+    _assert_proxy_urls_omitted(env)
+    assert env["PATH"] == "/usr/bin:/bin"
+    assert env["HOME"] == "/home/operator"
+    assert env["LANG"] == "en_US.UTF-8"
+    assert env["LC_ALL"] == "en_US.UTF-8"
+    assert env["SSL_CERT_FILE"] == "/etc/ssl/certs/ca-certificates.crt"
+    assert env["GROK_HOME"] == grokbuild.grok_home(str(tmp_path))
+    assert env["GROK_AUTH_PATH"] == os.path.abspath(str(tmp_path / "auth.json"))
+    assert env["GROK_SANDBOX"] == "workspace"
+    assert env["RETINUE_BROKER_TOKEN"] == broker
+    # Inherited sandbox profile must not survive; only the explicit one does.
+    assert env["GROK_SANDBOX"] != "inherit-me"
+    # Extra is untrusted: it cannot replace PATH or smuggle an arbitrary name.
+    assert env["PATH"] != "/evil"
+
+
+class TestMemberSpawnEnv:
+    def test_allowlists_are_exact_names(self):
+        from . import brokertoken
+
+        forbidden = {
+            "RETINUE_VOICE_API_KEY",
+            "RETINUE_JANUS_APPROVAL_TOKEN",
+            "RETINUE_JANUS_APPROVAL_URL",
+            "RETINUE_ROOMS_API_KEY",
+            "RETINUE_BROKER_KEY_FILE",
+            "XAI_API_KEY",
+            "GROK_SANDBOX",
+            # Proxy URLs can embed user:password@host. NO_PROXY stays.
+            *_PROXY_URL_ENV,
+        }
+        assert grokbuild.MEMBER_BASE_ENV_ALLOWLIST.isdisjoint(forbidden)
+        assert {"NO_PROXY", "no_proxy"} <= grokbuild.MEMBER_BASE_ENV_ALLOWLIST
+        assert grokbuild.MEMBER_EXTRA_ENV_ALLOWLIST.isdisjoint(forbidden)
+        assert grokbuild.MEMBER_EXTRA_ENV_ALLOWLIST == frozenset({brokertoken.TOKEN_ENV})
+        retinue_names = {
+            name for name in grokbuild.MEMBER_BASE_ENV_ALLOWLIST if name.startswith("RETINUE_")
+        }
+        assert retinue_names <= {"RETINUE_BROKER_SOCK"}
+
+    def test_acp_start_passes_a_minimal_env_not_the_gateway_environment(
+        self, tmp_path, monkeypatch
+    ):
+        binary = tmp_path / "grok"
+        binary.write_text("#!/bin/sh\n", encoding="utf-8")
+        binary.chmod(0o755)
+        monkeypatch.setenv(grokbuild.BIN_ENV, str(binary))
+        monkeypatch.setenv(grokbuild.AUTH_PATH_ENV, str(tmp_path / "auth.json"))
+        monkeypatch.setenv(grokbuild.SANDBOX_ENV, "workspace")
+        monkeypatch.setenv("PATH", "/usr/bin:/bin")
+        monkeypatch.setenv("HOME", "/home/operator")
+        monkeypatch.setenv("LANG", "en_US.UTF-8")
+        monkeypatch.setenv("LC_ALL", "en_US.UTF-8")
+        monkeypatch.setenv("SSL_CERT_FILE", "/etc/ssl/certs/ca-certificates.crt")
+        _plant_gateway_secrets(monkeypatch)
+        captured = {}
+
+        async def fake_exec(*_argv, **kwargs):
+            captured["env"] = kwargs.get("env")
+            raise OSError("captured")
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+        proc = grokbuild.AcpProcess(
+            str(tmp_path),
+            env_extra={
+                "RETINUE_BROKER_TOKEN": _BROKER_TOKEN,
+                "RETINUE_VOICE_API_KEY": _EXTRA_SECRET,
+                "UNRELATED_EXTRA_SECRET": _EXTRA_SECRET,
+                "PATH": "/evil",
+                "HTTP_PROXY": _PROXY_URL_ENV["HTTP_PROXY"],
+                "https_proxy": _PROXY_URL_ENV["https_proxy"],
+            },
+        )
+        with pytest.raises(grokbuild.GrokBuildUnavailable):
+            _run(proc.start())
+        _assert_spawn_env_closed(captured["env"], tmp_path=tmp_path)
+
+    def test_confined_start_uses_the_same_minimal_env(self, tmp_path, monkeypatch):
+        binary = tmp_path / "grok"
+        binary.write_text("#!/bin/sh\n", encoding="utf-8")
+        binary.chmod(0o755)
+        bwrap = tmp_path / "bwrap"
+        bwrap.write_text("#!/bin/sh\n", encoding="utf-8")
+        bwrap.chmod(0o755)
+        monkeypatch.setenv(grokbuild.BIN_ENV, str(binary))
+        monkeypatch.setenv(grokbuild.BWRAP_ENV, str(bwrap))
+        monkeypatch.setenv(grokbuild.AUTH_PATH_ENV, str(tmp_path / "auth.json"))
+        monkeypatch.setenv(grokbuild.SANDBOX_ENV, "workspace")
+        monkeypatch.setenv("PATH", "/usr/bin:/bin")
+        monkeypatch.setenv("HOME", "/home/operator")
+        monkeypatch.setenv("LANG", "en_US.UTF-8")
+        monkeypatch.setenv("LC_ALL", "en_US.UTF-8")
+        monkeypatch.setenv("SSL_CERT_FILE", "/etc/ssl/certs/ca-certificates.crt")
+        _plant_gateway_secrets(monkeypatch)
+        captured = {}
+
+        async def fake_exec(*argv, **kwargs):
+            captured["argv"] = list(argv)
+            captured["env"] = kwargs.get("env")
+            raise OSError("captured")
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        proc = grokbuild.AcpProcess(
+            str(tmp_path),
+            env_extra={
+                "RETINUE_BROKER_TOKEN": _BROKER_TOKEN,
+                "UNRELATED_EXTRA_SECRET": _EXTRA_SECRET,
+                "PATH": "/evil",
+            },
+            confine=grokbuild.Confinement(rw=(str(ws),)),
+            cwd=str(ws),
+        )
+        with pytest.raises(grokbuild.GrokBuildUnavailable):
+            _run(proc.start())
+        assert captured["argv"][0] == str(bwrap)
+        _assert_spawn_env_closed(captured["env"], tmp_path=tmp_path)
+
+    def test_mcp_wires_drop_gateway_credential_names(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("RETINUE_JANUS_APPROVAL_TOKEN", _JANUS_TOKEN)
+        monkeypatch.setenv("RETINUE_VOICE_API_KEY", _VOICE_KEY)
+        monkeypatch.setenv("RETINUE_ROOMS_API_KEY", _ROOMS_KEY)
+        path = grokbuild.mcp_config_path(str(tmp_path))
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(
+                {
+                    "servers": [
+                        {
+                            "name": "broker",
+                            "command": "/bin/client",
+                            "args": ["--x"],
+                            "env": {
+                                "K": "V",
+                                "RETINUE_VOICE_API_KEY": _VOICE_KEY,
+                                "RETINUE_ROOMS_API_KEY": _ROOMS_KEY,
+                                "RETINUE_JANUS_APPROVAL_TOKEN": _JANUS_TOKEN,
+                                "RETINUE_BROKER_KEY_FILE": "/var/lib/retinue/broker.key",
+                            },
+                        },
+                        {
+                            "name": "docs",
+                            "type": "http",
+                            "url": "https://example.test/mcp",
+                            "headers": {
+                                "X-Other": "Bearer t",
+                                "RETINUE_ROOMS_API_KEY": _ROOMS_KEY,
+                                "Authorization": f"Bearer {_VOICE_KEY}",
+                            },
+                        },
+                    ]
+                },
+                handle,
+            )
+        servers = grokbuild.mcp_servers(str(tmp_path))
+        assert servers[0]["env"] == [{"name": "K", "value": "V"}]
+        assert servers[1]["headers"] == [{"name": "X-Other", "value": "Bearer t"}]
+        dumped = json.dumps(servers)
+        assert _VOICE_KEY not in dumped
+        assert _ROOMS_KEY not in dumped
+        assert _JANUS_TOKEN not in dumped
+
+    def test_grok_probes_do_not_inherit_gateway_secrets(self, tmp_path, monkeypatch):
+        binary = tmp_path / "grok"
+        binary.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        binary.chmod(0o755)
+        monkeypatch.setenv(grokbuild.BIN_ENV, str(binary))
+        monkeypatch.setenv(grokbuild.AUTH_PATH_ENV, str(tmp_path / "auth.json"))
+        (tmp_path / "auth.json").write_text('{"present": true}', encoding="utf-8")
+        monkeypatch.setenv("PATH", "/usr/bin:/bin")
+        monkeypatch.setenv("HOME", "/home/operator")
+        _plant_gateway_secrets(monkeypatch)
+        seen = []
+
+        class _Proc:
+            returncode = 0
+            stdout = "grok 0.0.0\n"
+            stderr = ""
+
+        def fake_run(_argv, **kwargs):
+            seen.append(kwargs.get("env"))
+            return _Proc()
+
+        monkeypatch.setattr(grokbuild.subprocess, "run", fake_run)
+        grokbuild._invalidate_health_cache()
+        state = grokbuild.health(str(tmp_path), force=True)
+        assert state["status"] == "available"
+        grokbuild.catalog(str(tmp_path), force=True)
+        assert len(seen) >= 2
+        for env in seen:
+            if not isinstance(env, dict):
+                raise AssertionError("probe inherited the process environment")
+            for name in (
+                "RETINUE_VOICE_API_KEY",
+                "RETINUE_ROOMS_API_KEY",
+                "RETINUE_JANUS_APPROVAL_TOKEN",
+                "UNRELATED_GATEWAY_SECRET",
+            ):
+                _assert_name_absent(env, name)
+            _assert_value_absent(env, _VOICE_KEY)
+            _assert_value_absent(env, _ROOMS_KEY)
+            _assert_proxy_urls_omitted(env)
+            assert env.get("PATH") == "/usr/bin:/bin"
+            assert env.get("HOME") == "/home/operator"
+            assert "RETINUE_BROKER_TOKEN" not in env
+            assert env.get("GROK_HOME") != grokbuild.grok_home(str(tmp_path))

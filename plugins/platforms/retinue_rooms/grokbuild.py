@@ -47,6 +47,22 @@ Design points, each verified against grok v0.2.93 before this was built:
   the agent loop needs its model API.  On by default; a missing ``bwrap``
   fails the member's start closed.  ``RETINUE_GROKBUILD_CONFINE=0`` is an
   explicit, logged operator opt-out.
+* **Child environment.** The member does not inherit the gateway
+  environment. ``member_subprocess_env`` copies an exact-name allowlist
+  (locale, ``PATH``, TLS, XDG, and ``NO_PROXY`` / ``no_proxy``) and then
+  sets ``GROK_HOME``, ``GROK_AUTH_PATH``, an optional sandbox profile,
+  and the per-member broker token. Gateway credentials — the voice key,
+  a Janus approval bearer, the rooms API key, and anything else ambient
+  — are not on that list. ``HTTP_PROXY``, ``HTTPS_PROXY``, ``ALL_PROXY``,
+  and the lowercase forms are omitted: those values are proxy URLs and
+  can embed ``user:password@host``. ``NO_PROXY`` and ``no_proxy`` are
+  hostname bypass lists, copied verbatim. They have no userinfo field,
+  so they cannot carry a proxy password; they can reveal listed
+  hostnames, and a secret placed in them would be copied because the
+  value is not parsed. Bubblewrap inherits this mapping; it does not
+  clear it. Health and model probes use the same allowlist and do not
+  receive the broker token. User-supplied MCP env and headers drop those
+  credential names and any value equal to one of them.
 
 Hidden reasoning: ``agent_thought_chunk`` updates are received and
 dropped.  They are never surfaced, stored, or logged.
@@ -64,7 +80,7 @@ import subprocess
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -406,6 +422,7 @@ def health(home_dir: str, *, force: bool = False) -> Dict[str, Any]:
                 capture_output=True,
                 text=True,
                 timeout=10,
+                env=_runtime_probe_env(),
             )
             version = (proc.stdout or "").strip().splitlines()[0] if proc.stdout else ""
             ok = proc.returncode == 0
@@ -520,6 +537,7 @@ def catalog(home_dir: str, *, force: bool = False) -> Dict[str, Any]:
                 capture_output=True,
                 text=True,
                 timeout=10,
+                env=_runtime_probe_env(),
             )
             if proc.returncode == 0:
                 parsed = parse_models_output(proc.stdout or "")
@@ -794,6 +812,171 @@ _REJECT_RESUME_PROMPT = (
 )
 
 
+# Exact names copied from the launching process into a Grok child.
+# No prefixes: ``RETINUE_`` would also copy the voice key, a Janus
+# approval bearer, and the rooms API key. ``GROK_SANDBOX`` is absent on
+# purpose — inheriting a profile fails open under ``agent stdio``.
+MEMBER_BASE_ENV_ALLOWLIST = frozenset({
+    "PATH", "HOME", "USER", "LOGNAME", "SHELL", "TERM", "COLORTERM",
+    "TMPDIR", "TMP", "TEMP", "TZ", "LANG", "LANGUAGE",
+    "LC_ALL", "LC_CTYPE", "LC_NUMERIC", "LC_TIME", "LC_COLLATE",
+    "LC_MONETARY", "LC_MESSAGES", "LC_PAPER", "LC_NAME", "LC_ADDRESS",
+    "LC_TELEPHONE", "LC_MEASUREMENT", "LC_IDENTIFICATION",
+    "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME",
+    "XDG_RUNTIME_DIR", "XDG_STATE_HOME", "XDG_CONFIG_DIRS", "XDG_DATA_DIRS",
+    "SSL_CERT_FILE", "SSL_CERT_DIR",
+    "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "NODE_EXTRA_CA_CERTS",
+    "GIT_SSL_CAINFO", "NIX_SSL_CERT_FILE", "LOCALE_ARCHIVE",
+    # Hostname bypass lists, not proxy URLs. No userinfo field, so they
+    # cannot carry a proxy password. They can reveal listed hostnames.
+    # HTTP_PROXY, HTTPS_PROXY, ALL_PROXY and the lowercase forms are
+    # omitted: those values are URLs that may embed user:password@host.
+    # The clay-ide Retinue gateway unit does not declare them.
+    "NO_PROXY", "no_proxy",
+    "LD_LIBRARY_PATH",
+    "SYSTEMROOT", "COMSPEC", "PATHEXT", "WINDIR",
+    "USERPROFILE", "APPDATA", "LOCALAPPDATA", "HOMEDRIVE", "HOMEPATH",
+    "SYSTEMDRIVE",
+    # Paths, not secrets. Members overwrite the two Grok paths below.
+    "GROK_HOME", "GROK_AUTH_PATH",
+    # Socket path only. The HMAC key file is not a member variable.
+    "RETINUE_BROKER_SOCK",
+    "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL",
+    "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL",
+    "GIT_EXEC_PATH",
+    # In-repo fake ``grok agent stdio`` (test_grokbuild.py). Not credentials.
+    "FAKE_ACP_LOG", "FAKE_ACP_GARBAGE", "FAKE_ACP_CANCEL_ON_REJECT",
+    "FAKE_ACP_TOOL_PATH", "FAKE_ACP_DIE_MID_TURN", "FAKE_ACP_AUTH_FAIL",
+    "FAKE_ACP_LOAD_FAIL",
+})
+
+# Per-member extras are untrusted. Only the broker identity may be injected.
+# Must stay equal to brokertoken.TOKEN_ENV.
+MEMBER_EXTRA_ENV_ALLOWLIST = frozenset({
+    "RETINUE_BROKER_TOKEN",
+})
+
+# Gateway credentials that must not ride a member process or an MCP wire,
+# even if mcp.json names them. Exact names, same reason as the allowlist.
+_GATEWAY_CREDENTIAL_ENV_NAMES = frozenset({
+    "RETINUE_VOICE_API_KEY",
+    "RETINUE_ROOMS_API_KEY",
+    "RETINUE_JANUS_APPROVAL_TOKEN",
+    "RETINUE_JANUS_APPROVAL_URL",
+    "RETINUE_BROKER_KEY_FILE",
+})
+
+
+def _copy_allowlisted(
+    source: Mapping[str, str], names: frozenset,
+) -> Dict[str, str]:
+    env: Dict[str, str] = {}
+    for key, value in source.items():
+        name = str(key)
+        if name in names:
+            env[name] = str(value)
+    return env
+
+
+def _scrub_gateway_credentials(env: Dict[str, str]) -> Dict[str, str]:
+    """Drop gateway-only credential names from a child environment.
+
+    The allowlists already omit these names. This still removes them if a
+    later edit copies one, without depending on a Janus approval module.
+    The values are never logged.
+    """
+    for name in _GATEWAY_CREDENTIAL_ENV_NAMES:
+        env.pop(name, None)
+    return env
+
+
+def _runtime_probe_env(base: Optional[Mapping[str, str]] = None) -> Dict[str, str]:
+    """Allowlisted environment for gateway-side ``grok`` probes.
+
+    ``grok --version`` and ``grok models`` are not members, but they are
+    still children of this process. They get the runtime allowlist only:
+    no broker token and no forced Retinue ``GROK_HOME``.
+    """
+    env = _copy_allowlisted(
+        os.environ if base is None else base, MEMBER_BASE_ENV_ALLOWLIST
+    )
+    return _scrub_gateway_credentials(env)
+
+
+def _gateway_credential_values() -> frozenset:
+    """Secret values to strip from MCP wires. Never logged."""
+    found = []
+    for name in _GATEWAY_CREDENTIAL_ENV_NAMES:
+        raw = (os.environ.get(name) or "").strip()
+        if not raw:
+            continue
+        found.append(raw)
+        found.append(f"Bearer {raw}")
+    return frozenset(found)
+
+
+def _drop_gateway_credential_pairs(pairs: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    """Drop gateway credential names, and a value that is one of those secrets.
+
+    Operator-declared MCP env otherwise passes through unchanged so a
+    broker client can still receive its own ``K=V`` pairs.
+    """
+    secret_values = _gateway_credential_values()
+    kept: List[Dict[str, str]] = []
+    dropped = False
+    for pair in pairs:
+        name = str(pair.get("name") or "")
+        value = str(pair.get("value") or "")
+        if name in _GATEWAY_CREDENTIAL_ENV_NAMES or value in secret_values:
+            dropped = True
+            continue
+        kept.append(pair)
+    if dropped:
+        logger.info("grokbuild: gateway credential removed from member MCP config")
+    return kept
+
+
+def member_subprocess_env(
+    base: Mapping[str, str],
+    extra: Optional[Mapping[str, str]],
+    *,
+    grok_home_dir: str,
+    auth: str,
+    sandbox: str,
+) -> Dict[str, str]:
+    """Environment for one member ``grok`` process.
+
+    ``base`` and ``extra`` are both untrusted. Names are copied only when
+    they are on :data:`MEMBER_BASE_ENV_ALLOWLIST` or, for ``extra``,
+    :data:`MEMBER_EXTRA_ENV_ALLOWLIST`. Retinue then sets ``GROK_HOME``,
+    ``GROK_AUTH_PATH``, and the explicit sandbox profile (inherited
+    ``GROK_SANDBOX`` is never kept). Gateway credential names are removed
+    again so a later allowlist edit cannot reintroduce them.
+    """
+    env = _copy_allowlisted(base, MEMBER_BASE_ENV_ALLOWLIST)
+    _scrub_gateway_credentials(env)
+    env["GROK_HOME"] = grok_home_dir
+    env["GROK_AUTH_PATH"] = auth
+    env.pop("GROK_SANDBOX", None)
+    if sandbox:
+        env["GROK_SANDBOX"] = sandbox
+    if extra:
+        rejected: List[str] = []
+        for key, value in extra.items():
+            name = str(key)
+            if name in MEMBER_EXTRA_ENV_ALLOWLIST:
+                env[name] = str(value)
+            else:
+                rejected.append(name)
+        if rejected:
+            logger.debug(
+                "grokbuild: rejected member env_extra names: %s",
+                ", ".join(sorted(set(rejected))),
+            )
+    _scrub_gateway_credentials(env)
+    return env
+
+
 class AcpProcess:
     """One ``grok agent stdio`` child speaking newline-delimited JSON-RPC.
 
@@ -842,16 +1025,22 @@ class AcpProcess:
         binary = grok_binary()
         if not binary:
             raise GrokBuildUnavailable("grok executable not found")
-        env = dict(os.environ)
-        env["GROK_HOME"] = grok_home(self._home_dir)
-        env["GROK_AUTH_PATH"] = auth_path()
         # GROK_SANDBOX fails open (or kills session/new) under agent
         # stdio on v0.2.93 — never inherit one from the gateway env.
-        env.pop("GROK_SANDBOX", None)
+        # member_subprocess_env passes an allowlist, not os.environ, so
+        # gateway credentials cannot reach the member. Proxy URL variables
+        # (HTTP_PROXY, HTTPS_PROXY, ALL_PROXY, and lowercase) are not on
+        # that list. NO_PROXY is a hostname bypass list and is copied.
+        # bwrap inherits that mapping (it does not --clearenv) and only
+        # overlays HOME, the broker socket, and PATH.
         sandbox = (os.getenv(SANDBOX_ENV) or "").strip()
-        if sandbox:
-            env["GROK_SANDBOX"] = sandbox
-        env.update(self._env_extra)
+        env = member_subprocess_env(
+            os.environ,
+            self._env_extra,
+            grok_home_dir=grok_home(self._home_dir),
+            auth=auth_path(),
+            sandbox=sandbox,
+        )
         model = self._model or (os.getenv(MODEL_ENV) or "").strip()
         argv = agent_argv(binary, model)
         if self._confine is not None:
@@ -1206,7 +1395,9 @@ def _normalize_mcp_entry(entry: Any) -> Optional[Dict[str, Any]]:
             "name": name,
             "command": command,
             "args": [str(a) for a in args],
-            "env": [{"name": str(k), "value": str(v)} for k, v in env.items()],
+            "env": _drop_gateway_credential_pairs(
+                [{"name": str(k), "value": str(v)} for k, v in env.items()]
+            ),
         }
     if kind in ("http", "sse"):
         url = str(entry.get("url") or "").strip()
@@ -1219,7 +1410,9 @@ def _normalize_mcp_entry(entry: Any) -> Optional[Dict[str, Any]]:
             "type": kind,
             "name": name,
             "url": url,
-            "headers": [{"name": str(k), "value": str(v)} for k, v in headers.items()],
+            "headers": _drop_gateway_credential_pairs(
+                [{"name": str(k), "value": str(v)} for k, v in headers.items()]
+            ),
         }
     return None
 
