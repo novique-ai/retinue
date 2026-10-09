@@ -109,6 +109,13 @@ Each agent process also carries the member's broker identity
 server child processes inherit — so a host-broker client declared here
 can authenticate per member. Note the token is minted per *process*
 (TTL 6h), not per turn; idle reaping keeps processes short-lived.
+Other entries in `env` / `headers` are passed through, except gateway
+credential names (`RETINUE_VOICE_API_KEY`, `RETINUE_ROOMS_API_KEY`,
+`RETINUE_JANUS_APPROVAL_TOKEN`, `RETINUE_JANUS_APPROVAL_URL`,
+`RETINUE_BROKER_KEY_FILE`) and a value equal to one of those secrets
+(including a `Bearer` header of that secret). Arbitrary `env_extra`
+names on the member process are rejected the same way: only the broker
+token is applied.
 
 ## How a Grok Build turn works
 
@@ -119,7 +126,25 @@ can authenticate per member. Note the token is minted per *process*
 - **Isolation** — the process runs with `GROK_HOME` pointed at
   `$HERMES_HOME/grokbuild/home`, whose `config.toml` disables the
   Claude/Cursor compat bridges. Room agents do NOT inherit the operator's
-  personal MCP servers, skills, or an always-approve default.
+  personal MCP servers, skills, or an always-approve default. The child
+  environment is an exact-name allowlist (locale, `PATH`, TLS, XDG, and
+  `NO_PROXY` / `no_proxy`) plus `GROK_HOME`, `GROK_AUTH_PATH`, the optional
+  sandbox profile, and that member's `RETINUE_BROKER_TOKEN`. Gateway
+  credentials — voice key, rooms API key, Janus approval settings, the
+  broker HMAC key path, and any other ambient variable — are not copied.
+  `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, and the lowercase forms are
+  not copied to members or to `grok --version` / `grok models` probes.
+  Those values are proxy URLs and can embed `user:password@host`. They
+  are not required here: the clay-ide Retinue gateway unit does not
+  declare them. `NO_PROXY` and `no_proxy` are copied verbatim. They are
+  hostname bypass lists, not proxy URLs, so they have no userinfo field
+  and cannot carry a proxy password. Copying them can reveal the
+  hostnames an operator listed. A secret placed in `NO_PROXY` would be
+  copied, because the value is not parsed or redacted. `bwrap` inherits
+  this mapping; it does not clear the environment. `grok --version` and
+  `grok models` probes use the same allowlist without the broker token.
+  Workspace `mcp.json` env and headers drop those credential names, and
+  a value equal to one of them, before they go out on the ACP wire.
 - **Session** — `session/new` scoped to the room's working directory; the
   grok session id is persisted (`retinue_rooms/grok_sessions.json`) and a
   gateway restart resumes it with `session/load` — the transcript is never
