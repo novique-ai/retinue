@@ -278,6 +278,52 @@ Cycles triggered before the escalation never replay.
 Cross-room posts can escalate the destination room the same way. They still
 do not start a cycle there.
 
+## Janus confirm-tier approval
+
+A room member that receives `needs_confirmation` from Janus says the
+`approval_request_id` in its own reply and waits. It does not approve, deny,
+or confirm the call itself, and it does not paste the call's arguments. The
+gateway reads that id from the spoken line, fetches the authoritative request
+from the Janus operator API, and posts its own agent line that @mentions the
+principal. That line pauses the room through the existing needs-you barrier.
+The line names the request id and tells the principal the call runs only if
+the member retries it after approval. The member's prose is not the card.
+
+The browser loads capability, reason, environment, expiry, status, and the
+exact arguments from `GET /rooms/{id}/approvals/{approval_id}` and shows them
+on that line. Approve and deny are
+`POST /rooms/{id}/approvals/{approval_id}/decision` with
+`{"decision":"approve"}` or `{"decision":"deny"}`. Both routes require
+`RETINUE_ROOMS_API_KEY`. A missing or empty key fails closed with 503 and
+returns no call arguments, including on localhost and including when the
+request id is real and pending. Ordinary room routes stay localhost-open
+when that key is unset. When the key is set, a missing or wrong bearer is
+rejected and does not read or decide. `from` on the decision body is
+ignored. A successful decision posts a principal line and wakes the room.
+A failed decision leaves the room paused. Posting an ordinary message does
+not approve anything.
+
+The operator API origin and bearer token are gateway process environment
+only (`RETINUE_JANUS_APPROVAL_URL`, `RETINUE_JANUS_APPROVAL_TOKEN`). Member
+processes take the Grok allowlisted environment, which omits them, and MCP
+wires drop those names and a value equal to the token. They are not written
+to the transcript or logs. Call arguments are returned only on the
+authenticated approval GET. They are not written to the transcript,
+notifications, or logs.
+
+The gateway binds an id to the first room whose agent line names it. After
+that bind, another room cannot read or decide it, and a missing binding
+fails closed. That first bind is not proof the room originated the call.
+Janus detail includes `identity` and `session_id`. `identity` is the Janus
+token label shared by room agents. `session_id` is
+`<label>:mcp:<mcp session>`, the MCP session key for that connection.
+Neither value is a Retinue room id, and neither is a signature this gateway
+can check against the speaking room. Do not enable this path on a live
+gateway until an authoritative room-claim protocol exists. Missing
+configuration, an unknown or expired request, a repeated opposite decision,
+or a decision Janus rejects fails closed. After a restart the binding is
+still required.
+
 ## Surfaces
 
 The adapter runs a small stdlib HTTP server (default `127.0.0.1:8643`, the A2A bind-safety
@@ -306,6 +352,8 @@ convention: no `RETINUE_ROOMS_API_KEY` → localhost-only):
 | `PUT /projects` | rewrite `order` (`{order:[id…]}`). Unknown ids dropped; missing ids append. Do not send Unfiled. |
 | `PATCH/DELETE /projects/{id}` | rename / archive (`{name?, archived?}`) / remove. Delete unfiles rooms; transcripts stay. |
 | `POST /rooms/{id}/messages` | user speaks (`{text, from?}`) → 202, cycle runs async |
+| `GET /rooms/{id}/approvals/{approval_id}` | authoritative Janus request bound to this room. Includes call arguments. `Cache-Control: no-store`. Requires `RETINUE_ROOMS_API_KEY` (503 when missing or empty; 401 when the bearer is wrong). Unknown and wrong-room ids are 404. |
+| `POST /rooms/{id}/approvals/{approval_id}/decision` | principal decision `{"decision":"approve"}` or `{"decision":"deny"}`. Same key requirement as the GET. Success posts a principal line and wakes the room. The response is id, status, decision, and duplicate — no arguments. `from` in the body is ignored. |
 | `POST /rooms/{id}/stop` | abort this room's in-flight cycle (`{from?}`) → 200 `{stopped, idle?}`. Posts `Stopped.`. Idle is a no-op. Other rooms are untouched. |
 | `POST /rooms/{id}/attachments` | raw file body + `filename=` query → `{path:/workspace/uploads/…}` (composer `+`) |
 | `GET /rooms/{id}/transcript?since=N&wait=S` | poll (optionally long-poll) the transcript — CLI / fallback |
@@ -604,13 +652,15 @@ not SOUL, would carry the peer roster; file a follow-up when wanted.
 | Var | Default | Meaning |
 |---|---|---|
 | `RETINUE_ROOMS_ENABLED` | unset | enable the platform (or set an API key) |
-| `RETINUE_ROOMS_API_KEY` | unset | bearer auth; unset ⇒ localhost-only bind |
+| `RETINUE_ROOMS_API_KEY` | unset | bearer auth; unset ⇒ localhost-only bind for ordinary routes. Janus approval detail and decision still require it and return 503 when it is missing or empty. |
 | `RETINUE_ROOMS_HOST` / `_PORT` | `127.0.0.1` / `8643` | bind address |
 | `RETINUE_ROOMS_TURN_TIMEOUT` | `300` | seconds to wait for one **cloud** agent turn |
 | `RETINUE_ROOMS_LOCAL_TURN_TIMEOUT` | `1800` | seconds to wait for one **local-LLM** turn (covers a slow first token and a sibling queued on the same llama-server) |
 | `RETINUE_SHARED_DIR` | unset | absolute host path mounted at `/shared` in every room container. Unset = off (no mount, no directory created). Must already exist; a missing path is an error, not a silent create. |
 | `RETINUE_FASTMAIL_TOKEN` | unset | JMAP bearer token for inbox read. Unset = the mail tools fail closed. |
 | `RETINUE_FASTMAIL_SESSION` | `https://api.fastmail.com/jmap/session` | JMAP session endpoint |
+| `RETINUE_JANUS_APPROVAL_URL` | unset | Janus operator API origin (`http` or `https`, no userinfo, no path). Unset = confirm-tier approvals fail closed. |
+| `RETINUE_JANUS_APPROVAL_TOKEN` | unset | Bearer token for that API. Gateway process only. |
 
 ## Reading email from a room turn (JMAP)
 

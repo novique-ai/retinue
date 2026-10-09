@@ -41,7 +41,7 @@ from gateway.platforms.base import (
     SendResult,
 )
 
-from . import attachments, auth, brokertoken, clarify as room_clarify, cron_workspace, cronjobs, crossroom, engine, governed, grokbuild, hidden_sessions, hire, ide, identity, itinerary, keepalive, principal, projects, routines, runtimes, sidebar, skilldraft, uimeta, voice, workspace, worktrees
+from . import attachments, auth, brokertoken, clarify as room_clarify, cron_workspace, cronjobs, crossroom, engine, governed, grokbuild, hidden_sessions, hire, ide, identity, itinerary, janus_approval, keepalive, principal, projects, routines, runtimes, sidebar, skilldraft, uimeta, voice, workspace, worktrees
 from .engine import KIND_AGENT, KIND_SYSTEM, KIND_TOOL, KIND_USER, Room, RoomMessage
 from .store import RoomStore
 
@@ -51,6 +51,10 @@ _DEFAULT_PORT = 8643
 _MAX_BODY = 262_144  # 256 KB is plenty for a chat message
 _MAX_AUDIO = 8 * 1024 * 1024  # 8 MiB ≈ 4 min of 16 kHz mono WAV
 _DEFAULT_USER_NAME = "User"
+# Tests set ``_janus_client_override`` to a fake or to None. The sentinel
+# means "read the gateway process env".
+_JANUS_CLIENT_UNSET = object()
+_NO_STORE = {"Cache-Control": "no-store"}
 
 
 class AgentBusy(ValueError):
@@ -170,6 +174,8 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         self._pending_lock = threading.Lock()
         self._cycle_stops: Dict[str, threading.Event] = {}
         self._xai_keepalive: Optional[keepalive.XaiKeepalive] = None
+        self._janus_client_override: Any = _JANUS_CLIENT_UNSET
+        self._janus_bindings_obj: Optional[janus_approval.ApprovalBindings] = None
 
     def _live_runner(self):
         """The in-process GatewayRunner, if this adapter is serving."""
@@ -2714,6 +2720,225 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             self.store.mutate(room_id, apply)
         except KeyError:
             return
+        if message.kind == KIND_AGENT and not (
+            message.speaker == janus_approval.JANUS_SPEAKER
+            and (message.text or "").startswith(janus_approval.LINE_PREFIX)
+        ):
+            self._surface_janus_approval(room_id, message)
+
+    def _janus_client(self):
+        """Injected fake, explicit None, or the gateway-process env client."""
+        if self._janus_client_override is not _JANUS_CLIENT_UNSET:
+            return self._janus_client_override
+        return janus_approval.client_from_env()
+
+    def _janus_bindings(self) -> janus_approval.ApprovalBindings:
+        """Room binding file next to the room store. Resolved lazily so a
+        test can replace ``self.store`` after ``__init__``."""
+        path = os.path.join(self.store.base_dir, "janus_approvals.json")
+        current = self._janus_bindings_obj
+        if current is None or current.path != path:
+            current = janus_approval.ApprovalBindings(path)
+            self._janus_bindings_obj = current
+        return current
+
+    def _surface_janus_approval(self, room_id: str, message: RoomMessage) -> None:
+        """Fetch each labeled id and, when Janus says it is pending, pause
+        the room with a gateway line. Agent prose is not the card."""
+        try:
+            approval_ids = janus_approval.extract_approval_request_ids(message.text or "")
+        except Exception as exc:
+            logger.info(
+                "janus approval scan failed room=%s error=%s",
+                room_id,
+                type(exc).__name__,
+            )
+            return
+        for approval_id in approval_ids:
+            try:
+                self._surface_one_janus_approval(room_id, approval_id)
+            except Exception as exc:
+                logger.info(
+                    "janus approval surface failed room=%s error=%s",
+                    room_id,
+                    type(exc).__name__,
+                )
+
+    def _surface_one_janus_approval(self, room_id: str, approval_id: str) -> None:
+        if not janus_approval.valid_id(approval_id):
+            return
+        bindings = self._janus_bindings()
+        existing = bindings.get(approval_id)
+        if existing and existing.get("room_id") not in (None, "", room_id):
+            self._post_system(room_id, janus_approval.unavailable_notice(approval_id))
+            return
+        if existing and existing.get("surfaced"):
+            return
+        client = self._janus_client()
+        if client is None:
+            self._post_system(room_id, janus_approval.unverified_notice(approval_id))
+            return
+        try:
+            raw = client.get(approval_id)
+            if not isinstance(raw, dict):
+                raise janus_approval.JanusApprovalError("bad_response")
+            detail = janus_approval.project_detail(raw, approval_id)
+        except janus_approval.JanusApprovalError as exc:
+            notice = (
+                janus_approval.expired_notice(approval_id)
+                if exc.code == "expired"
+                else janus_approval.unverified_notice(approval_id)
+            )
+            self._post_system(room_id, notice)
+            return
+        status = str(detail.get("status") or "")
+        if status == "expired" or janus_approval.expires_in_past(detail.get("expires_at")):
+            self._post_system(room_id, janus_approval.expired_notice(approval_id))
+            return
+        if not janus_approval.is_pending(status):
+            self._post_system(room_id, janus_approval.unverified_notice(approval_id))
+            return
+        # Detail identity is the shared Janus token label. session_id is
+        # "<label>:mcp:<mcp session>", minted by Janus for that MCP
+        # connection. Neither value names this Retinue room, so it cannot
+        # be matched here. The first room to speak the id gets the bind;
+        # a later room cannot read or decide it.
+        bound = bindings.bind(approval_id, room_id)
+        if bound.get("room_id") != room_id:
+            self._post_system(room_id, janus_approval.unavailable_notice(approval_id))
+            return
+        if bound.get("surfaced"):
+            return
+        posted = self.store.append(
+            room_id,
+            RoomMessage(
+                seq=0,
+                ts=0,
+                kind=KIND_AGENT,
+                speaker=janus_approval.JANUS_SPEAKER,
+                text=janus_approval.gateway_approval_line(approval_id),
+            ),
+        )
+        self._note_posted(room_id, posted)
+        bindings.mark_surfaced(approval_id)
+
+    def get_janus_approval(self, room_id: str, approval_id: str) -> Dict[str, Any]:
+        """Fresh authoritative detail for the authenticated card.
+
+        Wrong room and unknown id are the same 404. Arguments stay in this
+        return value and nowhere else.
+        """
+        if not janus_approval.valid_id(approval_id):
+            raise KeyError(approval_id)
+        if self.store.get(room_id) is None:
+            raise KeyError(room_id)
+        binding = self._janus_bindings().get(approval_id)
+        if not binding or binding.get("room_id") != room_id:
+            raise KeyError(approval_id)
+        client = self._janus_client()
+        if client is None:
+            raise janus_approval.JanusApprovalError("not_configured")
+        raw = client.get(approval_id)
+        if not isinstance(raw, dict):
+            raise janus_approval.JanusApprovalError("bad_response")
+        detail = janus_approval.project_detail(raw, approval_id)
+        detail["room_id"] = room_id
+        return detail
+
+    def decide_janus_approval(
+        self,
+        room_id: str,
+        approval_id: str,
+        decision: str,
+        *,
+        origin: str,
+    ) -> Dict[str, Any]:
+        """Approve or deny a request bound to this room.
+
+        ``origin`` must be the HTTP handler constant. Agent lines, tool
+        calls, and a spoofed ``from`` never get here with that origin.
+        The check is first so a non-HTTP caller cannot reach Janus.
+        """
+        if origin != janus_approval.HTTP_ORIGIN:
+            raise PermissionError("not allowed")
+        if decision not in {"approve", "deny"}:
+            raise ValueError("bad decision")
+        if not janus_approval.valid_id(approval_id):
+            raise KeyError(approval_id)
+        if self.store.get(room_id) is None:
+            raise KeyError(room_id)
+        bindings = self._janus_bindings()
+        binding = bindings.get(approval_id)
+        if not binding or binding.get("room_id") != room_id:
+            raise KeyError(approval_id)
+        local = binding.get("decision")
+        if local == decision:
+            return self._janus_decision_result(approval_id, decision, "", True)
+        if local in {"approve", "deny"}:
+            raise janus_approval.JanusApprovalError("already_decided")
+        client = self._janus_client()
+        if client is None:
+            raise janus_approval.JanusApprovalError("not_configured")
+        if self._loop is None:
+            raise RuntimeError("gateway loop not ready")
+        raw = client.get(approval_id)
+        if not isinstance(raw, dict):
+            raise janus_approval.JanusApprovalError("bad_response")
+        detail = janus_approval.project_detail(raw, approval_id)
+        status = str(detail.get("status") or "")
+        pending = janus_approval.is_pending(status) and not janus_approval.expires_in_past(
+            detail.get("expires_at")
+        )
+        if not pending:
+            if janus_approval.status_matches(status, decision):
+                self._wake_principal_decision(room_id, approval_id, decision)
+                bindings.mark_decision(approval_id, decision)
+                return self._janus_decision_result(approval_id, decision, status, True)
+            if status == "expired" or janus_approval.expires_in_past(detail.get("expires_at")):
+                raise janus_approval.JanusApprovalError("expired")
+            if janus_approval.status_matches(status, "approve") or janus_approval.status_matches(
+                status, "deny"
+            ):
+                raise janus_approval.JanusApprovalError("already_decided")
+            raise janus_approval.JanusApprovalError("not_pending")
+        result = client.decide(approval_id, decision)
+        if not isinstance(result, dict):
+            raise janus_approval.JanusApprovalError("rejected")
+        accepted = result.get("decision") == decision or janus_approval.status_matches(
+            str(result.get("status") or ""), decision
+        )
+        if not accepted:
+            raise janus_approval.JanusApprovalError("rejected")
+        self._wake_principal_decision(room_id, approval_id, decision)
+        bindings.mark_decision(approval_id, decision)
+        return self._janus_decision_result(
+            approval_id,
+            decision,
+            str(result.get("status") or ""),
+            bool(result.get("duplicate")),
+        )
+
+    def _wake_principal_decision(self, room_id: str, approval_id: str, decision: str) -> None:
+        """Principal line, then the normal user-post cycle. No call arguments."""
+        self.post_user_message(
+            room_id,
+            janus_approval.principal_decision_line(decision, approval_id),
+            from_name="",
+        )
+
+    @staticmethod
+    def _janus_decision_result(
+        approval_id: str, decision: str, status: str, duplicate: bool
+    ) -> Dict[str, Any]:
+        folded = (status or "").strip().lower()
+        if not folded:
+            folded = "approved" if decision == "approve" else "denied"
+        return {
+            "approval_request_id": approval_id,
+            "status": folded,
+            "decision": decision,
+            "duplicate": bool(duplicate),
+        }
 
     def _provider_event_notifier(self, room_id: str, member: str):
         """Per-turn callback for tools.turn_visibility (#166).
@@ -2843,21 +3068,45 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):  # route http.server noise to our logger
         logger.debug("Retinue rooms http: " + fmt, *args)
 
-    def _json(self, status: int, payload: Any) -> None:
+    def _json(
+        self,
+        status: int,
+        payload: Any,
+        extra_headers: Optional[Dict[str, str]] = None,
+    ) -> None:
         body = json.dumps(payload).encode("utf-8")
         try:
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
+            for key, value in (extra_headers or {}).items():
+                self.send_header(key, value)
             self.end_headers()
             self.wfile.write(body)
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             return
 
+    def _operator_api_key(self) -> str:
+        return str(getattr(self.server.adapter, "api_key", "") or "").strip()
+
+    def _reject_approval_without_key(self) -> bool:
+        """Confirm-tier routes fail closed unless RETINUE_ROOMS_API_KEY is set.
+
+        Ordinary room routes stay localhost-open when the key is absent.
+        Detail returns the exact call arguments and decision approves the
+        call, so a missing or empty key is 503 and never reaches Janus.
+        """
+        if self._operator_api_key():
+            return False
+        self._json(503, {"error": "room api key is required"}, _NO_STORE)
+        return True
+
     def _authorized(self) -> bool:
         key = self.server.adapter.api_key
         if not key:
-            return True  # no key => the server is bound localhost-only
+            # Ordinary routes only. Approval detail and decision do not use
+            # this branch; they fail closed in _reject_approval_without_key.
+            return True
         header = self.headers.get("Authorization", "")
         token = header[len("Bearer "):] if header.startswith("Bearer ") else ""
         if token and hmac.compare_digest(token, key):
@@ -2972,6 +3221,13 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = urlparse(self.path)
         parts = [p for p in parsed.path.split("/") if p]
+        if (
+            len(parts) == 4
+            and parts[0] == "rooms"
+            and parts[2] == "approvals"
+            and self._reject_approval_without_key()
+        ):
+            return
         if parts == ["health"]:
             adapter = self.server.adapter
             payload = auth.health_payload(
@@ -3136,7 +3392,61 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
             except workspace.WorkspaceFileError as e:
                 return self._json(e.status, {"error": str(e)})
             return self._bytes(200, data, ctype)
+        if len(parts) == 4 and parts[0] == "rooms" and parts[2] == "approvals":
+            return self._get_janus_approval(adapter, parts[1], parts[3])
         return self._json(404, {"error": "not found"})
+
+    def _get_janus_approval(self, adapter: RetinueRoomsAdapter, room_id: str, approval_id: str) -> None:
+        if self._reject_approval_without_key():
+            return
+        try:
+            payload = adapter.get_janus_approval(room_id, approval_id)
+        except KeyError:
+            return self._json(404, {"error": "no such approval"}, _NO_STORE)
+        except janus_approval.JanusApprovalError as exc:
+            return self._json(exc.http_status(), {"error": exc.public_message}, _NO_STORE)
+        return self._json(200, payload, _NO_STORE)
+
+    def _post_janus_decision(
+        self,
+        adapter: RetinueRoomsAdapter,
+        room_id: str,
+        approval_id: str,
+        body: Dict[str, Any],
+    ) -> None:
+        # Origin is the handler, not the JSON body. ``from`` and ``text``
+        # are ignored so a spoofed speaker cannot decide.
+        if self._reject_approval_without_key():
+            return
+        try:
+            result = adapter.decide_janus_approval(
+                room_id,
+                approval_id,
+                str(body.get("decision") or ""),
+                origin=janus_approval.HTTP_ORIGIN,
+            )
+        except PermissionError:
+            return self._json(403, {"error": "not allowed"}, _NO_STORE)
+        except KeyError:
+            return self._json(404, {"error": "no such approval"}, _NO_STORE)
+        except ValueError:
+            return self._json(400, {"error": "bad request"}, _NO_STORE)
+        except janus_approval.JanusApprovalError as exc:
+            return self._json(exc.http_status(), {"error": exc.public_message}, _NO_STORE)
+        except RuntimeError:
+            return self._json(503, {"error": "gateway loop not ready"}, _NO_STORE)
+        decision = result.get("decision")
+        status = result.get("status")
+        return self._json(
+            200,
+            {
+                "approval_request_id": result.get("approval_request_id") or approval_id,
+                "status": status if isinstance(status, str) else "",
+                "decision": decision if decision in {"approve", "deny"} else "",
+                "duplicate": bool(result.get("duplicate")),
+            },
+            _NO_STORE,
+        )
 
     def _sse_transcript(self, room_id: str, since: int) -> None:
         """Push transcript lines as ``event: messages`` until the client goes."""
@@ -3262,10 +3572,18 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
         return self._bytes(200, audio, ctype)
 
     def do_POST(self):
-        if not self._authorized():
-            return self._json(401, {"error": "unauthorized"})
         parsed = urlparse(self.path)
         parts = [p for p in parsed.path.split("/") if p]
+        if (
+            len(parts) == 5
+            and parts[0] == "rooms"
+            and parts[2] == "approvals"
+            and parts[4] == "decision"
+            and self._reject_approval_without_key()
+        ):
+            return
+        if not self._authorized():
+            return self._json(401, {"error": "unauthorized"})
         adapter = self.server.adapter
         if len(parts) == 3 and parts[0] == "rooms" and parts[2] == "audio":
             return self._post_audio(adapter, parts[1], parsed)
@@ -3337,6 +3655,13 @@ class _RoomsRequestHandler(BaseHTTPRequestHandler):
             except ValueError as e:
                 return self._json(400, {"error": str(e)})
             return self._json(201, payload)
+        if (
+            len(parts) == 5
+            and parts[0] == "rooms"
+            and parts[2] == "approvals"
+            and parts[4] == "decision"
+        ):
+            return self._post_janus_decision(adapter, parts[1], parts[3], body)
         if len(parts) == 3 and parts[0] == "rooms" and parts[2] == "messages":
             try:
                 result = adapter.post_user_message(

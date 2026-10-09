@@ -36,6 +36,26 @@ export interface RoomMsg {
   text: string;
 }
 
+/** Authoritative Janus confirm-tier request. Arguments arrive only here. */
+export interface JanusApprovalDetail {
+  approval_request_id: string;
+  room_id?: string;
+  status: string;
+  identity?: string;
+  capability_id?: string;
+  arguments?: unknown;
+  env?: unknown;
+  reason?: string;
+  expires_at?: string | number | null;
+}
+
+export interface JanusDecisionResult {
+  approval_request_id: string;
+  status: string;
+  decision: "approve" | "deny" | "";
+  duplicate?: boolean;
+}
+
 export type AuthStatus = "ok" | "relogin_required" | "missing" | "not_required";
 
 export interface ProviderAuth {
@@ -487,6 +507,17 @@ export const api = {
   ) => watchTranscript(id, since, onMessages, signal),
   send: (id: string, text: string, from: string) =>
     req<{ seq: number; planned: string[] }>("POST", `/rooms/${id}/messages`, { text, from }),
+  getJanusApproval: (roomId: string, approvalId: string) =>
+    req<JanusApprovalDetail>(
+      "GET",
+      `/rooms/${encodeURIComponent(roomId)}/approvals/${encodeURIComponent(approvalId)}`,
+    ),
+  decideJanusApproval: (roomId: string, approvalId: string, decision: "approve" | "deny") =>
+    req<JanusDecisionResult>(
+      "POST",
+      `/rooms/${encodeURIComponent(roomId)}/approvals/${encodeURIComponent(approvalId)}/decision`,
+      { decision },
+    ),
   /** Abort this room's cycle and cut queued Speak Replies on the client. */
   stop: (id: string, from: string) =>
     req<{ stopped: boolean; idle?: boolean; already?: boolean; seq?: number | null; notice?: string }>(

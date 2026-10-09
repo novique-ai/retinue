@@ -34,7 +34,7 @@ optional_env:
     prompt: "Enable Retinue rooms? (true/false)"
     password: false
   - name: RETINUE_ROOMS_API_KEY
-    description: "Bearer token for the rooms HTTP API. Unset => server binds 127.0.0.1 only."
+    description: "Bearer token for the rooms HTTP API. Unset => server binds 127.0.0.1 only. Janus approval detail and decision routes still require this key and return 503 when it is missing or empty."
     prompt: "Rooms API key (or empty for localhost-only)"
     password: true
   - name: RETINUE_ROOMS_HOST
@@ -65,3 +65,11 @@ optional_env:
     description: "Host directory bind-mounted at /workspace for rooms with workspace=ide when the create/patch body omits ide_path."
     prompt: "Default IDE host path for workspace=ide rooms (absolute directory)"
     password: false
+  - name: RETINUE_JANUS_APPROVAL_URL
+    description: "Operator API origin for Janus confirm-tier approvals (http or https, no userinfo, no path). Unset => rooms fail closed and do not surface approval cards."
+    prompt: "Janus approvals API origin (or empty to disable)"
+    password: false
+  - name: RETINUE_JANUS_APPROVAL_TOKEN
+    description: "Bearer token for the Janus approvals API. Gateway process only; never given to room members, MCP config, transcripts, or logs."
+    prompt: "Janus approvals bearer token (or empty to disable)"
+    password: true
