@@ -73,3 +73,7 @@ optional_env:
     description: "Bearer token for the Janus approvals API. Gateway process only; never given to room members, MCP config, transcripts, or logs."
     prompt: "Janus approvals bearer token (or empty to disable)"
     password: true
+  - name: RETINUE_JANUS_MCP_SERVER
+    description: "MCP server name whose tool results may bind a Janus approval to the room turn that observed them (default janus). Empty disables that bind. Not a credential."
+    prompt: "Janus MCP server name (default janus)"
+    password: false

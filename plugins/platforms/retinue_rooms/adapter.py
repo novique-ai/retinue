@@ -2575,7 +2575,10 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             # Called on the event loop (ACP reader task). store.append is
             # thread-safe and wakes the SSE/long-poll watchers itself.
             # needs_user bookkeeping is skipped on purpose: a tool line
-            # cannot @ the principal.
+            # cannot @ the principal. Titles are not a Janus approval
+            # claim. This ACP path has no trustworthy completion payload.
+            # The room claim is the session header, checked when the
+            # member speaks the id.
             title = str(payload.get("title") or "tool")
             if event == "tool_start":
                 text = title
@@ -2742,9 +2745,42 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             self._janus_bindings_obj = current
         return current
 
+    def observe_janus_tool_result(self, room_id: str, tool_name: str, result: Any) -> bool:
+        """Bind one approval id from a tool result already tied to ``room_id``.
+
+        ``room_id`` is the turn that executed the tool. The result body
+        cannot name a different room. Returns whether this room holds the
+        bind. Does not fetch the operator API and does not log the result
+        or the call arguments.
+        """
+        room = str(room_id or "").strip()
+        if not room or room != room_id or self.store.get(room) is None:
+            return False
+        server = janus_approval.configured_janus_mcp_server()
+        try:
+            approval_id = janus_approval.approval_id_from_tool_result(
+                tool_name, result, server=server
+            )
+        except Exception as exc:
+            logger.info(
+                "janus tool result rejected room=%s error=%s",
+                room,
+                type(exc).__name__,
+            )
+            return False
+        if not approval_id:
+            return False
+        bound = self._janus_bindings().bind(approval_id, room)
+        return bound.get("room_id") == room
+
     def _surface_janus_approval(self, room_id: str, message: RoomMessage) -> None:
-        """Fetch each labeled id and, when Janus says it is pending, pause
-        the room with a gateway line. Agent prose is not the card."""
+        """Pause the room when a labeled id is already this room's to show.
+
+        In-process Hermes binds from the tool result, then the fetch runs.
+        A Grok speaker is checked against that member's session claim first.
+        An unbound in-process id is only an unverified notice. Agent prose
+        is not the card.
+        """
         try:
             approval_ids = janus_approval.extract_approval_request_ids(message.text or "")
         except Exception as exc:
@@ -2754,9 +2790,10 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
                 type(exc).__name__,
             )
             return
+        speaker = str(getattr(message, "speaker", "") or "")
         for approval_id in approval_ids:
             try:
-                self._surface_one_janus_approval(room_id, approval_id)
+                self._surface_one_janus_approval(room_id, approval_id, speaker)
             except Exception as exc:
                 logger.info(
                     "janus approval surface failed room=%s error=%s",
@@ -2764,15 +2801,61 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
                     type(exc).__name__,
                 )
 
-    def _surface_one_janus_approval(self, room_id: str, approval_id: str) -> None:
+    def _speaker_is_grok(self, speaker: str) -> bool:
+        """True when this member's runtime is Grok Build.
+
+        A missing profile stays Hermes. The gateway line speaker and system
+        speaker are never Grok, so they cannot take the claim path.
+        """
+        slug = str(speaker or "").strip()
+        if not slug or slug in {janus_approval.JANUS_SPEAKER, "room"}:
+            return False
+        try:
+            runtime = runtimes.runtime_for_member(self._home_dir(), slug)
+        except Exception:
+            return False
+        return runtime == runtimes.RUNTIME_GROK_BUILD
+
+    def _expected_grok_room_claim(self, room_id: str, member: str) -> Optional[str]:
+        """In-memory claim for this room and member, or None.
+
+        Does not create a manager. A restart, a stdio Janus server, or a
+        session that never attached the header leaves this empty, and the
+        spoken id fails closed without a fetch.
+        """
+        manager = getattr(self, "_grok_mgr", None)
+        getter = getattr(manager, "expected_room_claim", None)
+        if not callable(getter):
+            return None
+        try:
+            claim = getter(room_id, member)
+        except Exception:
+            return None
+        if not isinstance(claim, str) or not claim:
+            return None
+        return claim
+
+    def _surface_one_janus_approval(
+        self, room_id: str, approval_id: str, speaker: str = ""
+    ) -> None:
         if not janus_approval.valid_id(approval_id):
+            return
+        if self._speaker_is_grok(speaker):
+            self._surface_grok_janus_approval(room_id, approval_id, speaker)
             return
         bindings = self._janus_bindings()
         existing = bindings.get(approval_id)
-        if existing and existing.get("room_id") not in (None, "", room_id):
-            self._post_system(room_id, janus_approval.unavailable_notice(approval_id))
+        # Speech is not a room claim. An id another room already holds is
+        # unavailable here. An unbound id is only an unverified notice:
+        # no operator fetch, no arguments, no @mention, no needs-you, and
+        # no decision card.
+        if not existing or existing.get("room_id") != room_id:
+            if existing and existing.get("room_id") not in (None, "", room_id):
+                self._post_system(room_id, janus_approval.unavailable_notice(approval_id))
+            else:
+                self._post_system(room_id, janus_approval.unverified_notice(approval_id))
             return
-        if existing and existing.get("surfaced"):
+        if existing.get("surfaced"):
             return
         client = self._janus_client()
         if client is None:
@@ -2780,6 +2863,77 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             return
         try:
             raw = client.get(approval_id)
+        except janus_approval.JanusApprovalError as exc:
+            notice = (
+                janus_approval.expired_notice(approval_id)
+                if exc.code == "expired"
+                else janus_approval.unverified_notice(approval_id)
+            )
+            self._post_system(room_id, notice)
+            return
+        # The room was bound from this turn's tool result. identity and
+        # session_id on the detail are not a room id and are not consulted.
+        self._surface_bound_detail(room_id, approval_id, raw, bindings)
+
+    def _surface_grok_janus_approval(
+        self, room_id: str, approval_id: str, speaker: str
+    ) -> None:
+        """Compare the session claim before binding or showing a card.
+
+        A Grok id has no first-speaker authority. Another room's binding
+        is unavailable and is not fetched. A missing expected claim (stdio
+        Janus, restart, or no session) is an unverified notice and is not
+        fetched. A presented claim that is missing, malformed, or different
+        does not bind.
+        """
+        bindings = self._janus_bindings()
+        existing = bindings.get(approval_id)
+        if existing and existing.get("room_id") not in (None, "", room_id):
+            self._post_system(room_id, janus_approval.unavailable_notice(approval_id))
+            return
+        if existing and existing.get("room_id") == room_id and existing.get("surfaced"):
+            return
+        expected = self._expected_grok_room_claim(room_id, speaker)
+        if expected is None:
+            self._post_system(room_id, janus_approval.unverified_notice(approval_id))
+            return
+        client = self._janus_client()
+        inspect = getattr(client, "inspect", None) if client is not None else None
+        if not callable(inspect):
+            self._post_system(room_id, janus_approval.unverified_notice(approval_id))
+            return
+        try:
+            raw = inspect(approval_id)
+        except janus_approval.JanusApprovalError:
+            self._post_system(room_id, janus_approval.unverified_notice(approval_id))
+            return
+        except Exception:
+            self._post_system(room_id, janus_approval.unverified_notice(approval_id))
+            return
+        presented = raw.get("room_binding") if isinstance(raw, dict) else None
+        if not janus_approval.claim_matches(expected, presented):
+            logger.info("janus grok claim rejected room=%s", room_id)
+            self._post_system(room_id, janus_approval.unverified_notice(approval_id))
+            return
+        bound = bindings.bind(approval_id, room_id)
+        if bound.get("room_id") != room_id:
+            self._post_system(room_id, janus_approval.unavailable_notice(approval_id))
+            return
+        self._surface_bound_detail(room_id, approval_id, raw, bindings)
+
+    def _surface_bound_detail(
+        self,
+        room_id: str,
+        approval_id: str,
+        raw: Any,
+        bindings: janus_approval.ApprovalBindings,
+    ) -> None:
+        """Post the gateway line when a bound request is still pending.
+
+        ``raw`` may carry arguments and ``room_binding``. Neither is written
+        to the transcript or the log. The line is the id plus the pause.
+        """
+        try:
             if not isinstance(raw, dict):
                 raise janus_approval.JanusApprovalError("bad_response")
             detail = janus_approval.project_detail(raw, approval_id)
@@ -2797,17 +2951,6 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             return
         if not janus_approval.is_pending(status):
             self._post_system(room_id, janus_approval.unverified_notice(approval_id))
-            return
-        # Detail identity is the shared Janus token label. session_id is
-        # "<label>:mcp:<mcp session>", minted by Janus for that MCP
-        # connection. Neither value names this Retinue room, so it cannot
-        # be matched here. The first room to speak the id gets the bind;
-        # a later room cannot read or decide it.
-        bound = bindings.bind(approval_id, room_id)
-        if bound.get("room_id") != room_id:
-            self._post_system(room_id, janus_approval.unavailable_notice(approval_id))
-            return
-        if bound.get("surfaced"):
             return
         posted = self.store.append(
             room_id,

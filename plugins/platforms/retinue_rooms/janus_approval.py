@@ -1,16 +1,28 @@
 """Gateway-only Janus confirm-tier approvals (novique-ai/retinue#266).
 
 The operator API lives outside this process. Rooms talk to it with a small
-client so tests can inject a fake. Configuration is two gateway-process
+client so tests can inject a fake. Configuration is gateway-process
 environment variables:
 
   ``RETINUE_JANUS_APPROVAL_URL``    operator API origin, no path
   ``RETINUE_JANUS_APPROVAL_TOKEN``  bearer token for that API
+  ``RETINUE_JANUS_MCP_SERVER``      MCP server name whose tool results may
+                                    bind an approval (default ``janus``)
 
 The token is never written to a member environment, MCP config, the room
 transcript, or a log line. Call arguments travel only in the authenticated
 HTTP response the browser fetches for the approval card — not in the
 transcript line that pauses the room.
+
+A spoken line does not bind a room. Janus identity is shared, and Janus
+``session_id`` is an MCP session key, not a Retinue room id. An in-process
+Hermes turn binds the room captured when the gateway observed the Janus
+tool result. A Grok Build turn has no trustworthy tool-completion payload.
+The gateway mints a fresh opaque claim per (room, member, MCP session),
+sends it only as ``X-Retinue-Room-Binding`` on that session's Janus HTTP
+entry, and compares the operator detail's ``room_binding`` in constant
+time before binding. The claim is not written to a child environment,
+MCP config, prompt, transcript, tool title, log, or model-facing result.
 """
 
 from __future__ import annotations
@@ -19,6 +31,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import threading
 import time
 import uuid
@@ -32,6 +45,11 @@ logger = logging.getLogger(__name__)
 
 URL_ENV = "RETINUE_JANUS_APPROVAL_URL"
 TOKEN_ENV = "RETINUE_JANUS_APPROVAL_TOKEN"
+JANUS_MCP_SERVER_ENV = "RETINUE_JANUS_MCP_SERVER"
+DEFAULT_JANUS_MCP_SERVER = "janus"
+# A confirm-tier preview is small. Anything larger is not the structured
+# result this parser will trust (Codex also slices mcpToolCall results).
+_MAX_TOOL_RESULT_CHARS = 64 * 1024
 # Both stay on the gateway process. Member isolation is
 # grokbuild.member_subprocess_env: an allowlist plus a name scrub that
 # already includes these two. This module does not copy a child environment.
@@ -156,9 +174,419 @@ def valid_id(approval_id: str) -> bool:
     return bool(_ID_RE.fullmatch(approval_id or ""))
 
 
+class _Reject(Exception):
+    """Parser failure. Carries no payload so a log of the type is safe."""
+
+
+# Janus stores the header lowercased. 43 is secrets.token_urlsafe(32)
+# with the base64 padding removed: alphabet A-Za-z0-9_-.
+ROOM_BINDING_HEADER = "X-Retinue-Room-Binding"
+ROOM_BINDING_LENGTH = 43
+_ROOM_BINDING_RE = re.compile(r"^[A-Za-z0-9_-]{43}$")
+_ROOM_BINDING_HEADER_FOLDED = ROOM_BINDING_HEADER.lower()
+
+
+def mint_room_binding() -> str:
+    """Fresh opaque claim. One per Grok (room, member, MCP session).
+
+    ``token_urlsafe(32)`` is 43 characters. A shape miss raises so a bad
+    value is never sent. The caller keeps the result in process memory.
+    """
+    value = secrets.token_urlsafe(32)
+    if _ROOM_BINDING_RE.fullmatch(value) is None:
+        raise RuntimeError("room binding mint failed")
+    return value
+
+
+def _room_binding_bytes(value: Any) -> Optional[bytes]:
+    if not isinstance(value, str) or _ROOM_BINDING_RE.fullmatch(value) is None:
+        return None
+    return value.encode("utf-8")
+
+
+def claim_matches(expected: Any, presented: Any) -> bool:
+    """Constant-time compare of two room claims.
+
+    A missing, non-string, or malformed value does not match. Unequal
+    lengths still run ``compare_digest`` on the expected bytes so the
+    failure does not return early. Neither value is logged.
+    """
+    left = _room_binding_bytes(expected)
+    if left is None:
+        filler = b"x" * ROOM_BINDING_LENGTH
+        secrets.compare_digest(filler, filler)
+        return False
+    right = _room_binding_bytes(presented)
+    if right is None or len(right) != len(left):
+        secrets.compare_digest(left, left)
+        return False
+    return secrets.compare_digest(left, right)
+
+
+def attach_janus_room_binding(
+    servers: Any,
+    claim: str,
+    server_name: str,
+) -> Tuple[List[Dict[str, Any]], bool]:
+    """Copy ``servers`` and put ``claim`` on the named Janus HTTP entry.
+
+    Callers pass the list already scrubbed of gateway credentials. The
+    header is appended only to the first ``http`` or ``sse`` server of
+    ``server_name``. An existing header of the same name is replaced so
+    Janus does not see a duplicate. Stdio entries are copied unchanged
+    and the claim is not written into their env. ``attached`` is False
+    when no such HTTP entry exists; the caller must not retain the claim.
+    """
+    if _room_binding_bytes(claim) is None:
+        raise RuntimeError("room binding rejected")
+    name = str(server_name or "").strip()
+    copied: List[Dict[str, Any]] = []
+    attached = False
+    for entry in servers or []:
+        if not isinstance(entry, dict):
+            continue
+        item = dict(entry)
+        if isinstance(item.get("headers"), list):
+            item["headers"] = [
+                dict(header) for header in item["headers"] if isinstance(header, dict)
+            ]
+        if isinstance(item.get("env"), list):
+            item["env"] = [dict(pair) for pair in item["env"] if isinstance(pair, dict)]
+        if isinstance(item.get("args"), list):
+            item["args"] = list(item["args"])
+        if (
+            not attached
+            and name
+            and item.get("name") == name
+            and item.get("type") in ("http", "sse")
+        ):
+            headers = [
+                header
+                for header in (item.get("headers") or [])
+                if str(header.get("name") or "").lower() != _ROOM_BINDING_HEADER_FOLDED
+            ]
+            headers.append({"name": ROOM_BINDING_HEADER, "value": claim})
+            item["headers"] = headers
+            attached = True
+        copied.append(item)
+    return copied, attached
+
+
+def configured_janus_mcp_server(environ: Optional[Mapping[str, str]] = None) -> str:
+    """MCP server whose tool results may bind an approval.
+
+    Unset means the documented Janus server name. Set-but-empty disables
+    tool-result binding (fail closed). This is not a secret.
+    """
+    env = os.environ if environ is None else environ
+    if JANUS_MCP_SERVER_ENV not in env:
+        return DEFAULT_JANUS_MCP_SERVER
+    return str(env.get(JANUS_MCP_SERVER_ENV) or "").strip()
+
+
+def is_janus_mcp_tool(tool_name: str, server: str) -> bool:
+    """True for Hermes ``mcp__<server>__<tool>`` or Codex ``mcp.<server>.<tool>``.
+
+    The server name is the configured Janus MCP server, not a name taken
+    from the tool title or the result body. A shell tool never matches.
+    """
+    name = str(tool_name or "").strip()
+    server_name = str(server or "").strip()
+    if not name or not server_name:
+        return False
+    if any(mark in server_name for mark in ("__", ".", "/", " ", "\n", "\r")):
+        return False
+    hermes = f"mcp__{server_name}__"
+    codex = f"mcp.{server_name}."
+    if name.startswith(hermes) and len(name) > len(hermes):
+        return True
+    if name.startswith(codex) and len(name) > len(codex):
+        return True
+    return False
+
+
+def approval_id_from_tool_result(
+    tool_name: str,
+    result: Any,
+    *,
+    server: str,
+) -> Optional[str]:
+    """The single approval id in a Janus MCP tool result, or None.
+
+    Accepts the broker object itself or a Hermes envelope whose ``result``
+    is that object (dict or JSON text) and/or whose ``structuredContent``
+    is that object. ``status`` must be ``needs_confirmation`` and the
+    object must carry exactly one ``approval_request_id``. Malformed,
+    truncated, disagreeing, or ambiguous input returns None. This does
+    not read a room id out of the payload.
+    """
+    if not is_janus_mcp_tool(tool_name, server):
+        return None
+    try:
+        obj = _decode_tool_object(result)
+        if obj is None:
+            return None
+        return _extract_confirmation_id(obj, depth=0)
+    except _Reject:
+        return None
+
+
+def trusted_retinue_room(source: Any, metadata: Any) -> Optional[str]:
+    """Room id stamped on this turn, when it matches the routed chat.
+
+    ``metadata['retinue_room']`` is the adapter's own stamp. A room id in
+    tool output, a title, or a metadata value that disagrees with
+    ``source.chat_id`` is not a claim. Returns None unless the platform
+    is Retinue rooms.
+    """
+    if not isinstance(metadata, Mapping):
+        return None
+    raw = metadata.get("retinue_room")
+    if not isinstance(raw, str):
+        return None
+    room_id = raw.strip()
+    if not room_id or room_id != raw:
+        return None
+    platform = getattr(source, "platform", None)
+    platform_value = getattr(platform, "value", platform)
+    if str(platform_value or "").strip().lower() != "retinue_rooms":
+        return None
+    chat_id = getattr(source, "chat_id", None)
+    if not isinstance(chat_id, str) or chat_id != room_id:
+        return None
+    return room_id
+
+
+def room_tool_complete_callback(adapter: Any, room_id: str) -> Optional[Callable]:
+    """Tool-complete closure bound to one room turn.
+
+    ``room_id`` is the string captured when the turn was set up. The
+    callback does not read a process-global current room and does not log
+    arguments or the result body.
+    """
+    observe = getattr(adapter, "observe_janus_tool_result", None)
+    if not callable(observe) or not isinstance(room_id, str) or not room_id:
+        return None
+
+    def _callback(_call_id: Any, tool_name: Any, _args: Any, result: Any) -> None:
+        try:
+            observe(room_id, tool_name, result)
+        except Exception as exc:
+            logger.info(
+                "janus tool bind failed room=%s error=%s",
+                room_id,
+                type(exc).__name__,
+            )
+
+    return _callback
+
+
+def compose_tool_complete_callbacks(
+    primary: Optional[Callable],
+    extra: Optional[Callable],
+) -> Optional[Callable]:
+    """Run the existing callback, then the room callback.
+
+    A missing extra returns ``primary`` unchanged so a Slack-only turn
+    keeps today's exception behavior. When both are set, one failure
+    does not skip the other, and neither callback's arguments are logged.
+    """
+    if extra is None:
+        return primary
+    if primary is None:
+        return extra
+
+    def _both(call_id: Any, tool_name: Any, args: Any, result: Any) -> None:
+        for callback in (primary, extra):
+            try:
+                callback(call_id, tool_name, args, result)
+            except Exception as exc:
+                logger.info(
+                    "tool complete callback failed error=%s",
+                    type(exc).__name__,
+                )
+
+    return _both
+
+
+def _decode_tool_object(result: Any) -> Optional[Dict[str, Any]]:
+    if isinstance(result, dict):
+        return result
+    if isinstance(result, (bytes, bytearray)):
+        try:
+            result = result.decode("utf-8")
+        except UnicodeDecodeError:
+            raise _Reject from None
+    if not isinstance(result, str):
+        raise _Reject
+    if len(result) > _MAX_TOOL_RESULT_CHARS:
+        raise _Reject
+    text = result.strip()
+    if not text:
+        return None
+    if text[0] not in "{[":
+        return None
+    try:
+        parsed = json.loads(text)
+    except ValueError:
+        raise _Reject from None
+    if not isinstance(parsed, dict):
+        raise _Reject
+    return parsed
+
+
+def _extract_confirmation_id(obj: Dict[str, Any], depth: int) -> Optional[str]:
+    if depth > 2:
+        raise _Reject
+    has_structured = "structuredContent" in obj
+    has_result = "result" in obj
+    direct = _direct_confirmation_id(obj)
+    if not has_structured and not has_result:
+        return direct
+    if direct is not None:
+        raise _Reject
+    found: List[str] = []
+    if has_structured:
+        found.append(_required_confirmation(obj.get("structuredContent"), depth))
+    if has_result:
+        extra = _optional_result_id(obj.get("result"), depth)
+        if extra is not None:
+            found.append(extra)
+    if not found:
+        return None
+    if any(item != found[0] for item in found):
+        raise _Reject
+    return found[0]
+
+
+def _required_confirmation(value: Any, depth: int) -> str:
+    embedded = _coerce_embedded_object(value)
+    if _is_envelope(embedded):
+        got = _extract_confirmation_id(embedded, depth + 1)
+    else:
+        got = _direct_confirmation_id(embedded)
+    if not got:
+        raise _Reject
+    return got
+
+
+def _optional_result_id(value: Any, depth: int) -> Optional[str]:
+    """Id from a ``result`` slot.
+
+    Prose is ignored (it is not a claim). JSON text that does not parse,
+    or a parsed object that is not this confirmation, fails the whole
+    envelope so a truncated copy cannot sit beside a structured one.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        if len(value) > _MAX_TOOL_RESULT_CHARS:
+            raise _Reject
+        text = value.strip()
+        if not text:
+            return None
+        if text[0] not in "{[":
+            return None
+        try:
+            parsed = json.loads(text)
+        except ValueError:
+            raise _Reject from None
+        if not isinstance(parsed, dict):
+            raise _Reject
+        value = parsed
+    if not isinstance(value, dict):
+        raise _Reject
+    if _is_envelope(value):
+        got = _extract_confirmation_id(value, depth + 1)
+        if not got:
+            raise _Reject
+        return got
+    got = _direct_confirmation_id(value)
+    if not got:
+        raise _Reject
+    return got
+
+
+def _is_envelope(obj: Any) -> bool:
+    return isinstance(obj, dict) and (
+        "structuredContent" in obj or "result" in obj
+    ) and "approval_request_id" not in obj and "status" not in obj
+
+
+def _coerce_embedded_object(value: Any) -> Dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        if len(value) > _MAX_TOOL_RESULT_CHARS:
+            raise _Reject
+        text = value.strip()
+        if not text or text[0] not in "{[":
+            raise _Reject
+        try:
+            parsed = json.loads(text)
+        except ValueError:
+            raise _Reject from None
+        if isinstance(parsed, dict):
+            return parsed
+    raise _Reject
+
+
+def _direct_confirmation_id(obj: Any) -> Optional[str]:
+    if not isinstance(obj, dict):
+        return None
+    if "status" not in obj and "approval_request_id" not in obj:
+        return None
+    status = obj.get("status")
+    if not isinstance(status, str) or status.strip().lower() != "needs_confirmation":
+        raise _Reject
+    raw = obj.get("approval_request_id")
+    if not isinstance(raw, str):
+        raise _Reject
+    approval_id = raw.strip()
+    if approval_id != raw or not valid_id(approval_id):
+        raise _Reject
+    ids: List[Any] = []
+    statuses: List[Any] = []
+    seen: set = set()
+    _walk_key(obj, "approval_request_id", ids, seen, 0)
+    _walk_key(obj, "status", statuses, set(), 0)
+    if len(ids) != 1 or not isinstance(ids[0], str) or ids[0].strip() != approval_id:
+        raise _Reject
+    for item in statuses:
+        if not isinstance(item, str) or item.strip().lower() != "needs_confirmation":
+            raise _Reject
+    return approval_id
+
+
+def _walk_key(value: Any, key: str, found: List[Any], seen: set, depth: int) -> None:
+    if depth > 6:
+        raise _Reject
+    if isinstance(value, dict):
+        marker = id(value)
+        if marker in seen:
+            raise _Reject
+        seen.add(marker)
+        if len(value) > 64:
+            raise _Reject
+        for item_key, item in value.items():
+            if item_key == key:
+                found.append(item)
+            _walk_key(item, key, found, seen, depth + 1)
+        return
+    if isinstance(value, list):
+        if len(value) > 64:
+            raise _Reject
+        for item in value:
+            _walk_key(item, key, found, seen, depth + 1)
+
+
 def project_detail(data: Mapping[str, Any], approval_id: str) -> Dict[str, Any]:
     """Authoritative fields for the authenticated UI. Unknown keys are dropped
-    so an upstream token cannot ride along in the browser response."""
+    so an upstream token cannot ride along in the browser response.
+
+    ``room_binding`` is operator-only. It is not a public field and is not
+    copied here.
+    """
     got = str(data.get("approval_request_id") or "").strip()
     if got and got != approval_id:
         raise JanusApprovalError("mismatch")
@@ -350,6 +778,20 @@ class JanusApprovalsClient:
         status, payload = self._call("GET", self._url(approval_id), None)
         self._raise_for_status(status)
         return project_detail(payload, approval_id)
+
+    def inspect(self, approval_id: str) -> Dict[str, Any]:
+        """Operator payload for the Grok claim compare.
+
+        This keeps ``room_binding``. ``get`` does not. Callers must not log
+        the dict, put it on a transcript, or return it from the HTTP card.
+        """
+        if not valid_id(approval_id):
+            raise JanusApprovalError("bad_id")
+        status, payload = self._call("GET", self._url(approval_id), None)
+        self._raise_for_status(status)
+        if not isinstance(payload, dict):
+            raise JanusApprovalError("bad_response")
+        return payload
 
     def decide(self, approval_id: str, decision: str) -> Dict[str, Any]:
         if decision not in {"approve", "deny"}:

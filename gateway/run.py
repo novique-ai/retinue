@@ -4157,6 +4157,30 @@ def _reconnect_needs_attention(info: dict, now: float) -> bool:
     return (now - queued_at) >= _RECONNECT_ATTENTION_AFTER_SECONDS
 
 
+def _retinue_room_id_for_turn(source: Any, metadata: Any) -> Optional[str]:
+    """Room id for a Retinue turn, or None.
+
+    Only ``metadata['retinue_room']`` on a ``retinue_rooms`` event is
+    considered, and only when it equals the routed chat. Missing metadata
+    skips the rooms import entirely.
+    """
+    if not isinstance(metadata, dict):
+        return None
+    raw = metadata.get("retinue_room")
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    platform = getattr(source, "platform", None)
+    platform_value = getattr(platform, "value", platform)
+    if str(platform_value or "").strip().lower() != "retinue_rooms":
+        return None
+    try:
+        from plugins.platforms.retinue_rooms.janus_approval import trusted_retinue_room
+    except Exception as exc:
+        logger.info("janus room bind unavailable error=%s", type(exc).__name__)
+        return None
+    return trusted_retinue_room(source, metadata)
+
+
 class TurnRunner:
     """Per-turn collaborator carrying the tool-progress callbacks that used to
     be nested closures inside ``GatewayRunner._run_agent_inner``.
@@ -5062,6 +5086,39 @@ class TurnRunner:
             }
         )
 
+    def _assign_tool_complete_callback(self, agent) -> None:
+        """Slack task cards, plus a Retinue room's Janus tool observer.
+
+        The room callback closes over ``ctx.retinue_room_id`` from this
+        turn. It does not replace a Slack callback that is already set.
+        """
+        ctx = self._ctx
+        slack = (
+            ctx.native_tool_complete_callback
+            if ctx._native_slack_task_cards
+            and ctx.native_tool_complete_callback is not None
+            else None
+        )
+        room_id = ctx.retinue_room_id if isinstance(ctx.retinue_room_id, str) else ""
+        janus = None
+        if room_id:
+            try:
+                from plugins.platforms.retinue_rooms.janus_approval import (
+                    compose_tool_complete_callbacks,
+                    room_tool_complete_callback,
+                )
+
+                adapter = self._runner._adapter_for_source(ctx.source)
+                janus = room_tool_complete_callback(adapter, room_id)
+                agent.tool_complete_callback = compose_tool_complete_callbacks(slack, janus)
+                return
+            except Exception as exc:
+                logger.info(
+                    "janus room callback not installed error=%s",
+                    type(exc).__name__,
+                )
+        agent.tool_complete_callback = slack
+
     def combined_tool_start_callback(self, call_id, tool_name, args):
         """Compose the voice ack + native task-card start consumers."""
         ctx = self._ctx
@@ -5686,12 +5743,7 @@ class TurnRunner:
             )
             else None
         )
-        agent.tool_complete_callback = (
-            ctx.native_tool_complete_callback
-            if ctx._native_slack_task_cards
-            and ctx.native_tool_complete_callback is not None
-            else None
-        )
+        self._assign_tool_complete_callback(agent)
         agent.step_callback = ctx._step_callback_sync if ctx._hooks_ref.loaded_hooks else None
         agent.stream_delta_callback = _stream_delta_cb
         agent.interim_assistant_callback = _interim_assistant_cb if _want_interim_messages else None
@@ -19957,6 +20009,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 persist_user_timestamp=persist_user_timestamp,
                 persist_user_display_kind=persist_user_display_kind,
                 message_type=event.message_type,
+                event_metadata=getattr(event, "metadata", None),
             )
             _turn_seconds = time.monotonic() - _turn_started_monotonic
 
@@ -27624,6 +27677,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         persist_user_timestamp: Optional[float] = None,
         persist_user_display_kind: Optional[str] = None,
         message_type: Optional[str] = None,
+        event_metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Profile-scoping wrapper around the agent run.
 
@@ -27644,6 +27698,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 persist_user_timestamp=persist_user_timestamp,
                 persist_user_display_kind=persist_user_display_kind,
                 message_type=message_type,
+                event_metadata=event_metadata,
             )
 
         profile_home = self._resolve_profile_home_for_source(source)
@@ -27657,6 +27712,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 persist_user_timestamp=persist_user_timestamp,
                 persist_user_display_kind=persist_user_display_kind,
                 message_type=message_type,
+                event_metadata=event_metadata,
             )
 
     def _profile_name_for_source(self, source: SessionSource) -> Optional[str]:
@@ -27800,6 +27856,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         persist_user_timestamp: Optional[float] = None,
         persist_user_display_kind: Optional[str] = None,
         message_type: Optional[str] = None,
+        event_metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -28109,6 +28166,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             persist_user_message=persist_user_message,
             persist_user_timestamp=persist_user_timestamp,
             persist_user_display_kind=persist_user_display_kind,
+            retinue_room_id=_retinue_room_id_for_turn(source, event_metadata),
         )
         turn_runner = TurnRunner(self, turn_ctx)
         # Callback invoked by agent on tool lifecycle events — extracted to
@@ -29284,6 +29342,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     next_message_id = self._reply_anchor_for_event(pending_event)
                     next_channel_prompt = getattr(pending_event, "channel_prompt", None)
                     next_message_type = getattr(pending_event, "message_type", None)
+                    next_event_metadata = getattr(pending_event, "metadata", None)
+                else:
+                    next_event_metadata = event_metadata
 
                 # Clear the completed streaming marker from the prior logical
                 # turn so the recursive turn's streaming TTS is not suppressed
@@ -29339,6 +29400,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     event_message_id=next_message_id,
                     channel_prompt=next_channel_prompt,
                     message_type=next_message_type,
+                    event_metadata=next_event_metadata,
                 )
                 return _preserve_queued_followup_history_offset(result, followup_result)
         finally:

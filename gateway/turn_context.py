@@ -143,3 +143,7 @@ class TurnContext:
     _native_slack_task_cards: bool = False
     native_tool_start_callback: Optional[Callable] = None
     native_tool_complete_callback: Optional[Callable] = None
+    # Retinue room captured from this turn's event metadata when it matches
+    # the routed chat. Empty for every other platform. The Janus tool-complete
+    # closure binds to this string; tool output cannot supply a room.
+    retinue_room_id: Optional[str] = None

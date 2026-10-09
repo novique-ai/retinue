@@ -282,12 +282,18 @@ do not start a cycle there.
 
 A room member that receives `needs_confirmation` from Janus says the
 `approval_request_id` in its own reply and waits. It does not approve, deny,
-or confirm the call itself, and it does not paste the call's arguments. The
-gateway reads that id from the spoken line, fetches the authoritative request
-from the Janus operator API, and posts its own agent line that @mentions the
-principal. That line pauses the room through the existing needs-you barrier.
-The line names the request id and tells the principal the call runs only if
-the member retries it after approval. The member's prose is not the card.
+or confirm the call itself, and it does not paste the call's arguments.
+Saying the id does not bind the room. For an in-process Hermes turn the
+gateway reads the Janus MCP tool result during that turn, before the agent
+line is posted, and binds the id to the room captured on the turn. When
+that bind already belongs to this room, the gateway fetches the
+authoritative request from the Janus operator API and posts its own agent
+line that @mentions the principal. That line pauses the room through the
+existing needs-you barrier. The line names the request id and tells the
+principal the call runs only if the member retries it after approval. The
+member's prose is not the card. An unbound spoken id posts only an
+unverified system notice: no arguments, no principal mention, no needs-you,
+and no decision controls.
 
 The browser loads capability, reason, environment, expiry, status, and the
 exact arguments from `GET /rooms/{id}/approvals/{approval_id}` and shows them
@@ -311,18 +317,56 @@ to the transcript or logs. Call arguments are returned only on the
 authenticated approval GET. They are not written to the transcript,
 notifications, or logs.
 
-The gateway binds an id to the first room whose agent line names it. After
-that bind, another room cannot read or decide it, and a missing binding
-fails closed. That first bind is not proof the room originated the call.
+The bind is the gateway-observed tool result, not the first room to say
+the id. The tool name must be on the configured Janus MCP server
+(`RETINUE_JANUS_MCP_SERVER`, default `janus`): Hermes
+`mcp__<server>__<tool>`, or the Codex bridge's `mcp.<server>.<tool>`. The
+structured result must have `status` `needs_confirmation` and exactly one
+`approval_request_id`. Hermes envelopes may carry that object as JSON text
+under `result` or as `structuredContent`. Malformed, ambiguous, or
+truncated output does not bind. A shell result, a tool title, model prose,
+and a room id inside the payload do not bind. The callback closes over the
+turn's own `retinue_room` metadata; it does not use a process-global
+current room. After that bind, another room cannot read or decide the id,
+and a missing binding fails closed.
+
 Janus detail includes `identity` and `session_id`. `identity` is the Janus
 token label shared by room agents. `session_id` is
 `<label>:mcp:<mcp session>`, the MCP session key for that connection.
-Neither value is a Retinue room id, and neither is a signature this gateway
-can check against the speaking room. Do not enable this path on a live
-gateway until an authoritative room-claim protocol exists. Missing
-configuration, an unknown or expired request, a repeated opposite decision,
-or a decision Janus rejects fails closed. After a restart the binding is
-still required.
+Neither value is a Retinue room id, and neither gives the first speaker
+a room.
+
+Grok Build's ACP stream still has no trustworthy tool-completion payload.
+For each Grok (room, member, MCP session) the gateway mints a fresh
+43-character `secrets.token_urlsafe(32)` claim and sends it only as the
+`X-Retinue-Room-Binding` header on the Janus `http` or `sse` MCP server
+entry, on `session/new` and again on `session/load`. A failed load and the
+following `session/new` are different connections, so each attempt gets
+its own claim. The expected claim stays in gateway memory for that room,
+member, and session. It is not written to the child environment,
+`grokbuild/mcp.json`, the persisted session file, the prompt, the
+transcript, a tool title, a gateway log line, or the model-facing result. A spoken
+id from a Grok member is checked by fetching the operator detail and
+comparing its operator-only `room_binding` to the expected claim in
+constant time before any bind or card. A missing, mismatched, or malformed
+claim fails closed: an unverified system notice only, no arguments, no
+principal mention, no needs-you, and no decision controls. A gateway
+restart drops the expected claim and fails closed the same way. A stdio
+Janus server cannot carry the header, so a Grok spoken id stays
+unsurfaced until that server is HTTP. The in-process Hermes path is
+unchanged: it binds from the tool result and does not treat a spoken Grok
+id as authority.
+
+Codex app-server `mcpToolCall` completions are parsed fail-closed,
+including the bridge's truncated result, but this tree has no captured
+live frame. Keep Codex approval surfacing fail-closed until that frame
+is pinned. Grok approval surfacing also requires a Janus HTTP MCP entry
+and a live header round trip; the current stdio entry cannot carry it.
+Grok's own diagnostic logs have not been inspected for header handling.
+Missing configuration, an unknown or expired request, a
+repeated opposite decision, or a decision Janus rejects fails closed.
+After a restart the in-process id-to-room binding is still required. The
+Grok claim is not part of that file.
 
 ## Surfaces
 
@@ -661,6 +705,7 @@ not SOUL, would carry the peer roster; file a follow-up when wanted.
 | `RETINUE_FASTMAIL_SESSION` | `https://api.fastmail.com/jmap/session` | JMAP session endpoint |
 | `RETINUE_JANUS_APPROVAL_URL` | unset | Janus operator API origin (`http` or `https`, no userinfo, no path). Unset = confirm-tier approvals fail closed. |
 | `RETINUE_JANUS_APPROVAL_TOKEN` | unset | Bearer token for that API. Gateway process only. |
+| `RETINUE_JANUS_MCP_SERVER` | `janus` | MCP server name whose tool results may bind an approval. Empty disables tool-result binding. Not a secret and not a room id. |
 
 ## Reading email from a room turn (JMAP)
 
