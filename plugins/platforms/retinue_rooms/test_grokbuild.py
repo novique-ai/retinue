@@ -9,11 +9,8 @@ credentials. The live multi-step acceptance test is `test_grokbuild_live.py`
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
-import logging
 import os
-import re
 import shutil
 import stat
 import subprocess
@@ -47,22 +44,6 @@ _FAKE_AGENT = textwrap.dedent(
     import json, os, sys, uuid
 
     LOG = os.environ.get("FAKE_ACP_LOG") or ""
-
-    def audit_env():
-        # Names and hashes only. The parent checks a claim did not arrive
-        # in the child environment without this file holding secret values.
-        if not LOG:
-            return
-        import hashlib
-        digest = [
-            hashlib.sha256(value.encode("utf-8", "replace")).hexdigest()
-            for value in os.environ.values()
-        ]
-        with open(LOG + ".env-audit", "a", encoding="utf-8") as handle:
-            handle.write(json.dumps({
-                "names": sorted(os.environ),
-                "value_sha256": digest,
-            }) + "\\n")
 
     def log(kind, **kw):
         if LOG:
@@ -162,7 +143,6 @@ _FAKE_AGENT = textwrap.dedent(
                 "authMethods": [],
                 "_meta": {"agentVersion": "fake-0.1"}}})
         elif method == "session/new":
-            audit_env()
             if os.environ.get("FAKE_ACP_AUTH_FAIL"):
                 send({"jsonrpc": "2.0", "id": msg["id"], "error": {
                     "code": -32000, "message": "Authentication required"}})
@@ -173,7 +153,6 @@ _FAKE_AGENT = textwrap.dedent(
                 broker_token=bool(os.environ.get("RETINUE_BROKER_TOKEN")))
             send({"jsonrpc": "2.0", "id": msg["id"], "result": {"sessionId": sid}})
         elif method == "session/load":
-            audit_env()
             sid = msg["params"]["sessionId"]
             log("load", session=sid, cwd=msg["params"].get("cwd"),
                 mcp=msg["params"].get("mcpServers"))
@@ -823,6 +802,66 @@ class TestMcpWire:
         # The member's broker identity rides the agent process env, so a
         # broker-client MCP server (child of grok) inherits it.
         assert new["broker_token"] is True
+
+    def test_janus_servers_are_forwarded_without_an_added_header(
+        self, tmp_path, fake_agent, monkeypatch
+    ):
+        """session/new and session/load pass the declared MCP list through.
+
+        The gateway does not mint or attach a room-binding header. A stdio
+        Janus server is forwarded as stdio.
+        """
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        monkeypatch.setenv("FAKE_ACP_TOOL_PATH", str(ws / "f"))
+        _write_mcp(tmp_path, [
+            {"name": "janus", "command": "/bin/janus-mcp", "args": ["--stdio"],
+             "env": {"K": "V"}},
+            {"name": "docs", "type": "http", "url": "https://docs.test/mcp",
+             "headers": {"A": "b"}},
+        ])
+        before = grokbuild.mcp_config_path(str(tmp_path))
+        with open(before, encoding="utf-8") as handle:
+            on_disk = handle.read()
+
+        async def first():
+            manager = GrokBuildManager(str(tmp_path))
+            await manager.run_turn(
+                "r1", "scout", str(ws),
+                build_prompt=lambda fresh: "status please",
+                approval=APPROVAL_WORKSPACE, timeout=30,
+            )
+            await manager.shutdown()
+
+        _run(first())
+
+        async def second():
+            manager = GrokBuildManager(str(tmp_path))
+            await manager.run_turn(
+                "r1", "scout", str(ws),
+                build_prompt=lambda fresh: "status please",
+                approval=APPROVAL_WORKSPACE, timeout=30,
+            )
+            await manager.shutdown()
+
+        _run(second())
+        events = _events(fake_agent)
+        new = next(event for event in events if event["kind"] == "new")
+        load = next(event for event in events if event["kind"] == "load")
+        expected = [
+            {"name": "janus", "command": "/bin/janus-mcp", "args": ["--stdio"],
+             "env": [{"name": "K", "value": "V"}]},
+            {"type": "http", "name": "docs", "url": "https://docs.test/mcp",
+             "headers": [{"name": "A", "value": "b"}]},
+        ]
+        assert new["mcp"] == expected
+        assert load["mcp"] == expected
+        for event in (new, load):
+            dumped = json.dumps(event["mcp"])
+            assert "X-Retinue-Room-Binding" not in dumped
+            assert "x-retinue-room-binding" not in dumped
+        with open(before, encoding="utf-8") as handle:
+            assert handle.read() == on_disk
 
 
 class TestMcpPermissions:
@@ -1527,310 +1566,3 @@ class TestMemberSpawnEnv:
             assert env.get("HOME") == "/home/operator"
             assert "RETINUE_BROKER_TOKEN" not in env
             assert env.get("GROK_HOME") != grokbuild.grok_home(str(tmp_path))
-
-
-# ── Janus room-binding header (Grok ACP) ─────────────────────────────────
-
-
-_BINDING_NAME = "X-Retinue-Room-Binding"
-_CLAIM_RE = re.compile(r"^[A-Za-z0-9_-]{43}$")
-
-
-def _binding_headers(server):
-    headers = server.get("headers") or []
-    return [
-        header for header in headers
-        if str(header.get("name") or "").lower() == _BINDING_NAME.lower()
-    ]
-
-
-def _assert_claim_absent_from_child(log_path, claim):
-    digest = hashlib.sha256(claim.encode("utf-8")).hexdigest()
-    path = str(log_path) + ".env-audit"
-    with open(path, encoding="utf-8") as handle:
-        rows = [json.loads(line) for line in handle if line.strip()]
-    assert rows
-    forbidden_names = {
-        _BINDING_NAME,
-        "RETINUE_JANUS_APPROVAL_TOKEN",
-        "RETINUE_JANUS_APPROVAL_URL",
-        "RETINUE_ROOMS_API_KEY",
-        "RETINUE_VOICE_API_KEY",
-        "RETINUE_BROKER_KEY_FILE",
-    }
-    for row in rows:
-        assert digest not in row["value_sha256"]
-        assert forbidden_names.isdisjoint(row["names"])
-
-
-def _assert_claim_not_in_prompt_or_logs(log_path, caplog_text, *secrets):
-    prompts = [event.get("text") or "" for event in _events(log_path) if event.get("kind") == "prompt"]
-    assert prompts
-    for secret in secrets:
-        assert secret
-        for prompt in prompts:
-            assert secret not in prompt
-        assert secret not in caplog_text
-
-
-class TestJanusRoomBindingHeader:
-    def test_agent_error_text_drops_the_claim(self):
-        from .janus_approval import mint_room_binding
-
-        claim = mint_room_binding()
-        echoed = grokbuild.GrokBuildError(f"agent error -32603: header {claim} rejected")
-        cleaned = grokbuild._redact_claim(echoed, claim)
-        assert claim not in str(cleaned)
-        assert str(cleaned) == "agent error -32603: header [redacted] rejected"
-        untouched = grokbuild._redact_claim(grokbuild.GrokBuildError("no such session"), claim)
-        assert str(untouched) == "no such session"
-    def _write(self, home, servers):
-        _write_mcp(home, servers)
-        path = grokbuild.mcp_config_path(str(home))
-        with open(path, encoding="utf-8") as handle:
-            return handle.read()
-
-    def test_session_new_and_load_inject_a_fresh_claim_only_on_janus_http(
-        self, tmp_path, fake_agent, monkeypatch, caplog
-    ):
-        caplog.set_level(logging.DEBUG)
-        monkeypatch.setenv("RETINUE_JANUS_APPROVAL_TOKEN", _JANUS_TOKEN)
-        monkeypatch.setenv("RETINUE_VOICE_API_KEY", _VOICE_KEY)
-        stale = "stale-binding-value-should-be-replaced"
-        before = self._write(tmp_path, [
-            {
-                "name": "broker",
-                "command": "/bin/client",
-                "args": ["--x"],
-                "env": {"K": "V", "RETINUE_JANUS_APPROVAL_TOKEN": _JANUS_TOKEN},
-            },
-            {
-                "name": "janus",
-                "type": "http",
-                "url": "https://janus.test/mcp",
-                "headers": {
-                    "X-Other": "kept",
-                    "X-Retinue-Room-Binding": stale,
-                    "x-retinue-room-binding": stale,
-                    "Authorization": f"Bearer {_JANUS_TOKEN}",
-                    "RETINUE_JANUS_APPROVAL_TOKEN": _JANUS_TOKEN,
-                },
-            },
-            {
-                "name": "docs",
-                "type": "sse",
-                "url": "https://docs.test/mcp",
-                "headers": {"Authorization": "Bearer t"},
-            },
-        ])
-        ws = tmp_path / "ws"
-        ws.mkdir()
-        monkeypatch.setenv("FAKE_ACP_TOOL_PATH", str(ws / "f"))
-        manager = grokbuild.GrokBuildManager(str(tmp_path))
-
-        async def both_rooms():
-            await manager.run_turn(
-                "r1", "scout", str(ws),
-                build_prompt=lambda fresh: "status please",
-                approval=APPROVAL_WORKSPACE, timeout=30,
-            )
-            await manager.run_turn(
-                "r2", "scout", str(ws),
-                build_prompt=lambda fresh: "status please",
-                approval=APPROVAL_WORKSPACE, timeout=30,
-            )
-            first = manager.expected_room_claim("r1", "scout")
-            second = manager.expected_room_claim("r2", "scout")
-            await manager.shutdown()
-            return first, second
-
-        claim_r1, claim_r2 = _run(both_rooms())
-        news = [event for event in _events(fake_agent) if event["kind"] == "new"]
-        assert len(news) == 2
-        assert claim_r1 != claim_r2
-        assert _CLAIM_RE.fullmatch(claim_r1)
-        assert _CLAIM_RE.fullmatch(claim_r2)
-        seen = []
-        for event, expected in zip(news, (claim_r1, claim_r2)):
-            servers = {server["name"]: server for server in event["mcp"]}
-            assert set(servers) == {"broker", "janus", "docs"}
-            assert _binding_headers(servers["broker"]) == []
-            assert _binding_headers(servers["docs"]) == []
-            binding = _binding_headers(servers["janus"])
-            assert binding == [{"name": _BINDING_NAME, "value": expected}]
-            assert servers["janus"]["headers"] == [
-                {"name": "X-Other", "value": "kept"},
-                {"name": _BINDING_NAME, "value": expected},
-            ]
-            assert servers["docs"]["headers"] == [{"name": "Authorization", "value": "Bearer t"}]
-            assert servers["broker"]["env"] == [{"name": "K", "value": "V"}]
-            dumped = json.dumps(event["mcp"])
-            assert stale not in dumped
-            assert _JANUS_TOKEN not in dumped
-            assert _VOICE_KEY not in dumped
-            seen.append(expected)
-            _assert_claim_absent_from_child(fake_agent, expected)
-        _assert_claim_not_in_prompt_or_logs(fake_agent, caplog.text, claim_r1, claim_r2, _JANUS_TOKEN, stale)
-        mcp_path = grokbuild.mcp_config_path(str(tmp_path))
-        with open(mcp_path, encoding="utf-8") as handle:
-            assert handle.read() == before
-        state_path = os.path.join(str(tmp_path), "retinue_rooms", "grok_sessions.json")
-        with open(state_path, encoding="utf-8") as handle:
-            stored = handle.read()
-        assert claim_r1 not in stored and claim_r2 not in stored
-        assert _BINDING_NAME not in stored
-        for row in json.loads(stored).values():
-            assert set(row) <= {"session_id", "cwd", "model"}
-
-    def test_live_reuse_keeps_the_claim_and_load_mints_another(
-        self, tmp_path, fake_agent, monkeypatch, caplog
-    ):
-        caplog.set_level(logging.DEBUG)
-        self._write(tmp_path, [
-            {"name": "janus", "type": "http", "url": "https://janus.test/mcp", "headers": {}},
-        ])
-        ws = tmp_path / "ws"
-        ws.mkdir()
-        monkeypatch.setenv("FAKE_ACP_TOOL_PATH", str(ws / "f"))
-        manager = grokbuild.GrokBuildManager(str(tmp_path))
-
-        async def twice():
-            _ = manager
-            for _turn in range(2):
-                await manager.run_turn(
-                    "r1", "scout", str(ws),
-                    build_prompt=lambda fresh: "status please",
-                    approval=APPROVAL_WORKSPACE, timeout=30,
-                )
-            claim = manager.expected_room_claim("r1", "scout")
-            await manager.shutdown()
-            return claim
-
-        first = _run(twice())
-        news = [event for event in _events(fake_agent) if event["kind"] == "new"]
-        assert len(news) == 1
-        assert [event for event in _events(fake_agent) if event["kind"] == "load"] == []
-        assert _binding_headers(news[0]["mcp"][0]) == [
-            {"name": _BINDING_NAME, "value": first}
-        ]
-
-        async def resumed():
-            restarted = grokbuild.GrokBuildManager(str(tmp_path))
-            assert restarted.expected_room_claim("r1", "scout") is None
-            await restarted.run_turn(
-                "r1", "scout", str(ws),
-                build_prompt=lambda fresh: "status please",
-                approval=APPROVAL_WORKSPACE, timeout=30,
-            )
-            claim = restarted.expected_room_claim("r1", "scout")
-            await restarted.shutdown()
-            return claim
-
-        second = _run(resumed())
-        loads = [event for event in _events(fake_agent) if event["kind"] == "load"]
-        assert len(loads) == 1
-        assert loads[0]["session"] == news[0]["session"]
-        assert _binding_headers(loads[0]["mcp"][0]) == [
-            {"name": _BINDING_NAME, "value": second}
-        ]
-        assert first != second
-        assert _CLAIM_RE.fullmatch(second)
-        _assert_claim_absent_from_child(fake_agent, first)
-        _assert_claim_absent_from_child(fake_agent, second)
-        _assert_claim_not_in_prompt_or_logs(fake_agent, caplog.text, first, second)
-        state_path = os.path.join(str(tmp_path), "retinue_rooms", "grok_sessions.json")
-        with open(state_path, encoding="utf-8") as handle:
-            stored = handle.read()
-        assert first not in stored and second not in stored
-
-    def test_failed_load_and_the_new_session_use_different_claims(
-        self, tmp_path, fake_agent, monkeypatch, caplog
-    ):
-        caplog.set_level(logging.DEBUG)
-        self._write(tmp_path, [
-            {"name": "janus", "type": "http", "url": "https://janus.test/mcp"},
-        ])
-        ws = tmp_path / "ws"
-        ws.mkdir()
-        monkeypatch.setenv("FAKE_ACP_TOOL_PATH", str(ws / "f"))
-        manager = grokbuild.GrokBuildManager(str(tmp_path))
-
-        async def first_turn():
-            await manager.run_turn(
-                "r1", "scout", str(ws),
-                build_prompt=lambda fresh: "status please",
-                approval=APPROVAL_WORKSPACE, timeout=30,
-            )
-            claim = manager.expected_room_claim("r1", "scout")
-            await manager.shutdown()
-            return claim
-
-        original = _run(first_turn())
-        monkeypatch.setenv("FAKE_ACP_LOAD_FAIL", "1")
-        restarted = grokbuild.GrokBuildManager(str(tmp_path))
-
-        async def fallback():
-            await restarted.run_turn(
-                "r1", "scout", str(ws),
-                build_prompt=lambda fresh: "status please",
-                approval=APPROVAL_WORKSPACE, timeout=30,
-            )
-            claim = restarted.expected_room_claim("r1", "scout")
-            await restarted.reset("r1", "scout")
-            forgotten = restarted.expected_room_claim("r1", "scout")
-            await restarted.shutdown()
-            return claim, forgotten
-
-        replacement, after_reset = _run(fallback())
-        events = _events(fake_agent)
-        news = [event for event in events if event["kind"] == "new"]
-        loads = [event for event in events if event["kind"] == "load"]
-        assert len(news) == 2 and len(loads) == 1
-        load_claim = _binding_headers(loads[0]["mcp"][0])[0]["value"]
-        new_claim = _binding_headers(news[1]["mcp"][0])[0]["value"]
-        assert load_claim != new_claim
-        assert new_claim == replacement
-        assert load_claim != original
-        assert after_reset is None
-        _assert_claim_not_in_prompt_or_logs(
-            fake_agent, caplog.text, original, load_claim, replacement
-        )
-        state_path = os.path.join(str(tmp_path), "retinue_rooms", "grok_sessions.json")
-        with open(state_path, encoding="utf-8") as handle:
-            stored = handle.read()
-        assert original not in stored
-        assert load_claim not in stored
-        assert replacement not in stored
-
-    def test_stdio_janus_does_not_carry_or_retain_a_claim(
-        self, tmp_path, fake_agent, monkeypatch, caplog
-    ):
-        caplog.set_level(logging.DEBUG)
-        self._write(tmp_path, [
-            {"name": "janus", "command": "/bin/janus-mcp", "args": ["--stdio"], "env": {"K": "V"}},
-            {"name": "docs", "type": "http", "url": "https://docs.test/mcp", "headers": {"A": "b"}},
-        ])
-        ws = tmp_path / "ws"
-        ws.mkdir()
-        monkeypatch.setenv("FAKE_ACP_TOOL_PATH", str(ws / "f"))
-        manager = grokbuild.GrokBuildManager(str(tmp_path))
-
-        async def once():
-            await manager.run_turn(
-                "r1", "scout", str(ws),
-                build_prompt=lambda fresh: "status please",
-                approval=APPROVAL_WORKSPACE, timeout=30,
-            )
-            claim = manager.expected_room_claim("r1", "scout")
-            await manager.shutdown()
-            return claim
-
-        assert _run(once()) is None
-        news = [event for event in _events(fake_agent) if event["kind"] == "new"]
-        assert len(news) == 1
-        dumped = json.dumps(news[0]["mcp"])
-        assert _BINDING_NAME not in dumped
-        assert _BINDING_NAME not in caplog.text
-        servers = {server["name"]: server for server in news[0]["mcp"]}
-        assert servers["janus"]["env"] == [{"name": "K", "value": "V"}]
-        assert servers["docs"]["headers"] == [{"name": "A", "value": "b"}]

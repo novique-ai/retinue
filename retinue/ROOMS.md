@@ -336,37 +336,22 @@ token label shared by room agents. `session_id` is
 Neither value is a Retinue room id, and neither gives the first speaker
 a room.
 
-Grok Build's ACP stream still has no trustworthy tool-completion payload.
-For each Grok (room, member, MCP session) the gateway mints a fresh
-43-character `secrets.token_urlsafe(32)` claim and sends it only as the
-`X-Retinue-Room-Binding` header on the Janus `http` or `sse` MCP server
-entry, on `session/new` and again on `session/load`. A failed load and the
-following `session/new` are different connections, so each attempt gets
-its own claim. The expected claim stays in gateway memory for that room,
-member, and session. It is not written to the child environment,
-`grokbuild/mcp.json`, the persisted session file, the prompt, the
-transcript, a tool title, a gateway log line, or the model-facing result. A spoken
-id from a Grok member is checked by fetching the operator detail and
-comparing its operator-only `room_binding` to the expected claim in
-constant time before any bind or card. A missing, mismatched, or malformed
-claim fails closed: an unverified system notice only, no arguments, no
-principal mention, no needs-you, and no decision controls. A gateway
-restart drops the expected claim and fails closed the same way. A stdio
-Janus server cannot carry the header, so a Grok spoken id stays
-unsurfaced until that server is HTTP. The in-process Hermes path is
-unchanged: it binds from the tool result and does not treat a spoken Grok
-id as authority.
+Grok Build's ACP stream has no trustworthy tool-completion payload, and
+the live Janus MCP server is stdio. A spoken id from a Grok member stays
+an unverified system notice only: no operator fetch, no arguments, no
+principal mention, no needs-you, and no decision controls. That stays
+true when the id is unbound, when another room already holds it, and when
+another member of the same room already holds it. Enabling Grok approval
+surfacing needs a separate gateway-owned relay. That relay is not
+implemented here. The in-process Hermes path is unchanged: it binds from
+the tool result and does not treat a spoken Grok id as authority.
 
 Codex app-server `mcpToolCall` completions are parsed fail-closed,
 including the bridge's truncated result, but this tree has no captured
 live frame. Keep Codex approval surfacing fail-closed until that frame
-is pinned. Grok approval surfacing also requires a Janus HTTP MCP entry
-and a live header round trip; the current stdio entry cannot carry it.
-Grok's own diagnostic logs have not been inspected for header handling.
-Missing configuration, an unknown or expired request, a
+is pinned. Missing configuration, an unknown or expired request, a
 repeated opposite decision, or a decision Janus rejects fails closed.
-After a restart the in-process id-to-room binding is still required. The
-Grok claim is not part of that file.
+After a restart the in-process id-to-room binding is still required.
 
 ## Surfaces
 

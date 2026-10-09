@@ -62,12 +62,10 @@ Design points, each verified against grok v0.2.93 before this was built:
   value is not parsed. Bubblewrap inherits this mapping; it does not
   clear it. Health and model probes use the same allowlist and do not
   receive the broker token. User-supplied MCP env and headers drop those
-  credential names and any value equal to one of them. When the workspace
-  file names the Janus server as ``http`` or ``sse``, each ``session/new``
-  and ``session/load`` attempt adds a fresh ``X-Retinue-Room-Binding``
-  header to that entry only. The value stays in gateway memory for the
-  room, member, and session. It is not written to ``mcp.json``, the child
-  environment, or ``grok_sessions.json``.
+  credential names and any value equal to one of them. Session setup
+  forwards that list on ``session/new`` and ``session/load`` and does not
+  add a room-binding header. A spoken Janus id from this runtime stays
+  unverified until a separate gateway-owned relay exists.
 
 Hidden reasoning: ``agent_thought_chunk`` updates are received and
 dropped.  They are never surfaced, stored, or logged.
@@ -82,7 +80,6 @@ import os
 import re
 import shutil
 import subprocess
-import threading
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -136,16 +133,6 @@ _PATH_INPUT_KEYS = (
     "destination",
     "source",
 )
-
-
-def _redact_claim(exc: "GrokBuildError", claim: str) -> "GrokBuildError":
-    """Drop a room claim from an agent error before it can be logged or shown."""
-    if not claim:
-        return exc
-    text = str(exc)
-    if claim not in text:
-        return exc
-    return type(exc)(text.replace(claim, "[redacted]"))
 
 
 class GrokBuildError(Exception):
@@ -1488,13 +1475,6 @@ class GrokBuildManager:
         self._home_dir = home_dir
         self._sessions: Dict[Tuple[str, str], _MemberSession] = {}
         self._locks: Dict[Tuple[str, str], asyncio.Lock] = {}
-        # Expected Janus room claims. Process memory only: (room, member,
-        # ACP session id) -> claim, plus the session id current for that
-        # pair. Never written to grok_sessions.json. A restart loses them
-        # and spoken ids fail closed until a new header is accepted.
-        self._claim_lock = threading.Lock()
-        self._claims: Dict[Tuple[str, str, str], str] = {}
-        self._current_session: Dict[Tuple[str, str], str] = {}
 
     # -- persistence --
 
@@ -1529,46 +1509,9 @@ class GrokBuildManager:
         self._save_state(state)
 
     def _forget(self, key: Tuple[str, str]) -> None:
-        self._clear_claims(key)
         state = self._load_state()
         if state.pop("|".join(key), None) is not None:
             self._save_state(state)
-
-    def expected_room_claim(self, room_id: str, member: str) -> Optional[str]:
-        """Claim retained for the current Grok session, or None.
-
-        None means the header was not attached, the session is gone, or
-        this process restarted. Callers fail closed and do not log it.
-        """
-        key = (str(room_id or ""), str(member or ""))
-        with self._claim_lock:
-            session_id = self._current_session.get(key)
-            if not session_id:
-                return None
-            claim = self._claims.get((key[0], key[1], session_id))
-        if not isinstance(claim, str) or not claim:
-            return None
-        return claim
-
-    def _note_claim(self, key: Tuple[str, str], session_id: str, claim: str) -> None:
-        """Remember a claim that was actually attached and accepted.
-
-        ``session_id`` is the ACP session. The Janus MCP session is the
-        connection opened for that ``session/new`` or ``session/load``.
-        """
-        if not session_id or not isinstance(claim, str) or not claim:
-            return
-        with self._claim_lock:
-            self._claims[(key[0], key[1], session_id)] = claim
-            self._current_session[key] = session_id
-
-    def _clear_claims(self, key: Tuple[str, str]) -> None:
-        with self._claim_lock:
-            self._current_session.pop(key, None)
-            for claim_key in [
-                item for item in self._claims if item[0] == key[0] and item[1] == key[1]
-            ]:
-                self._claims.pop(claim_key, None)
 
     def _recall(self, key: Tuple[str, str]) -> Optional[Dict[str, Any]]:
         entry = self._load_state().get("|".join(key))
@@ -1622,11 +1565,6 @@ class GrokBuildManager:
         )
         await process.start()
         mcp = mcp_servers(self._home_dir)
-        # A fresh claim per attempt. session/load and the session/new that
-        # follows a failed load are different MCP connections; Janus rejects
-        # one claim reused across them. The value is attached only to the
-        # Janus HTTP/SSE entry and retained only after that RPC succeeds.
-        # Live reuse returned above and did not mint.
         remembered = self._recall(key)
         if (
             remembered
@@ -1635,29 +1573,14 @@ class GrokBuildManager:
             and (remembered.get("model") or "") == model
         ):
             sid = str(remembered["session_id"])
-            load_claim, load_mcp, load_attached = self._mcp_with_room_claim(mcp)
             try:
                 await asyncio.wait_for(
                     process.request(
                         "session/load",
-                        {"sessionId": sid, "cwd": cwd, "mcpServers": load_mcp},
+                        {"sessionId": sid, "cwd": cwd, "mcpServers": mcp},
                     ),
                     _LOAD_TIMEOUT,
                 )
-            except GrokBuildAuthRequired as exc:
-                await process.close()
-                raise _redact_claim(exc, load_claim) from None
-            except (GrokBuildError, asyncio.TimeoutError) as exc:
-                # The load claim was not accepted. Do not retain it, and do
-                # not log the exception text: an agent error can echo the header.
-                logger.warning(
-                    "grokbuild: resume of %s failed (%s); starting fresh",
-                    sid,
-                    type(exc).__name__,
-                )
-            else:
-                if load_attached:
-                    self._note_claim(key, sid, load_claim)
                 sess = _MemberSession(
                     key="|".join(key),
                     process=process,
@@ -1673,27 +1596,25 @@ class GrokBuildManager:
                 )
                 sess.turn_active = True
                 return sess, False
-        new_claim, new_mcp, new_attached = self._mcp_with_room_claim(mcp)
+            except GrokBuildAuthRequired:
+                await process.close()
+                raise
+            except (GrokBuildError, asyncio.TimeoutError) as e:
+                logger.warning(
+                    "grokbuild: resume of %s failed (%s); starting fresh", sid, e
+                )
         try:
             result = await asyncio.wait_for(
-                process.request("session/new", {"cwd": cwd, "mcpServers": new_mcp}),
+                process.request("session/new", {"cwd": cwd, "mcpServers": mcp}),
                 _LOAD_TIMEOUT,
             )
-        except GrokBuildAuthRequired as exc:
-            await process.close()
-            raise _redact_claim(exc, new_claim) from None
-        except GrokBuildError as exc:
-            await process.close()
-            raise _redact_claim(exc, new_claim) from None
-        except asyncio.TimeoutError:
+        except (GrokBuildError, asyncio.TimeoutError):
             await process.close()
             raise
         sid = str(result.get("sessionId") or "")
         if not sid:
             await process.close()
             raise GrokBuildError("session/new returned no sessionId")
-        if new_attached:
-            self._note_claim(key, sid, new_claim)
         sess = _MemberSession(
             key="|".join(key),
             process=process,
@@ -1709,28 +1630,7 @@ class GrokBuildManager:
         sess.turn_active = True  # claimed by the caller before the lock drops
         return sess, True
 
-    def _mcp_with_room_claim(
-        self, mcp: List[Dict[str, Any]]
-    ) -> Tuple[str, List[Dict[str, Any]], bool]:
-        """Mint a claim and copy ``mcp`` with it on the Janus HTTP entry.
-
-        The on-disk file is not modified. A stdio Janus server is left
-        unchanged and ``attached`` is False; the caller discards the claim.
-        """
-        from .janus_approval import (
-            attach_janus_room_binding,
-            configured_janus_mcp_server,
-            mint_room_binding,
-        )
-
-        claim = mint_room_binding()
-        wired, attached = attach_janus_room_binding(
-            mcp, claim, configured_janus_mcp_server()
-        )
-        return claim, wired, attached
-
     async def _drop(self, key: Tuple[str, str]) -> None:
-        self._clear_claims(key)
         sess = self._sessions.pop(key, None)
         if sess is not None:
             await sess.process.close()
@@ -1992,7 +1892,6 @@ class GrokBuildManager:
             parts = str(k).split("|", 1)
             if len(parts) == 2 and parts[1] == member:
                 state.pop(k, None)
-                self._clear_claims((parts[0], parts[1]))
                 changed = True
                 forgotten += 1
         if changed:
@@ -2003,9 +1902,6 @@ class GrokBuildManager:
         for key in list(self._sessions):
             await self._drop(key)
         self._locks.clear()
-        with self._claim_lock:
-            self._claims.clear()
-            self._current_session.clear()
 
 
 def _activity_payload(update: Dict[str, Any]) -> Dict[str, Any]:

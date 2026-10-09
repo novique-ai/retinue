@@ -64,13 +64,9 @@ class FakeJanus:
         return dict(self.records[approval_id])
 
     def inspect(self, approval_id):
-        """Operator payload, including room_binding. Not the browser card."""
+        """Tripwire. Room binding does not read the operator payload."""
         self.inspects.append(approval_id)
-        if self.fail_inspect is not None:
-            raise self.fail_inspect
-        if approval_id not in self.records:
-            raise JanusApprovalError("not_found")
-        return dict(self.records[approval_id])
+        raise AssertionError("operator inspect is not a room bind")
 
     def decide(self, approval_id, decision):
         self.decisions.append((approval_id, decision))
@@ -1135,22 +1131,13 @@ def test_approval_routes_fail_closed_without_api_key_and_reject_a_wrong_key(
     assert adapter.store.get("room-a").needs_user is True
 
 
-# ── Grok session claim, and the in-process callback the claim does not replace ──
+# ── Grok speech stays unverified; Hermes binds from the tool result ──────
 
 
 def _mark_grok(tmp_path, slug):
     path = tmp_path / "profiles" / slug / "retinue-agent.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({"runtime": "grok-build"}), encoding="utf-8")
-
-
-def _hold_claim(adapter, tmp_path, room_id, member, claim, session_id="sess-1"):
-    manager = getattr(adapter, "_grok_mgr", None)
-    if not isinstance(manager, grokbuild.GrokBuildManager):
-        manager = grokbuild.GrokBuildManager(str(tmp_path))
-        adapter._grok_mgr = manager
-    manager._note_claim((room_id, member), session_id, claim)
-    return manager
 
 
 def _shared_record(approval_id, **over):
@@ -1161,113 +1148,22 @@ def _shared_record(approval_id, **over):
     return record
 
 
-def _assert_fail_closed(adapter, room_id, approval_id, caplog_text, *secrets):
+def _assert_grok_unverified(adapter, room_id, approval_id, caplog_text):
+    """Grok speech is a notice only. It does not bind or open a card."""
     blob = "\n".join(_texts(adapter, room_id))
-    assert "could not be verified" in blob or "not available in this room" in blob
-    assert not any(line.startswith(janus_approval.LINE_PREFIX) for line in _texts(adapter, room_id))
+    assert janus_approval.unverified_notice(approval_id) in blob
+    assert not any(
+        line.startswith(janus_approval.LINE_PREFIX) and approval_id in line
+        for line in _texts(adapter, room_id)
+    )
     assert "@user" not in blob
     assert "Clayton" not in blob
-    room = adapter.store.get(room_id)
-    assert room is not None and room.needs_user is False
-    stored = _binding_text(adapter)
-    for secret in secrets:
-        assert secret not in blob
-        assert secret not in caplog_text
-        assert secret not in stored
     assert SECRET not in blob
     assert LEAK not in blob
-    with pytest.raises(KeyError):
-        adapter.get_janus_approval(room_id, approval_id)
-    with pytest.raises(KeyError):
-        adapter.decide_janus_approval(
-            room_id, approval_id, "approve", origin=janus_approval.HTTP_ORIGIN
-        )
-
-
-def test_inspect_keeps_room_binding_off_the_projected_card(caplog):
-    caplog.set_level(logging.DEBUG)
-    claim = janus_approval.mint_room_binding()
-    other = janus_approval.mint_room_binding()
-    assert claim != other
-    assert len(claim) == 43
-    payload = _shared_record(APPROVAL_ID, room_binding=claim)
-
-    def transport(method, url, body, token):
-        assert method == "GET"
-        assert token == TOKEN
-        return 200, dict(payload)
-
-    client = janus_approval.JanusApprovalsClient(
-        "https://example.test", TOKEN, transport=transport
-    )
-    raw = client.inspect(APPROVAL_ID)
-    assert raw["room_binding"] == claim
-    detail = client.get(APPROVAL_ID)
-    projected = janus_approval.project_detail(raw, APPROVAL_ID)
-    assert "room_binding" not in detail
-    assert "room_binding" not in projected
-    assert claim not in json.dumps(detail)
-    assert "token" not in detail
-    assert janus_approval.claim_matches(claim, claim)
-    assert not janus_approval.claim_matches(claim, other)
-    assert not janus_approval.claim_matches(claim, None)
-    assert not janus_approval.claim_matches(claim, "")
-    assert not janus_approval.claim_matches(claim, "short")
-    assert not janus_approval.claim_matches(claim, claim + "A")
-    assert not janus_approval.claim_matches(claim, ["nope"])
-    assert not janus_approval.claim_matches(None, claim)
-    assert claim not in caplog.text
-    assert SECRET not in caplog.text
-    assert TOKEN not in caplog.text
-
-
-def test_attach_touches_only_the_named_http_entry():
-    claim = janus_approval.mint_room_binding()
-    servers = [
-        {
-            "name": "janus",
-            "command": "/bin/janus-mcp",
-            "args": ["--stdio"],
-            "env": [{"name": "K", "value": "V"}],
-        },
-        {
-            "name": "janus",
-            "type": "http",
-            "url": "https://janus.test/mcp",
-            "headers": [
-                {"name": "X-Retinue-Room-Binding", "value": "stale"},
-                {"name": "x-retinue-room-binding", "value": "also-stale"},
-                {"name": "X-Other", "value": "kept"},
-            ],
-        },
-        {
-            "name": "docs",
-            "type": "sse",
-            "url": "https://docs.test/mcp",
-            "headers": [{"name": "A", "value": "b"}],
-        },
-    ]
-    original = json.dumps(servers)
-    wired, attached = janus_approval.attach_janus_room_binding(servers, claim, "janus")
-    assert attached is True
-    assert json.dumps(servers) == original
-    assert "headers" not in wired[0]
-    assert wired[0]["env"] == [{"name": "K", "value": "V"}]
-    binding = [
-        header for header in wired[1]["headers"]
-        if str(header["name"]).lower() == "x-retinue-room-binding"
-    ]
-    assert binding == [{"name": "X-Retinue-Room-Binding", "value": claim}]
-    assert {"name": "X-Other", "value": "kept"} in wired[1]["headers"]
-    assert wired[2]["headers"] == [{"name": "A", "value": "b"}]
-    stdio_only, stdio_attached = janus_approval.attach_janus_room_binding(
-        [servers[0]], claim, "janus"
-    )
-    assert stdio_attached is False
-    assert claim not in json.dumps(stdio_only)
-    untouched, missing = janus_approval.attach_janus_room_binding(servers, claim, "")
-    assert missing is False
-    assert claim not in json.dumps(untouched)
+    assert SECRET not in caplog_text
+    assert LEAK not in caplog_text
+    room = adapter.store.get(room_id)
+    assert room is not None and room.needs_user is False
 
 
 def test_other_room_speaking_first_does_not_bind(tmp_path, monkeypatch, caplog):
@@ -1280,7 +1176,14 @@ def test_other_room_speaking_first_does_not_bind(tmp_path, monkeypatch, caplog):
     _open(adapter, "room-a")
     _open(adapter, "room-b")
     _say(adapter, "room-b", f"approval_request_id: {APPROVAL_ID}")
-    _assert_fail_closed(adapter, "room-b", APPROVAL_ID, caplog.text)
+    early = "\n".join(_texts(adapter, "room-b"))
+    assert "could not be verified" in early
+    assert janus_approval.LINE_PREFIX not in early
+    assert "@user" not in early
+    assert "Clayton" not in early
+    assert adapter.store.get("room-b").needs_user is False
+    with pytest.raises(KeyError):
+        adapter.get_janus_approval("room-b", APPROVAL_ID)
     assert fake.gets == []
     assert fake.inspects == []
     assert fake.decisions == []
@@ -1308,177 +1211,164 @@ def test_other_room_speaking_first_does_not_bind(tmp_path, monkeypatch, caplog):
     assert fake.decisions == []
 
 
-def test_grok_matching_claim_surfaces_without_leaking_the_secret(tmp_path, monkeypatch, caplog):
+def test_grok_speech_stays_unverified(tmp_path, monkeypatch, caplog):
+    """Own id, another room's id, and a same-room bound id stay unverified.
+
+    Grok speech does not fetch the operator API, does not bind, and does
+    not post the card. A Hermes member of the same room can still surface
+    an id that member's own tool result already bound.
+    """
     caplog.set_level(logging.DEBUG)
-    claim = janus_approval.mint_room_binding()
     adapter = _adapter(tmp_path, monkeypatch)
     principal.save(str(tmp_path), {"display_name": "Clayton", "about": ""})
     _mark_grok(tmp_path, "scout")
     fake = _arm_fake(adapter)
-    fake.records[APPROVAL_ID] = _shared_record(APPROVAL_ID, room_binding=claim)
-    _open(adapter)
-    _hold_claim(adapter, tmp_path, "room-a", "scout", claim)
-    spoken = f"approval_request_id: {APPROVAL_ID}"
-    _say(adapter, "room-a", spoken, speaker="scout")
-    _say(adapter, "room-a", spoken, speaker="scout")
-    room = adapter.store.get("room-a")
-    assert room is not None and room.needs_user is True
-    lines = _texts(adapter, "room-a")
-    gateway = [line for line in lines if line.startswith(janus_approval.LINE_PREFIX)]
-    assert gateway == [janus_approval.gateway_approval_line(APPROVAL_ID)]
-    blob = "\n".join(lines)
-    assert claim not in blob
-    assert SECRET not in blob
-    assert LEAK not in blob
-    assert "shared-janus" not in blob
-    stored = _binding_text(adapter)
-    assert claim not in stored
-    assert SECRET not in stored
-    row = json.loads(stored)[APPROVAL_ID]
-    assert row["room_id"] == "room-a"
-    assert row["surfaced"] is True
-    assert fake.inspects == [APPROVAL_ID]
-    assert fake.gets == []
-    detail = adapter.get_janus_approval("room-a", APPROVAL_ID)
-    assert detail["arguments"] == {"path": "/tmp/x", "password": SECRET}
-    assert "room_binding" not in detail
-    assert claim not in json.dumps(detail)
-    assert "token" not in detail
-    assert fake.gets == [APPROVAL_ID]
-    with _armed(adapter, monkeypatch):
-        decided = adapter.decide_janus_approval(
-            "room-a", APPROVAL_ID, "approve", origin=janus_approval.HTTP_ORIGIN
-        )
-    assert set(decided) == {"approval_request_id", "status", "decision", "duplicate"}
-    assert claim not in json.dumps(decided)
-    assert "arguments" not in decided
-    assert claim not in caplog.text
-    assert SECRET not in caplog.text
-    assert LEAK not in caplog.text
-
-
-def test_grok_other_room_speaking_first_does_not_bind(tmp_path, monkeypatch, caplog):
-    caplog.set_level(logging.DEBUG)
-    claim_a = janus_approval.mint_room_binding()
-    claim_b = janus_approval.mint_room_binding()
-    adapter = _adapter(tmp_path, monkeypatch)
-    principal.save(str(tmp_path), {"display_name": "Clayton", "about": ""})
-    _mark_grok(tmp_path, "scout")
-    fake = _arm_fake(adapter)
-    fake.records[APPROVAL_ID] = _shared_record(APPROVAL_ID, room_binding=claim_a)
+    own_id = "req-own1"
+    other_id = "req-oth2"
+    shared_id = "req-sam3"
+    for approval_id in (own_id, other_id, shared_id):
+        fake.records[approval_id] = _shared_record(approval_id)
     _open(adapter, "room-a")
     _open(adapter, "room-b")
-    _hold_claim(adapter, tmp_path, "room-a", "scout", claim_a, session_id="sess-a")
-    _hold_claim(adapter, tmp_path, "room-b", "scout", claim_b, session_id="sess-b")
-    _say(adapter, "room-b", f"approval_request_id: {APPROVAL_ID}", speaker="scout")
-    _assert_fail_closed(adapter, "room-b", APPROVAL_ID, caplog.text, claim_a, claim_b)
-    assert fake.inspects == [APPROVAL_ID]
+
+    _say(adapter, "room-a", f"approval_request_id: {own_id}", speaker="scout")
+    _assert_grok_unverified(adapter, "room-a", own_id, caplog.text)
     assert fake.gets == []
-    assert _binding_text(adapter) == ""
-    _say(adapter, "room-a", f"approval_request_id: {APPROVAL_ID}", speaker="scout")
-    assert janus_approval.gateway_approval_line(APPROVAL_ID) in "\n".join(_texts(adapter, "room-a"))
-    assert adapter.store.get("room-a").needs_user is True
-    assert adapter.store.get("room-b").needs_user is False
-    inspects_after_bind = list(fake.inspects)
-    _say(adapter, "room-b", f"approval_request_id: {APPROVAL_ID}", speaker="scout")
-    notice = "\n".join(_texts(adapter, "room-b"))
-    assert "not available in this room" in notice
-    assert SECRET not in notice
-    assert claim_a not in notice
-    assert "@user" not in notice
-    assert fake.inspects == inspects_after_bind
-    with pytest.raises(KeyError):
-        adapter.get_janus_approval("room-b", APPROVAL_ID)
-    assert claim_a not in "\n".join(_texts(adapter, "room-a"))
-    assert claim_b not in "\n".join(_texts(adapter, "room-a"))
-    assert SECRET not in "\n".join(_texts(adapter, "room-a"))
-
-
-def test_grok_bad_claim_fails_closed_and_hermes_cannot_use_it(tmp_path, monkeypatch, caplog):
-    caplog.set_level(logging.DEBUG)
-    claim = janus_approval.mint_room_binding()
-    other = janus_approval.mint_room_binding()
-    editor_claim = janus_approval.mint_room_binding()
-    adapter = _adapter(tmp_path, monkeypatch)
-    principal.save(str(tmp_path), {"display_name": "Clayton", "about": ""})
-    _mark_grok(tmp_path, "scout")
-    _mark_grok(tmp_path, "editor")
-    fake = _arm_fake(adapter)
-    _open(adapter)
-    _hold_claim(adapter, tmp_path, "room-a", "scout", claim, session_id="sess-scout")
-    _hold_claim(adapter, tmp_path, "room-a", "editor", editor_claim, session_id="sess-editor")
-
-    # A Hermes profile is not given the Grok path, even when a claim exists
-    # for another member of the room. Drop editor's runtime for this speech.
-    hermes_id = "req-3003"
-    os.remove(tmp_path / "profiles" / "editor" / "retinue-agent.json")
-    fake.records[hermes_id] = _shared_record(hermes_id, room_binding=claim)
-    _say(adapter, "room-a", f"approval_request_id: {hermes_id}", speaker="editor")
     assert fake.inspects == []
-    assert fake.gets == []
+    assert fake.decisions == []
+    assert _binding_text(adapter) == ""
+    with pytest.raises(KeyError):
+        adapter.get_janus_approval("room-a", own_id)
+    with pytest.raises(KeyError):
+        adapter.decide_janus_approval(
+            "room-a", own_id, "approve", origin=janus_approval.HTTP_ORIGIN
+        )
 
-    _mark_grok(tmp_path, "editor")
-    cases = [
-        ("req-4004", {}),
-        ("req-5005", {"room_binding": None}),
-        ("req-6006", {"room_binding": ""}),
-        ("req-7007", {"room_binding": other}),
-        ("req-8008", {"room_binding": "not-a-claim"}),
-        ("req-9009", {"room_binding": ["nope"]}),
-    ]
-    for approval_id, extra in cases:
-        fake.records[approval_id] = _shared_record(approval_id, **extra)
-        _say(adapter, "room-a", f"approval_request_id: {approval_id}", speaker="scout")
-        _assert_fail_closed(adapter, "room-a", approval_id, caplog.text, claim, other, editor_claim)
-        assert approval_id not in (_binding_text(adapter) or "")
+    assert _observe(adapter, "room-b", other_id) is True
+    assert adapter._janus_bindings().get(other_id)["room_id"] == "room-b"
+    gets_after_other = list(fake.gets)
+    _say(adapter, "room-a", f"approval_request_id: {other_id}", speaker="scout")
+    _assert_grok_unverified(adapter, "room-a", other_id, caplog.text)
+    assert fake.gets == gets_after_other
+    assert fake.inspects == []
+    assert adapter._janus_bindings().get(other_id)["room_id"] == "room-b"
+    assert adapter.store.get("room-a").needs_user is False
+    with pytest.raises(KeyError):
+        adapter.get_janus_approval("room-a", other_id)
+    with pytest.raises(KeyError):
+        adapter.decide_janus_approval(
+            "room-a", other_id, "deny", origin=janus_approval.HTTP_ORIGIN
+        )
 
-    stolen = "req-1111"
-    fake.records[stolen] = _shared_record(stolen, room_binding=claim)
-    _say(adapter, "room-a", f"approval_request_id: {stolen}", speaker="editor")
-    _assert_fail_closed(adapter, "room-a", stolen, caplog.text, claim, editor_claim)
-    _say(adapter, "room-a", f"approval_request_id: {stolen}", speaker="scout")
-    assert janus_approval.gateway_approval_line(stolen) in "\n".join(_texts(adapter, "room-a"))
-    assert json.loads(_binding_text(adapter))[stolen]["room_id"] == "room-a"
-    assert claim not in caplog.text
-    assert other not in caplog.text
-    assert editor_claim not in caplog.text
+    assert _observe(adapter, "room-a", shared_id) is True
+    assert adapter._janus_bindings().get(shared_id)["surfaced"] is False
+    assert adapter.store.get("room-a").needs_user is False
+    gets_after_shared = list(fake.gets)
+    _say(adapter, "room-a", f"approval_request_id: {shared_id}", speaker="scout")
+    _say(adapter, "room-a", f"approval_request_id: {shared_id}", speaker="scout")
+    blob = "\n".join(_texts(adapter, "room-a"))
+    assert blob.count(janus_approval.unverified_notice(shared_id)) == 2
+    assert janus_approval.LINE_PREFIX not in blob
+    assert "@user" not in blob
+    assert "Clayton" not in blob
+    assert SECRET not in blob
+    assert adapter.store.get("room-a").needs_user is False
+    assert fake.gets == gets_after_shared
+    assert fake.inspects == []
+    assert fake.decisions == []
+    assert adapter._janus_bindings().get(shared_id)["room_id"] == "room-a"
+    assert adapter._janus_bindings().get(shared_id)["surfaced"] is False
+
+    _say(adapter, "room-a", f"approval_request_id: {shared_id}", speaker="editor")
+    assert janus_approval.gateway_approval_line(shared_id) in "\n".join(_texts(adapter, "room-a"))
+    assert adapter.store.get("room-a").needs_user is True
+    assert fake.gets == gets_after_shared + [shared_id]
+    assert fake.inspects == []
+    detail = adapter.get_janus_approval("room-a", shared_id)
+    assert detail["arguments"]["password"] == SECRET
+    assert "room_binding" not in detail
     assert SECRET not in caplog.text
 
-    class _GetOnly:
-        def get(self, approval_id):
-            raise AssertionError(approval_id)
 
-    lost = "req-2222"
-    adapter._janus_client_override = _GetOnly()
-    fake.records[lost] = _shared_record(lost, room_binding=claim)
-    _say(adapter, "room-a", f"approval_request_id: {lost}", speaker="scout")
-    assert "could not be verified" in "\n".join(_texts(adapter, "room-a"))
-    assert lost not in (_binding_text(adapter) or "")
-
-
-def test_grok_restart_loses_the_claim_and_fails_closed(tmp_path, monkeypatch, caplog):
+def test_hermes_tool_result_binds_before_prose_and_cross_room_race(
+    tmp_path, monkeypatch, caplog
+):
+    """The observing room binds before prose. A racing room cannot steal it."""
     caplog.set_level(logging.DEBUG)
-    claim = janus_approval.mint_room_binding()
-    fresh = janus_approval.mint_room_binding()
     adapter = _adapter(tmp_path, monkeypatch)
     principal.save(str(tmp_path), {"display_name": "Clayton", "about": ""})
-    _mark_grok(tmp_path, "scout")
     fake = _arm_fake(adapter)
-    fake.records[APPROVAL_ID] = _shared_record(APPROVAL_ID, room_binding=claim)
-    _open(adapter)
-    _hold_claim(adapter, tmp_path, "room-a", "scout", claim)
-    adapter._grok_mgr = grokbuild.GrokBuildManager(str(tmp_path))
-    assert adapter._grok_mgr.expected_room_claim("room-a", "scout") is None
-    _say(adapter, "room-a", f"approval_request_id: {APPROVAL_ID}", speaker="scout")
-    assert fake.inspects == []
+    _open(adapter, "room-a")
+    _open(adapter, "room-b")
+
+    unbound = "req-free"
+    fake.records[unbound] = _shared_record(unbound)
+    _say(adapter, "room-a", f"approval_request_id: {unbound}")
+    assert "could not be verified" in "\n".join(_texts(adapter, "room-a"))
+    assert unbound not in (_binding_text(adapter) or "")
     assert fake.gets == []
-    _assert_fail_closed(adapter, "room-a", APPROVAL_ID, caplog.text, claim)
-    adapter._grok_mgr._note_claim(("room-a", "scout"), "sess-2", fresh)
-    _say(adapter, "room-a", f"approval_request_id: {APPROVAL_ID}", speaker="scout")
-    assert fake.inspects == [APPROVAL_ID]
-    assert _binding_text(adapter) == ""
-    _assert_fail_closed(adapter, "room-a", APPROVAL_ID, caplog.text, claim, fresh)
+    assert adapter.store.get("room-a").needs_user is False
+    with pytest.raises(KeyError):
+        adapter.decide_janus_approval(
+            "room-a", unbound, "approve", origin=janus_approval.HTTP_ORIGIN
+        )
+
+    assert _observe(adapter, "room-a") is True
+    bound = adapter._janus_bindings().get(APPROVAL_ID)
+    assert bound["room_id"] == "room-a"
+    assert bound["surfaced"] is False
+    assert janus_approval.LINE_PREFIX not in "\n".join(_texts(adapter, "room-a"))
+    assert adapter.store.get("room-a").needs_user is False
+    assert fake.gets == []
+
+    race_id = "req-race"
+    fake.records[race_id] = _shared_record(race_id)
+    payload = _envelope(race_id)
+    barrier = threading.Barrier(2)
+    results = {}
+
+    def race(room_id):
+        barrier.wait(timeout=5)
+        callback = janus_approval.room_tool_complete_callback(adapter, room_id)
+        callback("call-race", JANUS_TOOL, {"password": SECRET}, payload)
+        results[room_id] = adapter._janus_bindings().get(race_id)
+
+    threads = [
+        threading.Thread(target=race, args=(room_id,))
+        for room_id in ("room-a", "room-b")
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5)
+        assert not thread.is_alive()
+    row = adapter._janus_bindings().get(race_id)
+    assert row is not None
+    winner = row["room_id"]
+    assert winner in {"room-a", "room-b"}
+    loser = "room-b" if winner == "room-a" else "room-a"
+    assert _observe(adapter, loser, race_id) is False
+    assert adapter._janus_bindings().get(race_id)["room_id"] == winner
+    _say(adapter, loser, f"approval_request_id: {race_id}")
+    loser_text = "\n".join(_texts(adapter, loser))
+    assert "not available in this room" in loser_text
+    assert winner not in loser_text
+    assert "@user" not in loser_text
+    assert adapter.store.get(loser).needs_user is False
+    with pytest.raises(KeyError):
+        adapter.get_janus_approval(loser, race_id)
+    with pytest.raises(KeyError):
+        adapter.decide_janus_approval(
+            loser, race_id, "approve", origin=janus_approval.HTTP_ORIGIN
+        )
+    assert janus_approval.LINE_PREFIX not in "\n".join(_texts(adapter, winner))
+    _say(adapter, winner, f"approval_request_id: {race_id}")
+    assert janus_approval.gateway_approval_line(race_id) in "\n".join(_texts(adapter, winner))
+    assert adapter.store.get(winner).needs_user is True
+    assert SECRET not in _binding_text(adapter)
+    assert SECRET not in caplog.text
     assert fake.decisions == []
+    assert set(results) == {"room-a", "room-b"}
 
 
 def test_gateway_turn_composes_the_room_callback(tmp_path, monkeypatch, caplog):

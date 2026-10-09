@@ -17,12 +17,11 @@ transcript line that pauses the room.
 A spoken line does not bind a room. Janus identity is shared, and Janus
 ``session_id`` is an MCP session key, not a Retinue room id. An in-process
 Hermes turn binds the room captured when the gateway observed the Janus
-tool result. A Grok Build turn has no trustworthy tool-completion payload.
-The gateway mints a fresh opaque claim per (room, member, MCP session),
-sends it only as ``X-Retinue-Room-Binding`` on that session's Janus HTTP
-entry, and compares the operator detail's ``room_binding`` in constant
-time before binding. The claim is not written to a child environment,
-MCP config, prompt, transcript, tool title, log, or model-facing result.
+tool result. A Grok Build turn has no trustworthy tool-completion payload,
+and the live Janus MCP server is stdio, so this module does not mint or
+attach a room-binding header. A spoken id from a Grok member stays
+unverified. Enabling that surfacing needs a separate gateway-owned relay,
+which is not implemented here.
 """
 
 from __future__ import annotations
@@ -31,7 +30,6 @@ import json
 import logging
 import os
 import re
-import secrets
 import threading
 import time
 import uuid
@@ -176,100 +174,6 @@ def valid_id(approval_id: str) -> bool:
 
 class _Reject(Exception):
     """Parser failure. Carries no payload so a log of the type is safe."""
-
-
-# Janus stores the header lowercased. 43 is secrets.token_urlsafe(32)
-# with the base64 padding removed: alphabet A-Za-z0-9_-.
-ROOM_BINDING_HEADER = "X-Retinue-Room-Binding"
-ROOM_BINDING_LENGTH = 43
-_ROOM_BINDING_RE = re.compile(r"^[A-Za-z0-9_-]{43}$")
-_ROOM_BINDING_HEADER_FOLDED = ROOM_BINDING_HEADER.lower()
-
-
-def mint_room_binding() -> str:
-    """Fresh opaque claim. One per Grok (room, member, MCP session).
-
-    ``token_urlsafe(32)`` is 43 characters. A shape miss raises so a bad
-    value is never sent. The caller keeps the result in process memory.
-    """
-    value = secrets.token_urlsafe(32)
-    if _ROOM_BINDING_RE.fullmatch(value) is None:
-        raise RuntimeError("room binding mint failed")
-    return value
-
-
-def _room_binding_bytes(value: Any) -> Optional[bytes]:
-    if not isinstance(value, str) or _ROOM_BINDING_RE.fullmatch(value) is None:
-        return None
-    return value.encode("utf-8")
-
-
-def claim_matches(expected: Any, presented: Any) -> bool:
-    """Constant-time compare of two room claims.
-
-    A missing, non-string, or malformed value does not match. Unequal
-    lengths still run ``compare_digest`` on the expected bytes so the
-    failure does not return early. Neither value is logged.
-    """
-    left = _room_binding_bytes(expected)
-    if left is None:
-        filler = b"x" * ROOM_BINDING_LENGTH
-        secrets.compare_digest(filler, filler)
-        return False
-    right = _room_binding_bytes(presented)
-    if right is None or len(right) != len(left):
-        secrets.compare_digest(left, left)
-        return False
-    return secrets.compare_digest(left, right)
-
-
-def attach_janus_room_binding(
-    servers: Any,
-    claim: str,
-    server_name: str,
-) -> Tuple[List[Dict[str, Any]], bool]:
-    """Copy ``servers`` and put ``claim`` on the named Janus HTTP entry.
-
-    Callers pass the list already scrubbed of gateway credentials. The
-    header is appended only to the first ``http`` or ``sse`` server of
-    ``server_name``. An existing header of the same name is replaced so
-    Janus does not see a duplicate. Stdio entries are copied unchanged
-    and the claim is not written into their env. ``attached`` is False
-    when no such HTTP entry exists; the caller must not retain the claim.
-    """
-    if _room_binding_bytes(claim) is None:
-        raise RuntimeError("room binding rejected")
-    name = str(server_name or "").strip()
-    copied: List[Dict[str, Any]] = []
-    attached = False
-    for entry in servers or []:
-        if not isinstance(entry, dict):
-            continue
-        item = dict(entry)
-        if isinstance(item.get("headers"), list):
-            item["headers"] = [
-                dict(header) for header in item["headers"] if isinstance(header, dict)
-            ]
-        if isinstance(item.get("env"), list):
-            item["env"] = [dict(pair) for pair in item["env"] if isinstance(pair, dict)]
-        if isinstance(item.get("args"), list):
-            item["args"] = list(item["args"])
-        if (
-            not attached
-            and name
-            and item.get("name") == name
-            and item.get("type") in ("http", "sse")
-        ):
-            headers = [
-                header
-                for header in (item.get("headers") or [])
-                if str(header.get("name") or "").lower() != _ROOM_BINDING_HEADER_FOLDED
-            ]
-            headers.append({"name": ROOM_BINDING_HEADER, "value": claim})
-            item["headers"] = headers
-            attached = True
-        copied.append(item)
-    return copied, attached
 
 
 def configured_janus_mcp_server(environ: Optional[Mapping[str, str]] = None) -> str:
@@ -583,9 +487,6 @@ def _walk_key(value: Any, key: str, found: List[Any], seen: set, depth: int) -> 
 def project_detail(data: Mapping[str, Any], approval_id: str) -> Dict[str, Any]:
     """Authoritative fields for the authenticated UI. Unknown keys are dropped
     so an upstream token cannot ride along in the browser response.
-
-    ``room_binding`` is operator-only. It is not a public field and is not
-    copied here.
     """
     got = str(data.get("approval_request_id") or "").strip()
     if got and got != approval_id:
@@ -778,20 +679,6 @@ class JanusApprovalsClient:
         status, payload = self._call("GET", self._url(approval_id), None)
         self._raise_for_status(status)
         return project_detail(payload, approval_id)
-
-    def inspect(self, approval_id: str) -> Dict[str, Any]:
-        """Operator payload for the Grok claim compare.
-
-        This keeps ``room_binding``. ``get`` does not. Callers must not log
-        the dict, put it on a transcript, or return it from the HTTP card.
-        """
-        if not valid_id(approval_id):
-            raise JanusApprovalError("bad_id")
-        status, payload = self._call("GET", self._url(approval_id), None)
-        self._raise_for_status(status)
-        if not isinstance(payload, dict):
-            raise JanusApprovalError("bad_response")
-        return payload
 
     def decide(self, approval_id: str, decision: str) -> Dict[str, Any]:
         if decision not in {"approve", "deny"}:

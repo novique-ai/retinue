@@ -117,13 +117,10 @@ credential names (`RETINUE_VOICE_API_KEY`, `RETINUE_ROOMS_API_KEY`,
 names on the member process are rejected the same way: only the broker
 token is applied.
 
-When `mcp.json` declares the Janus server (`RETINUE_JANUS_MCP_SERVER`,
-default `janus`) as `http` or `sse`, the gateway adds a fresh
-`X-Retinue-Room-Binding` header to that entry only, on `session/new` and
-on `session/load`. The value is gateway memory for that room, member, and
-session. It is not stored in `mcp.json`, the child environment, or
-`grok_sessions.json`. A stdio Janus entry cannot carry it, and a spoken
-approval id then fails closed. See `retinue/ROOMS.md` for the compare.
+`session/new` and `session/load` forward that MCP list as declared. The
+gateway does not add a room-binding header. The live Janus server is
+stdio, and a spoken approval id from a Grok member stays unverified
+until a separate gateway-owned relay exists. See `retinue/ROOMS.md`.
 
 ## How a Grok Build turn works
 
@@ -157,7 +154,6 @@ approval id then fails closed. See `retinue/ROOMS.md` for the compare.
   grok session id is persisted (`retinue_rooms/grok_sessions.json`) and a
   gateway restart resumes it with `session/load` — the transcript is never
   restuffed into a fresh process. "New session" in the room UI resets it.
-  The Janus room-binding claim is not in that file. A restart forgets it.
 - **Working directory** — ide rooms: the room's host tree (`ide_path`).
   Sandbox rooms: a dedicated per-room host folder
   (`retinue_rooms/grok_workspaces/<room>/`).

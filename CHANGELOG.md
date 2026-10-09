@@ -23,13 +23,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- **Grok Build Janus approval room claim.** Each Grok (room, member, MCP
-  session) gets a fresh opaque binding header on the Janus HTTP MCP entry
-  at `session/new` and `session/load`. A spoken approval id is checked
-  against that claim before the room is bound or a card is shown. A
-  missing or mismatched claim fails closed. The secret is not written to
-  the child environment, workspace MCP config, prompt, transcript, or
-  gateway logs. In-process Hermes binding from the observed tool result is unchanged.
+- **Janus confirm-tier approvals bind to the observing room.** An
+  in-process Hermes turn binds from the gateway-observed tool result
+  before agent prose. A spoken id does not bind. A Grok Build speaker
+  stays an unverified notice, with no card, even when another member of
+  the same room already holds that id. Surfacing a Grok approval needs a
+  separate gateway-owned relay, which is not in this change.
 
 - **Per-member Grok Build model, and in-place runtime conversion.** The
   roster and Edit dropdowns group Grok Build catalog ids (`grok-build:grok-4.5`)

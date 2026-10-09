@@ -2576,9 +2576,8 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             # thread-safe and wakes the SSE/long-poll watchers itself.
             # needs_user bookkeeping is skipped on purpose: a tool line
             # cannot @ the principal. Titles are not a Janus approval
-            # claim. This ACP path has no trustworthy completion payload.
-            # The room claim is the session header, checked when the
-            # member speaks the id.
+            # bind. This ACP path has no trustworthy completion payload,
+            # so a spoken id from this member stays unverified.
             title = str(payload.get("title") or "tool")
             if event == "tool_start":
                 text = title
@@ -2777,7 +2776,8 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         """Pause the room when a labeled id is already this room's to show.
 
         In-process Hermes binds from the tool result, then the fetch runs.
-        A Grok speaker is checked against that member's session claim first.
+        A Grok speaker stays an unverified notice: no operator fetch and no
+        card, even when this room or another room already holds the id.
         An unbound in-process id is only an unverified notice. Agent prose
         is not the card.
         """
@@ -2805,7 +2805,7 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         """True when this member's runtime is Grok Build.
 
         A missing profile stays Hermes. The gateway line speaker and system
-        speaker are never Grok, so they cannot take the claim path.
+        speaker are never Grok, so they stay on the in-process path.
         """
         slug = str(speaker or "").strip()
         if not slug or slug in {janus_approval.JANUS_SPEAKER, "room"}:
@@ -2816,32 +2816,16 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
             return False
         return runtime == runtimes.RUNTIME_GROK_BUILD
 
-    def _expected_grok_room_claim(self, room_id: str, member: str) -> Optional[str]:
-        """In-memory claim for this room and member, or None.
-
-        Does not create a manager. A restart, a stdio Janus server, or a
-        session that never attached the header leaves this empty, and the
-        spoken id fails closed without a fetch.
-        """
-        manager = getattr(self, "_grok_mgr", None)
-        getter = getattr(manager, "expected_room_claim", None)
-        if not callable(getter):
-            return None
-        try:
-            claim = getter(room_id, member)
-        except Exception:
-            return None
-        if not isinstance(claim, str) or not claim:
-            return None
-        return claim
-
     def _surface_one_janus_approval(
         self, room_id: str, approval_id: str, speaker: str = ""
     ) -> None:
         if not janus_approval.valid_id(approval_id):
             return
         if self._speaker_is_grok(speaker):
-            self._surface_grok_janus_approval(room_id, approval_id, speaker)
+            # No trustworthy tool-completion payload, and the live Janus
+            # MCP server is stdio. Speech does not fetch, bind, or show a
+            # card, including when another member already bound this id.
+            self._post_system(room_id, janus_approval.unverified_notice(approval_id))
             return
         bindings = self._janus_bindings()
         existing = bindings.get(approval_id)
@@ -2875,52 +2859,6 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
         # session_id on the detail are not a room id and are not consulted.
         self._surface_bound_detail(room_id, approval_id, raw, bindings)
 
-    def _surface_grok_janus_approval(
-        self, room_id: str, approval_id: str, speaker: str
-    ) -> None:
-        """Compare the session claim before binding or showing a card.
-
-        A Grok id has no first-speaker authority. Another room's binding
-        is unavailable and is not fetched. A missing expected claim (stdio
-        Janus, restart, or no session) is an unverified notice and is not
-        fetched. A presented claim that is missing, malformed, or different
-        does not bind.
-        """
-        bindings = self._janus_bindings()
-        existing = bindings.get(approval_id)
-        if existing and existing.get("room_id") not in (None, "", room_id):
-            self._post_system(room_id, janus_approval.unavailable_notice(approval_id))
-            return
-        if existing and existing.get("room_id") == room_id and existing.get("surfaced"):
-            return
-        expected = self._expected_grok_room_claim(room_id, speaker)
-        if expected is None:
-            self._post_system(room_id, janus_approval.unverified_notice(approval_id))
-            return
-        client = self._janus_client()
-        inspect = getattr(client, "inspect", None) if client is not None else None
-        if not callable(inspect):
-            self._post_system(room_id, janus_approval.unverified_notice(approval_id))
-            return
-        try:
-            raw = inspect(approval_id)
-        except janus_approval.JanusApprovalError:
-            self._post_system(room_id, janus_approval.unverified_notice(approval_id))
-            return
-        except Exception:
-            self._post_system(room_id, janus_approval.unverified_notice(approval_id))
-            return
-        presented = raw.get("room_binding") if isinstance(raw, dict) else None
-        if not janus_approval.claim_matches(expected, presented):
-            logger.info("janus grok claim rejected room=%s", room_id)
-            self._post_system(room_id, janus_approval.unverified_notice(approval_id))
-            return
-        bound = bindings.bind(approval_id, room_id)
-        if bound.get("room_id") != room_id:
-            self._post_system(room_id, janus_approval.unavailable_notice(approval_id))
-            return
-        self._surface_bound_detail(room_id, approval_id, raw, bindings)
-
     def _surface_bound_detail(
         self,
         room_id: str,
@@ -2930,8 +2868,8 @@ class RetinueRoomsAdapter(BasePlatformAdapter):
     ) -> None:
         """Post the gateway line when a bound request is still pending.
 
-        ``raw`` may carry arguments and ``room_binding``. Neither is written
-        to the transcript or the log. The line is the id plus the pause.
+        Call arguments are not written to the transcript or the log. The
+        line is the id plus the pause.
         """
         try:
             if not isinstance(raw, dict):
