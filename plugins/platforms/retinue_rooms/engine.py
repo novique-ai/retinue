@@ -1386,6 +1386,13 @@ def room_briefing(
         "one. If you need a yes/no, ask it in this room (the clarify "
         "tool posts here); do not wait on a prompt the human cannot see.",
     ]
+    parts.append(
+        "When Janus returns needs_confirmation, reply with the approval_request_id "
+        "in your own prose, exactly `approval_request_id: <id>`, then stop and wait. "
+        "Do not approve, deny, or confirm it yourself, and do not paste the call's "
+        "arguments. The room asks the principal. The call runs only if you retry it "
+        "after they approve."
+    )
     if principal_about:
         who = people.split(",")[0].strip() if people else "the human"
         parts.append(f"About {who}: {principal_about}")

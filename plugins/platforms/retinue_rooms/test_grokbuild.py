@@ -803,6 +803,66 @@ class TestMcpWire:
         # broker-client MCP server (child of grok) inherits it.
         assert new["broker_token"] is True
 
+    def test_janus_servers_are_forwarded_without_an_added_header(
+        self, tmp_path, fake_agent, monkeypatch
+    ):
+        """session/new and session/load pass the declared MCP list through.
+
+        The gateway does not mint or attach a room-binding header. A stdio
+        Janus server is forwarded as stdio.
+        """
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        monkeypatch.setenv("FAKE_ACP_TOOL_PATH", str(ws / "f"))
+        _write_mcp(tmp_path, [
+            {"name": "janus", "command": "/bin/janus-mcp", "args": ["--stdio"],
+             "env": {"K": "V"}},
+            {"name": "docs", "type": "http", "url": "https://docs.test/mcp",
+             "headers": {"A": "b"}},
+        ])
+        before = grokbuild.mcp_config_path(str(tmp_path))
+        with open(before, encoding="utf-8") as handle:
+            on_disk = handle.read()
+
+        async def first():
+            manager = GrokBuildManager(str(tmp_path))
+            await manager.run_turn(
+                "r1", "scout", str(ws),
+                build_prompt=lambda fresh: "status please",
+                approval=APPROVAL_WORKSPACE, timeout=30,
+            )
+            await manager.shutdown()
+
+        _run(first())
+
+        async def second():
+            manager = GrokBuildManager(str(tmp_path))
+            await manager.run_turn(
+                "r1", "scout", str(ws),
+                build_prompt=lambda fresh: "status please",
+                approval=APPROVAL_WORKSPACE, timeout=30,
+            )
+            await manager.shutdown()
+
+        _run(second())
+        events = _events(fake_agent)
+        new = next(event for event in events if event["kind"] == "new")
+        load = next(event for event in events if event["kind"] == "load")
+        expected = [
+            {"name": "janus", "command": "/bin/janus-mcp", "args": ["--stdio"],
+             "env": [{"name": "K", "value": "V"}]},
+            {"type": "http", "name": "docs", "url": "https://docs.test/mcp",
+             "headers": [{"name": "A", "value": "b"}]},
+        ]
+        assert new["mcp"] == expected
+        assert load["mcp"] == expected
+        for event in (new, load):
+            dumped = json.dumps(event["mcp"])
+            assert "X-Retinue-Room-Binding" not in dumped
+            assert "x-retinue-room-binding" not in dumped
+        with open(before, encoding="utf-8") as handle:
+            assert handle.read() == on_disk
+
 
 class TestMcpPermissions:
     def _use_tool(self, tool_name):

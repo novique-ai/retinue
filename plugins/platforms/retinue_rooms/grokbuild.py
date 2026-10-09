@@ -62,7 +62,10 @@ Design points, each verified against grok v0.2.93 before this was built:
   value is not parsed. Bubblewrap inherits this mapping; it does not
   clear it. Health and model probes use the same allowlist and do not
   receive the broker token. User-supplied MCP env and headers drop those
-  credential names and any value equal to one of them.
+  credential names and any value equal to one of them. Session setup
+  forwards that list on ``session/new`` and ``session/load`` and does not
+  add a room-binding header. A spoken Janus id from this runtime stays
+  unverified until a separate gateway-owned relay exists.
 
 Hidden reasoning: ``agent_thought_chunk`` updates are received and
 dropped.  They are never surfaced, stored, or logged.

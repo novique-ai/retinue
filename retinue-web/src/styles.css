@@ -922,6 +922,30 @@ span.agent-runtime {
   font-style: normal;
 }
 
+.janus-approval {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid #f7768e;
+  border-radius: 8px;
+  background: #241820;
+  font-size: 12.5px;
+}
+
+.janus-exact {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  background: #1a1b26;
+  margin: 4px 0;
+  padding: 6px;
+  font-size: 12px;
+}
+
+.janus-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 6px;
+}
+
 .msg-system .msg-time {
   display: block;
   margin-top: 2px;

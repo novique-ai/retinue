@@ -23,6 +23,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Janus confirm-tier approvals bind to the observing room.** An
+  in-process Hermes turn binds from the gateway-observed tool result
+  before agent prose. A spoken id does not bind. A Grok Build speaker
+  stays an unverified notice, with no card, even when another member of
+  the same room already holds that id. Surfacing a Grok approval needs a
+  separate gateway-owned relay, which is not in this change.
+
 - **Per-member Grok Build model, and in-place runtime conversion.** The
   roster and Edit dropdowns group Grok Build catalog ids (`grok-build:grok-4.5`)
   above Hermes presets. Same-runtime picks switch the model; a

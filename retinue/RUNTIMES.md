@@ -117,6 +117,11 @@ credential names (`RETINUE_VOICE_API_KEY`, `RETINUE_ROOMS_API_KEY`,
 names on the member process are rejected the same way: only the broker
 token is applied.
 
+`session/new` and `session/load` forward that MCP list as declared. The
+gateway does not add a room-binding header. The live Janus server is
+stdio, and a spoken approval id from a Grok member stays unverified
+until a separate gateway-owned relay exists. See `retinue/ROOMS.md`.
+
 ## How a Grok Build turn works
 
 `plugins/platforms/retinue_rooms/grokbuild.py` manages one

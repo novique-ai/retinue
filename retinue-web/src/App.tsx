@@ -75,6 +75,7 @@ import { PushToTalkButton } from "./voice/PushToTalkButton";
 import { formatSpeakError, nextSpeakSeqs } from "./voice/speakQueue";
 import { usePushToTalk } from "./voice/usePushToTalk";
 import { shellClassName, useKeyboardInset, useNarrowViewport } from "./viewport";
+import { janusApprovalElement } from "./janusApproval";
 
 /** Shared outer ring/tooltip/working-pulse frame for every avatar shape. */
 function AvatarFrame({
@@ -927,6 +928,7 @@ function MessageRow({
     );
   }
   const mine = msg.kind === "user";
+  const approval = janusApprovalElement(msg, roomId);
   return (
     <div className={mine ? "msg-row mine" : "msg-row"}>
       {mine ? (
@@ -953,6 +955,7 @@ function MessageRow({
         <div className="msg-text">
           <MentionBody text={msg.text} members={members} handleOf={handleOf} agentsBySlug={agentsBySlug} />
         </div>
+        {approval}
         <WorkspaceStrip roomId={roomId} text={msg.text} />
       </div>
     </div>
